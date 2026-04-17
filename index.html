@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>patchNet</title>
+    <link rel="stylesheet" href="/src/fonts.css" />
+    <link rel="stylesheet" href="/src/tokens.css" />
+    <link rel="stylesheet" href="/src/shell.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div class="toolbar">
+        <span class="app-title">patchNet</span>
+        <span style="flex: 1"></span>
+        <span
+          style="
+            color: var(--pn-muted);
+            font-size: var(--pn-type-micro);
+            font-family: var(--pn-font-mono);
+          "
+          >EDIT MODE</span>
+
+        <div class="toolbar-separator"></div>
+
+        <!-- Audio controls -->
+        <button id="audio-toggle-btn" class="toolbar-audio-btn" title="Toggle audio (DSP on/off)" aria-pressed="false">
+          <span class="toolbar-audio-icon">▶</span>
+          <span class="toolbar-audio-label">DSP</span>
+        </button>
+        <select id="audio-device-select" class="toolbar-audio-device" title="Audio output device">
+          <option value="">default output</option>
+        </select>
+        <div class="toolbar-vol-wrap" title="Master volume">
+          <span class="toolbar-vol-label">vol</span>
+          <input id="master-vol" class="toolbar-vol-slider" type="range" min="0" max="1" step="0.01" value="0.75" />
+          <span id="master-vol-readout" class="toolbar-vol-readout">75</span>
+        </div>
+
+        <div class="toolbar-separator"></div>
+
+        <button
+          id="shortcuts-btn"
+          class="toolbar-icon-btn"
+          aria-label="Keyboard shortcuts"
+          title="Keyboard shortcuts"
+          >?</button>
+      </div>
+      <div class="workspace">
+        <div class="canvas-area" data-canvas-root>
+          <div class="canvas-grid"></div>
+        </div>
+        <div class="divider"></div>
+        <div class="text-panel">
+          <div class="text-panel-header">text view</div>
+          <textarea data-text-panel placeholder="#N canvas;" spellcheck="false"></textarea>
+        </div>
+      </div>
+      <div class="status-bar">
+        <span class="status-mode" data-status-mode>EDIT</span>
+        <span data-object-count>0 objects</span>
+        <span id="audio-status">audio: off</span>
+      </div>
+    </div>
+    <div class="crt-overlay" aria-hidden="true"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

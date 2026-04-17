@@ -1,0 +1,27 @@
+@font-face {
+  font-family: "Vulf Mono";
+  src: url("../fonts/VulfMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Vulf Mono";
+  src: url("../fonts/VulfMono-Bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Vulf Sans";
+  src: url("../fonts/VulfSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: "Vulf Sans";
+  src: url("../fonts/VulfSans-Bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+}

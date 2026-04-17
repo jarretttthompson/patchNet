@@ -1,0 +1,98 @@
+:root {
+  /* --- Surfaces --- */
+  --pn-bg-deep: #030504;
+  --pn-bg: #050806;
+  --pn-surface: #080e09;
+  --pn-surface-raised: #0d1210;
+  --pn-surface-glow: rgba(106, 255, 145, 0.05);
+
+  /* --- Borders --- */
+  --pn-border: rgba(106, 255, 145, 0.18);
+  --pn-border-subtle: rgba(106, 255, 145, 0.07);
+  --pn-border-accent: rgba(106, 255, 145, 0.60);
+  --pn-border-accent-soft: rgba(106, 255, 145, 0.22);
+
+  /* --- Text --- */
+  --pn-text: #d8ffe1;
+  --pn-text-dim: rgba(216, 255, 225, 0.68);
+  --pn-muted: rgba(216, 255, 225, 0.38);
+  --pn-muted-deep: rgba(216, 255, 225, 0.18);
+
+  /* --- Accents (phosphor green) --- */
+  --pn-accent: #6aff91;
+  --pn-accent-dim: #48c96b;
+  --pn-accent-glow: rgba(106, 255, 145, 0.20);
+  --pn-secondary: #ff8c42;
+  --pn-secondary-soft: rgba(255, 140, 66, 0.20);
+  --pn-group: #c084fc;
+  --pn-group-soft: rgba(192, 132, 252, 0.18);
+  --pn-cyan: #00ff9f;
+  --pn-cyan-soft: rgba(0, 255, 159, 0.12);
+  --pn-danger: #ff4d6d;
+  --pn-warning: #e8b84a;
+  --pn-info: #6aff91;
+
+  /* --- Patch canvas specific --- */
+  --pn-cable: #6aff91;
+  --pn-cable-audio: #ff8c42;
+  --pn-cable-selected: #00ff9f;
+  --pn-object-bg: #0d1210;
+  --pn-object-border: rgba(106, 255, 145, 0.20);
+  --pn-object-border-active: #6aff91;
+  --pn-port-in: rgba(106, 255, 145, 0.55);
+  --pn-port-out: #6aff91;
+  --pn-canvas-grid: rgba(106, 255, 145, 0.045);
+
+  /* --- Shadows & depth --- */
+  --pn-shadow-inset: inset 0 1px 0 rgba(106, 255, 145, 0.05);
+  --pn-shadow-panel: 0 18px 56px rgba(0, 0, 0, 0.70);
+  --pn-shadow-soft: 0 4px 24px rgba(0, 0, 0, 0.50);
+  --pn-shadow-halo: inset 0 1px 0 rgba(106, 255, 145, 0.06),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+
+  /* --- Interaction states --- */
+  --pn-hover: rgba(106, 255, 145, 0.04);
+  --pn-hover-accent: rgba(106, 255, 145, 0.08);
+  --pn-active: rgba(106, 255, 145, 0.07);
+  --pn-active-accent: rgba(106, 255, 145, 0.14);
+  --pn-focus-ring: 0 0 0 2px var(--pn-accent);
+
+  --pn-font-mono: "Vulf Mono", monospace;
+  --pn-font-sans: "Vulf Sans", sans-serif;
+
+  --pn-type-display: 2rem;
+  --pn-type-title: 1.25rem;
+  --pn-type-heading: 1.0625rem;
+  --pn-type-body: 0.9375rem;
+  --pn-type-ui: 0.875rem;
+  --pn-type-helper: 0.8125rem;
+  --pn-type-chip: 0.75rem;
+  --pn-type-micro: 0.6875rem;
+
+  --pn-type-object-label: 0.6875rem;
+  --pn-type-object-name: 0.75rem;
+
+  --pn-space-1: 2px;
+  --pn-space-2: 4px;
+  --pn-space-3: 6px;
+  --pn-space-4: 8px;
+  --pn-space-5: 12px;
+  --pn-space-6: 16px;
+  --pn-space-7: 20px;
+  --pn-space-8: 24px;
+  --pn-space-9: 32px;
+  --pn-space-10: 48px;
+
+  --pn-radius-xs: 3px;
+  --pn-radius-sm: 6px;
+  --pn-radius-md: 10px;
+  --pn-radius-lg: 14px;
+  --pn-radius-pill: 9999px;
+
+  --pn-object-radius: 4px;
+  --pn-port-size: 8px;
+  --pn-port-radius: 50%;
+
+  --pn-attrui-header-h: 22px;
+  --pn-attrui-row-h: 24px;
+}

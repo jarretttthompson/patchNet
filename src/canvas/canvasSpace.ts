@@ -1,0 +1,2 @@
+export const CANVAS_TOP_GUTTER_PX = 1200;
+export const CANVAS_LEFT_GUTTER_PX = 1200;
