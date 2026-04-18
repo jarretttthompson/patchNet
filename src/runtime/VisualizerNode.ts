@@ -1,4 +1,5 @@
 import type { LayerNode } from "./LayerNode";
+import type { IRenderContext } from "./IRenderContext";
 
 /**
  * VisualizerNode — manages one named popup render window.
@@ -10,7 +11,7 @@ import type { LayerNode } from "./LayerNode";
  * Priority semantics: lower number = drawn first (background).
  *                     Higher number = drawn last (foreground / on top).
  */
-export class VisualizerNode {
+export class VisualizerNode implements IRenderContext {
   private popup: Window | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
@@ -131,7 +132,13 @@ export class VisualizerNode {
     // but the focus handler stays registered — no popup to focus is harmless.
   }
 
-  moveTo(x: number, y: number): void   { this.popup?.moveTo(x, y); }
+  moveTo(x: number, y: number): void { this.popup?.moveTo(x, y); }
+
+  /** Set dimensions before open() so the popup is created at the right size. */
+  setDimensions(w: number, h: number): void {
+    this.width  = w;
+    this.height = h;
+  }
 
   resizeTo(w: number, h: number): void {
     this.width  = w;

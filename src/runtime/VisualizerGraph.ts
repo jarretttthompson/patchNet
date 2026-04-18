@@ -62,9 +62,14 @@ export class VisualizerGraph {
     if (!vn) return;
     switch (selector) {
       case "bang": {
-        vn.open();
         const pnBang = this.graph.nodes.get(nodeId);
-        if (pnBang) { pnBang.args[2] = "1"; this.graph.emit("change"); }
+        if (vn.isOpen()) {
+          vn.close();
+          if (pnBang) { pnBang.args[2] = "0"; this.graph.emit("change"); }
+        } else {
+          this.openAndRestore(nodeId, vn);
+          if (pnBang) { pnBang.args[2] = "1"; this.graph.emit("change"); }
+        }
         break;
       }
       case "close": {
@@ -95,7 +100,7 @@ export class VisualizerGraph {
       case "open": {
         const pnOpen = this.graph.nodes.get(nodeId);
         if ((args[0] ?? "1") !== "0") {
-          vn.open();
+          this.openAndRestore(nodeId, vn);
           if (pnOpen) { pnOpen.args[2] = "1"; this.graph.emit("change"); }
         } else {
           vn.close();
@@ -244,7 +249,11 @@ export class VisualizerGraph {
       if (!activeIds.has(id)) { vfx.destroy(); this.vfxBlurNodes.delete(id); }
     }
     for (const [id, pvn] of this.patchVizNodes) {
-      if (!activeIds.has(id)) { pvn.destroy(); this.patchVizNodes.delete(id); }
+      if (!activeIds.has(id)) {
+        this.runtime.unregister(pvn.contextName);
+        pvn.destroy();
+        this.patchVizNodes.delete(id);
+      }
     }
 
     // ── Create new nodes ────────────────────────────────────────────
@@ -282,16 +291,7 @@ export class VisualizerGraph {
 
         // Restore open state — defer one tick so the page is interactive
         if ((node.args[2] ?? "0") === "1") {
-          setTimeout(() => {
-            vn.open();
-            // Restore last known position and size after opening
-            const sx = parseInt(node.args[3] ?? "", 10);
-            const sy = parseInt(node.args[4] ?? "", 10);
-            const sw = parseInt(node.args[5] ?? "", 10);
-            const sh = parseInt(node.args[6] ?? "", 10);
-            if (!isNaN(sx) && !isNaN(sy)) vn.moveTo(sx, sy);
-            if (!isNaN(sw) && !isNaN(sh)) vn.resizeTo(sw, sh);
-          }, 150);
+          setTimeout(() => this.openAndRestore(node.id, vn), 150);
         }
       }
 
@@ -416,14 +416,28 @@ export class VisualizerGraph {
       }
 
       if (node.type === "patchViz" && !this.patchVizNodes.has(node.id)) {
-        this.patchVizNodes.set(node.id, new PatchVizNode(node.args[0] ?? "world1"));
+        const contextName = node.args[0] ?? "world1";
+        const pvn = new PatchVizNode(contextName);
+        if ((node.args[1] ?? "1") === "0") pvn.disable();
+        this.patchVizNodes.set(node.id, pvn);
+        this.runtime.register(contextName, pvn);
       }
     }
 
-    // ── Update patchViz context name in case args changed ──────────
+    // ── Update patchViz context name and enabled state in case args changed ──
     for (const [id, pvn] of this.patchVizNodes) {
       const pn = this.graph.nodes.get(id);
-      if (pn) pvn.contextName = pn.args[0] ?? "world1";
+      if (!pn) continue;
+      const newName = pn.args[0] ?? "world1";
+      if (pvn.contextName !== newName) {
+        this.runtime.unregister(pvn.contextName);
+        pvn.contextName = newName;
+        this.runtime.register(newName, pvn);
+      }
+      const shouldBeEnabled = (pn.args[1] ?? "1") !== "0";
+      if (pvn.enabled !== shouldBeEnabled) {
+        shouldBeEnabled ? pvn.enable() : pvn.disable();
+      }
     }
 
     // ── Update mutable state on existing nodes ──────────────────────
@@ -477,8 +491,9 @@ export class VisualizerGraph {
   }
 
   private rewireMedia(): void {
-    // Detach every layer from every visualizer
+    // Detach every layer from every render context (popup and inline)
     for (const vn of this.vizNodes.values()) vn.clearLayers();
+    for (const pvn of this.patchVizNodes.values()) pvn.clearLayers();
 
     // ── Wire imageFX inputs from upstream mediaImage ────────────────
     for (const [patchId, fx] of this.imageFXNodes) {
@@ -565,10 +580,41 @@ export class VisualizerGraph {
         }
       }
 
-      // Register layer with its target visualizer
+      // Register layer with every render context sharing this name
       const contextName = patchNode.args[0] ?? "world1";
-      const vn = this.runtime.get(contextName) ?? this.runtime.getFirst();
-      if (vn) vn.addLayer(layer);
+      let layerAdded = false;
+      for (const vn of this.vizNodes.values()) {
+        if (vn.name === contextName) { vn.addLayer(layer); layerAdded = true; }
+      }
+      for (const pvn of this.patchVizNodes.values()) {
+        if (pvn.contextName === contextName) { pvn.addLayer(layer); layerAdded = true; }
+      }
+      if (!layerAdded) {
+        const fallback = this.runtime.getFirst();
+        if (fallback) fallback.addLayer(layer);
+      }
+    }
+  }
+
+  deliverPatchVizMessage(nodeId: string, selector: string, _args: string[]): void {
+    const pvn = this.patchVizNodes.get(nodeId);
+    const pn  = this.graph.nodes.get(nodeId);
+    if (!pvn) return;
+    switch (selector) {
+      case "bang":
+        pvn.toggle();
+        if (pn) { pn.args[1] = pvn.enabled ? "1" : "0"; this.graph.emit("change"); }
+        break;
+      case "enable":
+        pvn.enable();
+        if (pn) { pn.args[1] = "1"; this.graph.emit("change"); }
+        break;
+      case "disable":
+        pvn.disable();
+        if (pn) { pn.args[1] = "0"; this.graph.emit("change"); }
+        break;
+      default:
+        this.runtime.register(pvn.contextName, pvn);
     }
   }
 
@@ -803,6 +849,26 @@ export class VisualizerGraph {
       if (edge.fromNodeId !== patchNodeId || edge.fromOutlet !== outletIndex) continue;
       const target = this.graph.nodes.get(edge.toNodeId);
       if (target) this.objectInteraction.deliverMessageValue(target, edge.toInlet, str);
+    }
+  }
+
+  // ── Open helpers ─────────────────────────────────────────────────
+
+  private openAndRestore(nodeId: string, vn: VisualizerNode): void {
+    const pn = this.graph.nodes.get(nodeId);
+    if (pn) {
+      // Pre-set inner dimensions so window.open() features use the saved size.
+      // This avoids calling resizeTo() after open, which takes outer dimensions
+      // and causes a shrink-on-each-reopen feedback loop via the resize event.
+      const sw = parseInt(pn.args[5] ?? "", 10);
+      const sh = parseInt(pn.args[6] ?? "", 10);
+      if (!isNaN(sw) && !isNaN(sh)) vn.setDimensions(sw, sh);
+    }
+    vn.open();
+    if (pn) {
+      const sx = parseInt(pn.args[3] ?? "", 10);
+      const sy = parseInt(pn.args[4] ?? "", 10);
+      if (!isNaN(sx) && !isNaN(sy)) vn.moveTo(sx, sy);
     }
   }
 

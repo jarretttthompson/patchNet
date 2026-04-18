@@ -36,6 +36,26 @@ export interface ObjectSpec {
   defaultHeight: number;
 }
 
+function mathOpDef(description: string, outLabel: string): ObjectSpec {
+  return {
+    description,
+    category: "control",
+    args: [{ name: "value", type: "float", default: "0", description: "Right operand (cold)." }],
+    messages: [
+      { inlet: 0, selector: "float", description: "set left operand, compute, and output" },
+      { inlet: 0, selector: "bang",  description: "recompute with stored operands and output" },
+      { inlet: 1, selector: "float", description: "set right operand (no output)" },
+    ],
+    inlets: [
+      { index: 0, type: "float", label: "left operand (hot)",  temperature: "hot"  },
+      { index: 1, type: "float", label: "right operand (cold)", temperature: "cold" },
+    ],
+    outlets: [{ index: 0, type: "float", label: outLabel }],
+    defaultWidth: 60,
+    defaultHeight: 40,
+  };
+}
+
 export const OBJECT_DEFS: Record<string, ObjectSpec> = {
   button: {
     description: "Momentary trigger that flashes and sends a bang.",
@@ -62,8 +82,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     inlets:  [{ index: 0, type: "any",   label: "bang: flip  |  float: set  |  value 0|1",  temperature: "hot" }],
     outlets: [{ index: 0, type: "float", label: "state (0 or 1)" }],
-    defaultWidth: 40,
-    defaultHeight: 40,
+    defaultWidth: 64,
+    defaultHeight: 80,
   },
 
   slider: {
@@ -184,9 +204,24 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { index: 4, type: "float", label: "output high",     temperature: "cold" },
     ],
     outlets: [{ index: 0, type: "float", label: "scaled value" }],
-    defaultWidth: 120,
+    defaultWidth: 180,
     defaultHeight: 40,
   },
+
+  // ── Arithmetic operators ────────────────────────────────────────────────────
+  "+":  mathOpDef("Add two numbers.",      "sum"),
+  "-":  mathOpDef("Subtract two numbers.", "difference"),
+  "*":  mathOpDef("Multiply two numbers.", "product"),
+  "/":  mathOpDef("Divide two numbers.",   "quotient"),
+  "%":  mathOpDef("Modulo of two numbers.", "remainder"),
+
+  // ── Comparison operators ────────────────────────────────────────────────────
+  "==": mathOpDef("Output 1 if left equals right, else 0.",          "0 or 1"),
+  "!=": mathOpDef("Output 1 if left does not equal right, else 0.",  "0 or 1"),
+  ">":  mathOpDef("Output 1 if left is greater than right, else 0.", "0 or 1"),
+  "<":  mathOpDef("Output 1 if left is less than right, else 0.",    "0 or 1"),
+  ">=": mathOpDef("Output 1 if left >= right, else 0.", "0 or 1"),
+  "<=": mathOpDef("Output 1 if left <= right, else 0.", "0 or 1"),
 
   "click~": {
     description: "Triggerable click signal source.",
@@ -210,7 +245,40 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     outlets: [],
     defaultWidth: 80,
-    defaultHeight: 40,
+    defaultHeight: 64,
+  },
+
+  "fft~": {
+    description: "FFT spectrum analyzer. Displays a spectrogram and outputs 4 band levels: low, low-mid, hi-mid, hi.",
+    category: "audio",
+    args: [],
+    messages: [],
+    inlets: [
+      { index: 0, type: "signal", label: "left channel in" },
+      { index: 1, type: "signal", label: "right channel in" },
+    ],
+    outlets: [
+      { index: 0, type: "float", label: "low (20–250 Hz)" },
+      { index: 1, type: "float", label: "low-mid (250–2k Hz)" },
+      { index: 2, type: "float", label: "hi-mid (2k–6k Hz)" },
+      { index: 3, type: "float", label: "hi (6k–20k Hz)" },
+    ],
+    defaultWidth:  160,
+    defaultHeight: 200,
+  },
+
+  "adc~": {
+    description: "Audio input source. Captures from the selected input device.",
+    category: "audio",
+    args: [],
+    messages: [],
+    inlets: [],
+    outlets: [
+      { index: 0, type: "signal", label: "left channel out" },
+      { index: 1, type: "signal", label: "right channel out" },
+    ],
+    defaultWidth: 80,
+    defaultHeight: 64,
   },
 
   codebox: {
@@ -254,7 +322,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
         description: "Console height — inner height of the popup (pixels); scales the render surface." },
     ],
     messages: [
-      { inlet: 0, selector: "bang",    description: "open / show the popup window" },
+      { inlet: 0, selector: "bang",    description: "toggle open/close" },
       { inlet: 0, selector: "open",    description: "open/close: open 1 = show, open 0 = hide" },
       { inlet: 0, selector: "close",   description: "hide the popup window" },
       { inlet: 0, selector: "size",    description: "resize window: size <w> <h>" },
@@ -265,7 +333,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { inlet: 0, selector: "winW",    description: "set window width: winW <px>" },
       { inlet: 0, selector: "winH",    description: "set window height: winH <px>" },
     ],
-    inlets:  [{ index: 0, type: "any",  label: "bang | close | size w h | pos x y | float 0|1" }],
+    inlets:  [{ index: 0, type: "any",  label: "1: open  |  0: close  |  bang: toggle  |  size w h  |  pos x y" }],
     outlets: [
       { index: 0, type: "bang", label: "bang: window opened" },
       { index: 1, type: "bang", label: "bang: window closed" },
@@ -483,16 +551,21 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
   },
 
   patchViz: {
-    description: "Embeds a live preview of a named visualizer render context directly in the patch.",
+    description: "Inline render context — layers targeting this context name composite directly into the patch canvas.",
     category: "visual",
     args: [
       { name: "context", type: "symbol", default: "world1",
-        description: "Render context name to mirror (must match a visualizer object's name)." },
+        description: "Render context name (layers targeting this name will render into this object)." },
+      { name: "enabled", type: "int", default: "1", min: 0, max: 1, step: 1,
+        description: "1 = rendering active, 0 = canvas dark." },
     ],
     messages: [
+      { inlet: 0, selector: "bang",    description: "toggle enabled state" },
       { inlet: 0, selector: "context", description: "set context name: context <name>" },
     ],
-    inlets:  [],
+    inlets:  [
+      { index: 0, type: "any", label: "1: enable  |  0: disable  |  bang: toggle", temperature: "hot" },
+    ],
     outlets: [],
     defaultWidth:  320,
     defaultHeight: 240,

@@ -2,6 +2,21 @@ import { renderPorts } from "./PortRenderer";
 import { getObjectDef, OBJECT_DEFS, getVisibleArgs, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
 import type { PatchNode } from "../graph/PatchNode";
 
+const MATH_OPS = new Set(["+", "-", "*", "/", "%", "==", "!=", ">", "<", ">=", "<="]);
+
+const SVG_SPEAKER = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <polygon points="2,7 2,13 6,13 11,16.5 11,3.5 6,7" fill="currentColor"/>
+  <path d="M13 7 Q15.5 10 13 13" stroke="currentColor" fill="none" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M15 5 Q19 10 15 15" stroke="currentColor" fill="none" stroke-width="1.6" stroke-linecap="round"/>
+</svg>`;
+
+const SVG_MIC = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="7" y="1" width="6" height="10" rx="3" fill="currentColor"/>
+  <path d="M4 10 Q4 17 10 17 Q16 17 16 10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  <line x1="10" y1="17" x2="10" y2="19.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  <line x1="7" y1="19.5" x2="13" y2="19.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+</svg>`;
+
 function buildAttributeBody(node: PatchNode): HTMLDivElement {
   const wrap = document.createElement("div");
   wrap.className = "pn-attrui";
@@ -253,7 +268,8 @@ function buildBody(node: PatchNode): HTMLDivElement {
     body.appendChild(mount);
     const label = document.createElement("div");
     label.className = "pn-patchviz-label";
-    label.textContent = node.args[0] ?? "world1";
+    const enabled = (node.args[1] ?? "1") !== "0";
+    label.textContent = `${node.args[0] ?? "world1"} · ${enabled ? "on" : "off"}`;
     body.appendChild(label);
 
   } else if (node.type === "visualizer" || node.type === "mediaVideo" || node.type === "layer") {
@@ -306,11 +322,81 @@ function buildBody(node: PatchNode): HTMLDivElement {
     row.appendChild(channel);
     body.appendChild(row);
 
+  } else if (node.type === "fft~") {
+    body.classList.add("pn-fft-body");
+    body.innerHTML = `
+      <div class="pn-fft-device">
+        <div class="pn-fft-top-label">FFT·SCOPE</div>
+        <div class="pn-fft-screen-bezel">
+          <div class="pn-fft-screen">
+            <div class="pn-fft-mount" data-fft-node-id="${node.id}"></div>
+          </div>
+        </div>
+        <div class="pn-fft-bands">
+          <div class="pn-fft-band"><span class="pn-fft-band-label">LO</span><span class="pn-fft-band-val">0.00</span></div>
+          <div class="pn-fft-band"><span class="pn-fft-band-label">LM</span><span class="pn-fft-band-val">0.00</span></div>
+          <div class="pn-fft-band"><span class="pn-fft-band-label">HM</span><span class="pn-fft-band-val">0.00</span></div>
+          <div class="pn-fft-band"><span class="pn-fft-band-label">HI</span><span class="pn-fft-band-val">0.00</span></div>
+        </div>
+        <div class="pn-fft-controls">
+          <div class="pn-fft-dpad">
+            <div class="pn-fft-dpad-h"></div>
+            <div class="pn-fft-dpad-v"></div>
+          </div>
+          <div class="pn-fft-power-led"></div>
+          <div class="pn-fft-buttons">
+            <div class="pn-fft-btn pn-fft-btn-b">B</div>
+            <div class="pn-fft-btn pn-fft-btn-a">A</div>
+          </div>
+        </div>
+      </div>`;
+
+  } else if (node.type === "dac~" || node.type === "adc~") {
+    // Icon above meters
+    const icon = document.createElement("div");
+    icon.className = "pn-meter-icon";
+    icon.innerHTML = node.type === "dac~" ? SVG_SPEAKER : SVG_MIC;
+    body.appendChild(icon);
+
+    // Meter-only body — channels identified by L/R labels
+    const meters = document.createElement("div");
+    meters.className = "pn-meters";
+
+    for (const ch of ["l", "r"] as const) {
+      const wrap = document.createElement("div");
+      wrap.className = "pn-meter-col";
+
+      const track = document.createElement("div");
+      track.className = `pn-meter-track pn-meter-${ch}`;
+      const fill = document.createElement("div");
+      fill.className = "pn-meter-fill";
+      track.appendChild(fill);
+
+      const label = document.createElement("div");
+      label.className = "pn-meter-label";
+      label.textContent = ch.toUpperCase();
+
+      wrap.appendChild(track);
+      wrap.appendChild(label);
+      meters.appendChild(wrap);
+    }
+    body.appendChild(meters);
   } else {
-    // Logic/audio objects: keep text label
+    // All other objects: type label + optional args inline
     const title = document.createElement("div");
     title.className = "patch-object-title";
-    title.textContent = node.type;
+    if (node.type === "scale") {
+      const inLow   = node.args[0] ?? "0";
+      const inHigh  = node.args[1] ?? "1";
+      const outLow  = node.args[2] ?? "0";
+      const outHigh = node.args[3] ?? "127";
+      title.textContent = `scale ${inLow} ${inHigh} ${outLow} ${outHigh}`;
+    } else if (MATH_OPS.has(node.type)) {
+      const rightOp = node.args[0] ?? "0";
+      title.textContent = `${node.type} ${rightOp}`;
+    } else {
+      title.textContent = node.type;
+    }
     body.appendChild(title);
 
     if (node.type === "metro") {
@@ -322,11 +408,6 @@ function buildBody(node: PatchNode): HTMLDivElement {
       const glyph = document.createElement("div");
       glyph.className = "patch-object-meta patch-object-glyph";
       glyph.textContent = "~>";
-      body.appendChild(glyph);
-    } else if (node.type === "dac~") {
-      const glyph = document.createElement("div");
-      glyph.className = "patch-object-meta patch-object-glyph";
-      glyph.textContent = "L R";
       body.appendChild(glyph);
     }
   }

@@ -46,6 +46,18 @@ export class AudioRuntime {
     return devices.filter(d => d.kind === "audiooutput");
   }
 
+  /** Enumerate available audio input devices. Populated after getUserMedia permission is granted. */
+  async getInputDevices(): Promise<MediaDeviceInfo[]> {
+    if (!navigator.mediaDevices?.enumerateDevices) return [];
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.filter(d => d.kind === "audioinput");
+  }
+
+  private _inputDeviceId = "";
+
+  get inputDeviceId(): string { return this._inputDeviceId; }
+  set inputDeviceId(id: string) { this._inputDeviceId = id; }
+
   /** Route audio to a specific output device by deviceId. Chrome 110+ only. */
   async setOutputDevice(deviceId: string): Promise<void> {
     if (!this._context) return;

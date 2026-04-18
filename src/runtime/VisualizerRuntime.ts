@@ -1,9 +1,10 @@
-import type { VisualizerNode } from "./VisualizerNode";
+import type { IRenderContext } from "./IRenderContext";
 
 /**
- * VisualizerRuntime — singleton registry of active VisualizerNode popup windows.
+ * VisualizerRuntime — singleton registry of named render contexts.
  *
- * Any object that needs to find a named render context calls
+ * Contexts may be popup VisualizerNodes or inline PatchVizNodes.
+ * Any object that needs a render context calls
  * VisualizerRuntime.getInstance().get(name).
  */
 export class VisualizerRuntime {
@@ -16,9 +17,9 @@ export class VisualizerRuntime {
     return VisualizerRuntime._instance;
   }
 
-  private nodes = new Map<string, VisualizerNode>();
+  private nodes = new Map<string, IRenderContext>();
 
-  register(name: string, node: VisualizerNode): void {
+  register(name: string, node: IRenderContext): void {
     this.nodes.set(name, node);
   }
 
@@ -26,12 +27,12 @@ export class VisualizerRuntime {
     this.nodes.delete(name);
   }
 
-  get(name: string): VisualizerNode | undefined {
+  get(name: string): IRenderContext | undefined {
     return this.nodes.get(name);
   }
 
-  /** Returns the first registered node, or undefined. Used as the default target. */
-  getFirst(): VisualizerNode | undefined {
+  /** Returns the first registered context, or undefined. Used as the default target. */
+  getFirst(): IRenderContext | undefined {
     return this.nodes.values().next().value;
   }
 

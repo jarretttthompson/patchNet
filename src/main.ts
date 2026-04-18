@@ -42,6 +42,7 @@ const statusMode = requireElement<HTMLSpanElement>("[data-status-mode]");
 const audioStatus     = document.getElementById("audio-status") as HTMLSpanElement | null;
 const audioToggleBtn  = document.getElementById("audio-toggle-btn") as HTMLButtonElement | null;
 const audioDeviceSel  = document.getElementById("audio-device-select") as HTMLSelectElement | null;
+const audioInputSel   = document.getElementById("audio-input-select") as HTMLSelectElement | null;
 const masterVolSlider = document.getElementById("master-vol") as HTMLInputElement | null;
 const masterVolReadout = document.getElementById("master-vol-readout") as HTMLSpanElement | null;
 
@@ -146,16 +147,92 @@ function setDspUi(on: boolean): void {
 }
 
 async function populateDevices(): Promise<void> {
-  if (!audioDeviceSel) return;
-  const devices = await audioRuntime.getOutputDevices();
-  // Clear existing options beyond the default
-  while (audioDeviceSel.options.length > 1) audioDeviceSel.remove(1);
-  for (const d of devices) {
-    const opt = document.createElement("option");
-    opt.value = d.deviceId;
-    opt.textContent = d.label || `Output ${audioDeviceSel.options.length}`;
-    audioDeviceSel.appendChild(opt);
+  if (audioDeviceSel) {
+    const outputs = await audioRuntime.getOutputDevices();
+    while (audioDeviceSel.options.length > 1) audioDeviceSel.remove(1);
+    for (const d of outputs) {
+      const opt = document.createElement("option");
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Output ${audioDeviceSel.options.length}`;
+      audioDeviceSel.appendChild(opt);
+    }
   }
+  if (audioInputSel) {
+    const inputs = await audioRuntime.getInputDevices();
+    while (audioInputSel.options.length > 1) audioInputSel.remove(1);
+    for (const d of inputs) {
+      const opt = document.createElement("option");
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Input ${audioInputSel.options.length}`;
+      audioInputSel.appendChild(opt);
+    }
+  }
+}
+
+let meterRafId = 0;
+
+function startMeterLoop(): void {
+  panGroup.querySelectorAll<HTMLElement>('[data-node-type="fft~"]').forEach(
+    el => el.setAttribute("data-dsp-active", "true"),
+  );
+  const tick = () => {
+    meterRafId = requestAnimationFrame(tick);
+    if (!audioGraph) return;
+    audioGraph.mountFftNodes(panGroup);
+    audioGraph.updateFftDisplay(panGroup);
+
+    // Push fft~ band values: update the directly-connected node's display,
+    // then fire its outlet so the full downstream chain propagates.
+    // Avoids graph.emit (no 60fps re-render) and avoids template contamination
+    // in message boxes (deliverMessageValue would lock node.args to first value).
+    const fftBands = audioGraph.getFftBandLevels();
+    for (const [nodeId, bands] of fftBands) {
+      for (const edge of graph.getEdges()) {
+        if (edge.fromNodeId !== nodeId) continue;
+        const val = bands[edge.fromOutlet];
+        if (val === undefined) continue;
+        const formatted = val.toFixed(4);
+        const targetNode = graph.nodes.get(edge.toNodeId);
+        if (targetNode) targetNode.args[0] = formatted;
+        const contentEl = panGroup.querySelector(
+          `[data-node-id="${edge.toNodeId}"] .patch-object-message-content`,
+        );
+        if (contentEl) contentEl.textContent = formatted;
+        // Fire the target node's outlet so downstream chains receive the value.
+        objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+      }
+    }
+    const levels = audioGraph.getMeterLevels();
+    for (const [nodeId, info] of levels) {
+      const el = panGroup.querySelector<HTMLElement>(`[data-node-id="${nodeId}"]`);
+      if (!el) continue;
+      const combined = Math.min(info.level * 4, 1);
+      el.style.setProperty("--pn-meter", String(combined));
+      if (info.l !== undefined) {
+        const lv = Math.min(info.l * 4, 1);
+        const fillL = el.querySelector<HTMLElement>(".pn-meter-l .pn-meter-fill");
+        if (fillL) fillL.style.height = `${lv * 100}%`;
+      }
+      if (info.r !== undefined) {
+        const lv = Math.min(info.r * 4, 1);
+        const fillR = el.querySelector<HTMLElement>(".pn-meter-r .pn-meter-fill");
+        if (fillR) fillR.style.height = `${lv * 100}%`;
+      }
+    }
+  };
+  meterRafId = requestAnimationFrame(tick);
+}
+
+function stopMeterLoop(): void {
+  cancelAnimationFrame(meterRafId);
+  meterRafId = 0;
+  panGroup.querySelectorAll<HTMLElement>('[data-node-type="fft~"]').forEach(
+    el => el.removeAttribute("data-dsp-active"),
+  );
+  panGroup.querySelectorAll<HTMLElement>('[data-node-type$="~"]').forEach(el => {
+    el.style.setProperty("--pn-meter", "0");
+    el.querySelectorAll<HTMLElement>(".pn-meter-fill").forEach(f => { f.style.height = "0%"; });
+  });
 }
 
 async function startAudio(): Promise<void> {
@@ -163,10 +240,13 @@ async function startAudio(): Promise<void> {
   audioGraph = new AudioGraph(audioRuntime, graph);
   objectInteraction.setAudioGraph(audioGraph);
   await populateDevices();
+  audioGraph.mountFftNodes(panGroup);
+  startMeterLoop();
   setDspUi(true);
 }
 
 async function stopAudio(): Promise<void> {
+  stopMeterLoop();
   audioGraph?.destroy();
   audioGraph = null;
   objectInteraction.setAudioGraph(undefined);
@@ -179,9 +259,14 @@ audioToggleBtn?.addEventListener("click", () => {
   if (!dspOn) startAudio(); else stopAudio();
 });
 
-// Device selector
+// Output device selector
 audioDeviceSel?.addEventListener("change", () => {
   audioRuntime.setOutputDevice(audioDeviceSel.value);
+});
+
+// Input device selector
+audioInputSel?.addEventListener("change", () => {
+  audioGraph?.setInputDevice(audioInputSel.value);
 });
 
 // Master volume slider
@@ -235,6 +320,9 @@ function render(): void {
 
   // Mount patchViz live canvases into their DOM slots
   vizGraph.mountPatchViz(panGroup);
+
+  // Mount fft~ canvases into their screen slots
+  audioGraph?.mountFftNodes(panGroup);
 
   // Restore selection visual on re-render
   for (const id of canvas.getSelectedNodeIds()) {

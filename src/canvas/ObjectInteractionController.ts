@@ -5,6 +5,7 @@ import type { CodeboxController } from "./CodeboxController";
 import type { VisualizerGraph } from "../runtime/VisualizerGraph";
 import {
   OBJECT_DEFS,
+  getObjectDef,
   syncAttributeNode,
   resetAttributeNode,
   buildArgMessage,
@@ -56,6 +57,7 @@ export class ObjectInteractionController {
   private readonly onAttrInput: (e: Event) => void;
   private readonly onAttrChange: (e: Event) => void;
   private readonly metroTimers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly mathLeftOps = new Map<string, number>();
   private codeboxController?: CodeboxController;
   private visualizerGraph?: VisualizerGraph;
   private attrDragging = false;
@@ -191,6 +193,8 @@ export class ObjectInteractionController {
       this.handleMessageClick(node);
     } else if (node.type === "visualizer") {
       this.visualizerGraph?.deliverMessage(node.id, "bang", []);
+    } else if (node.type === "patchViz") {
+      this.visualizerGraph?.deliverPatchVizMessage(node.id, "bang", []);
     }
   }
 
@@ -210,6 +214,11 @@ export class ObjectInteractionController {
       if (!target) continue;
       this.deliverBang(target, edge.toInlet);
     }
+  }
+
+  /** Route a value from a node outlet to all connected inlets. */
+  fireOutlet(fromNodeId: string, fromOutlet: number, value: string): void {
+    this.dispatchValue(fromNodeId, fromOutlet, value);
   }
 
   private dispatchValue(fromNodeId: string, fromOutlet: number, value: string): void {
@@ -267,6 +276,10 @@ export class ObjectInteractionController {
         if (inlet === 0) this.visualizerGraph?.deliverMessage(node.id, "bang", []);
         break;
 
+      case "patchViz":
+        if (inlet === 0) this.visualizerGraph?.deliverPatchVizMessage(node.id, "bang", []);
+        break;
+
       case "mediaVideo":
         if (inlet === 0) this.visualizerGraph?.deliverMediaMessage(node.id, "mediaVideo", "bang", []);
         break;
@@ -291,6 +304,15 @@ export class ObjectInteractionController {
 
       case "scale":
         break; // bang has no effect on scale
+
+      case "+": case "-": case "*": case "/": case "%":
+      case "==": case "!=": case ">": case "<": case ">=": case "<=":
+        if (inlet === 0) {
+          const left  = this.mathLeftOps.get(node.id) ?? 0;
+          const right = parseFloat(node.args[0] ?? "0");
+          this.dispatchValue(node.id, 0, String(this.applyMathOp(node.type, left, right)));
+        }
+        break;
 
       case "s":
         if (inlet === 0) this.broadcastToReceivers(node.args[0] ?? "", n => this.dispatchBang(n.id, 0));
@@ -370,7 +392,12 @@ export class ObjectInteractionController {
           const tokens   = value.trim().split(/\s+/);
           const selector = tokens[0] ?? "";
           const args     = tokens.slice(1);
-          this.visualizerGraph?.deliverMessage(node.id, selector, args);
+          // Plain float: nonzero = open, zero = close (jit.world style)
+          if (tokens.length === 1 && !isNaN(parseFloat(selector))) {
+            this.visualizerGraph?.deliverMessage(node.id, "open", [parseFloat(selector) !== 0 ? "1" : "0"]);
+          } else {
+            this.visualizerGraph?.deliverMessage(node.id, selector, args);
+          }
         }
         break;
 
@@ -438,6 +465,26 @@ export class ObjectInteractionController {
         break;
       }
 
+      case "+": case "-": case "*": case "/": case "%":
+      case "==": case "!=": case ">": case "<": case ">=": case "<=": {
+        if (inlet === 0) {
+          const left = parseFloat(value);
+          if (!isNaN(left)) {
+            this.mathLeftOps.set(node.id, left);
+            const right = parseFloat(node.args[0] ?? "0");
+            const result = this.applyMathOp(node.type, left, right);
+            this.dispatchValue(node.id, 0, String(result));
+          }
+        } else if (inlet === 1) {
+          const right = parseFloat(value);
+          if (!isNaN(right)) {
+            node.args[0] = String(right);
+            this.updateMathOpTitle(node.id, node.type, right);
+          }
+        }
+        break;
+      }
+
       case "s":
         if (inlet === 0) this.broadcastToReceivers(node.args[0] ?? "", n => this.dispatchValue(n.id, 0, value));
         break;
@@ -449,6 +496,20 @@ export class ObjectInteractionController {
         break;
 
       case "mediaImage":
+        break;
+
+      case "patchViz":
+        if (inlet === 0) {
+          const tokens   = value.trim().split(/\s+/);
+          const selector = tokens[0] ?? "";
+          const args     = tokens.slice(1);
+          // Plain float: nonzero = enable, zero = disable
+          if (tokens.length === 1 && !isNaN(parseFloat(selector))) {
+            this.visualizerGraph?.deliverPatchVizMessage(node.id, parseFloat(selector) !== 0 ? "enable" : "disable", []);
+          } else {
+            this.visualizerGraph?.deliverPatchVizMessage(node.id, selector, args);
+          }
+        }
         break;
 
       case "imageFX":
@@ -866,7 +927,18 @@ export class ObjectInteractionController {
       return;
     }
 
-    if (node.type !== "message") return;
+    if (node.type !== "message") {
+      // Any object whose body renders a .patch-object-title can have its args
+      // edited inline on double-click (Max-style).
+      const titleEl = objectEl.querySelector<HTMLElement>(".patch-object-title");
+      const def = OBJECT_DEFS[node.type];
+      if (titleEl && def) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.beginArgEdit(objectEl, node, titleEl);
+      }
+      return;
+    }
 
     e.preventDefault();
     e.stopPropagation();
@@ -880,6 +952,70 @@ export class ObjectInteractionController {
     const node = this.getNode(objectEl);
     if (!node || node.type !== "message") return;
     this.beginMessageEdit(objectEl, node);
+  }
+
+  private beginArgEdit(objectEl: HTMLElement, node: PatchNode, titleEl: HTMLElement): void {
+    const originalText = titleEl.textContent ?? node.type;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "patch-object-title-input";
+    // Pre-fill: "type arg1 arg2 ..."
+    input.value = node.args.length ? `${node.type} ${node.args.join(" ")}` : node.type;
+    titleEl.textContent = "";
+    titleEl.appendChild(input);
+    objectEl.classList.add("patch-object--editing");
+    input.focus();
+    input.select();
+
+    let settled = false;
+
+    const commit = () => {
+      if (settled) return;
+      settled = true;
+      objectEl.classList.remove("patch-object--editing");
+
+      const tokens = input.value.trim().split(/\s+/).filter(Boolean);
+      if (!tokens.length) { this.graph.emit("change"); return; }
+
+      const newType = tokens[0];
+      const newArgs = tokens.slice(1);
+
+      if (newType !== node.type && OBJECT_DEFS[newType]) {
+        // Type changed to a valid type — swap ports from the new def
+        const newDef = getObjectDef(newType);
+        node.type = newType;
+        node.args = newArgs;
+        node.inlets  = newDef.inlets.map(p => ({ ...p }));
+        node.outlets = newDef.outlets.map(p => ({ ...p }));
+        // Remove edges that now reference out-of-range ports
+        for (const edge of this.graph.getEdges()) {
+          const isFromThis = edge.fromNodeId === node.id;
+          const isToThis   = edge.toNodeId   === node.id;
+          if (isFromThis && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
+          if (isToThis   && edge.toInlet    >= node.inlets.length)  this.graph.removeEdge(edge.id);
+        }
+      } else {
+        // Same type (or invalid new type) — just update args
+        node.args = newArgs;
+      }
+
+      this.graph.emit("change");
+    };
+
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      objectEl.classList.remove("patch-object--editing");
+      titleEl.textContent = originalText;
+    };
+
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+      else if (ev.key === "Escape") { ev.preventDefault(); cancel(); }
+      ev.stopPropagation();
+    });
+    input.addEventListener("blur", commit);
   }
 
   private beginMessageEdit(objectEl: HTMLElement, node: PatchNode): void {
@@ -941,15 +1077,41 @@ export class ObjectInteractionController {
     }
 
     if (inlet !== 0) {
+      // Right-hand inlets: store incoming value and update display
       this.setStoredMessage(node, value);
       return;
     }
 
     const template = this.getStoredMessage(node);
-    const values = value.trim() === "" ? [] : value.trim().split(/\s+/);
-    const resolved = applyDollarArgs(template, values);
+    const isBang = value.trim() === "";
+    const values = isBang ? [] : value.trim().split(/\s+/);
+
+    // Only treat the stored string as a template when it has $1/$2/… vars.
+    // A box with a plain literal (no $ vars) acts as pass-through on inlet 0;
+    // a bang into a literal box sends the literal; an empty box passes through.
+    const hasDollarVars = /\$\d/.test(template);
+    const effectiveTemplate = hasDollarVars
+      ? template                          // substitute into template
+      : (isBang ? template : value.trim()); // bang → send stored literal; value → pass through
+
+    const resolved = applyDollarArgs(effectiveTemplate, values);
+
+    // Update args + DOM whenever the displayed value changes
+    if (resolved !== (node.args[0] ?? "")) {
+      node.args = resolved ? [resolved] : [];
+      this.updateMessageDom(node.id, resolved);
+    }
+
     this.dispatchMessageContent(node, resolved);
     this.flashButton(node.id);
+  }
+
+  /** Update the message box DOM without emitting a change event. */
+  private updateMessageDom(nodeId: string, content: string): void {
+    const el = this.panGroup.querySelector<HTMLElement>(
+      `[data-node-id="${nodeId}"] .patch-object-message-content`,
+    );
+    if (el) el.textContent = content;
   }
 
   private dispatchStoredMessage(node: PatchNode): void {
@@ -1006,12 +1168,37 @@ export class ObjectInteractionController {
     return null;
   }
 
+  private applyMathOp(op: string, left: number, right: number): number {
+    switch (op) {
+      case "+":  return left + right;
+      case "-":  return left - right;
+      case "*":  return left * right;
+      case "/":  return right === 0 ? 0 : left / right;
+      case "%":  return right === 0 ? 0 : left % right;
+      case "==": return left === right ? 1 : 0;
+      case "!=": return left !== right ? 1 : 0;
+      case ">":  return left >  right  ? 1 : 0;
+      case "<":  return left <  right  ? 1 : 0;
+      case ">=": return left >= right  ? 1 : 0;
+      case "<=": return left <= right  ? 1 : 0;
+      default:   return 0;
+    }
+  }
+
+  private updateMathOpTitle(nodeId: string, op: string, rightOp: number): void {
+    const el = this.panGroup.querySelector<HTMLElement>(
+      `[data-node-id="${nodeId}"] .patch-object-title`,
+    );
+    if (el) el.textContent = `${op} ${rightOp}`;
+  }
+
   private getStoredMessage(node: PatchNode): string {
     return node.args[0] ?? "";
   }
 
   private setStoredMessage(node: PatchNode, content: string): void {
     node.args = content ? [content] : [];
+    this.updateMessageDom(node.id, content);
     this.graph.emit("change");
   }
 

@@ -876,6 +876,102 @@ body {
   opacity: 0.8;
 }
 
+/* signal objects (~) — live metering glow + warm color shift at high levels */
+.patch-object[data-node-type$="~"] {
+  --pn-meter: 0;
+  border-color: color-mix(in srgb, #ffb432 calc(var(--pn-meter) * 70%), var(--pn-accent));
+  box-shadow:
+    var(--pn-shadow-soft),
+    var(--pn-shadow-inset),
+    0 0 10px rgba(106, 255, 145, 0.3),
+    0 0 calc(6px + var(--pn-meter) * 22px) rgba(106, 255, 145, calc(0.35 + var(--pn-meter) * 0.45)),
+    0 0 calc(var(--pn-meter) * 18px) rgba(255, 180, 50, calc(var(--pn-meter) * 0.75));
+  transition: box-shadow 0.04s linear, border-color 0.04s linear;
+}
+
+/* ── Segmented LED meters (dac~ / adc~) ────────────────────────────────── */
+.pn-meters {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  padding: 4px 6px 3px;
+  box-sizing: border-box;
+}
+
+.pn-meter-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  height: 100%;
+}
+
+.pn-meter-track {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  max-width: 12px;
+  border-radius: 1px;
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(
+      to top,
+      rgba(0,0,0,0.55) 0px,
+      rgba(0,0,0,0.55) 1px,
+      transparent 1px,
+      transparent 4px
+    ),
+    #111;
+}
+
+.pn-meter-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 0%;
+  background:
+    repeating-linear-gradient(
+      to top,
+      rgba(0,0,0,0.55) 0px,
+      rgba(0,0,0,0.55) 1px,
+      transparent 1px,
+      transparent 4px
+    ),
+    linear-gradient(
+      to top,
+      #00e855 0%,
+      #00e855 55%,
+      #ffe000 55%,
+      #ffe000 80%,
+      #ff2200 80%,
+      #ff2200 100%
+    );
+}
+
+.pn-meter-label {
+  font-family: var(--pn-font-mono);
+  font-size: 6px;
+  line-height: 1;
+  color: rgba(255,255,255,0.35);
+  letter-spacing: 0.05em;
+  text-align: center;
+}
+
+.pn-meter-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: rgba(255,255,255,0.5);
+  margin-bottom: 2px;
+}
+
 /* visualizer — cool blue glow to distinguish from audio objects */
 .patch-object[data-node-type="visualizer"] {
   border-color: color-mix(in srgb, #6a91ff 50%, var(--pn-border));
@@ -1038,6 +1134,27 @@ body {
   caret-color: var(--pn-accent);
   caret-shape: block;
   text-shadow: 0 0 6px var(--pn-accent);
+}
+
+.patch-object-title-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--pn-accent);
+  font-family: var(--pn-font-mono);
+  font-size: clamp(8px, min(24cqw, 48cqh), 24px);
+  letter-spacing: 0.04em;
+  text-align: center;
+  padding: 0;
+  caret-color: var(--pn-accent);
+  caret-shape: block;
+  text-shadow: 0 0 6px var(--pn-accent);
+}
+
+.patch-object--editing {
+  outline: 1px solid var(--pn-accent);
+  outline-offset: 2px;
 }
 
 /* ── Inline object entry box (Max-style "n" key) ─────────────────────── */
@@ -1704,6 +1821,184 @@ body {
 
 /* ── patchViz live preview ───────────────────────────────────────────────── */
 
+/* ── fft~ — Game Boy–style FFT scope ────────────────────────────────── */
+.pn-fft-body {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.pn-fft-device {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 7px 5px;
+  gap: 4px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px 3px 14px 3px;
+}
+
+.pn-fft-top-label {
+  font-family: var(--pn-font-mono);
+  font-size: 5.5px;
+  letter-spacing: 0.18em;
+  color: var(--pn-border-accent-soft);
+  align-self: flex-start;
+  padding-left: 1px;
+}
+
+/* Flex chain all the way to canvas so height resolves at every level */
+.pn-fft-screen-bezel {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  padding: 4px;
+  box-shadow:
+    inset 0 1px 4px rgba(0,0,0,0.8),
+    inset 0 0 0 1px var(--pn-border-subtle);
+}
+
+.pn-fft-screen {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: var(--pn-bg-deep);
+  border-radius: 1px;
+  overflow: hidden;
+  box-shadow: inset 0 0 10px var(--pn-surface-glow);
+}
+
+.pn-fft-mount {
+  position: absolute;
+  inset: 0;
+}
+
+.pn-fft-mount canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+}
+
+/* ── Band readouts ───────────────────────────────────────────────────── */
+.pn-fft-bands {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  width: 100%;
+  gap: 2px;
+}
+
+.pn-fft-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  background: var(--pn-surface);
+  border: 1px solid var(--pn-border-subtle);
+  border-radius: 2px;
+  padding: 2px 0;
+}
+
+.pn-fft-band-label {
+  font-family: var(--pn-font-mono);
+  font-size: 5px;
+  color: var(--pn-border-accent-soft);
+  letter-spacing: 0.05em;
+}
+
+.pn-fft-band-val {
+  font-family: var(--pn-font-mono);
+  font-size: 7px;
+  color: var(--pn-accent);
+  letter-spacing: 0.02em;
+}
+
+/* ── Controls row (D-pad + power LED + A/B buttons) ─────────────────── */
+.pn-fft-controls {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0 2px;
+}
+
+.pn-fft-dpad {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+
+.pn-fft-dpad-h,
+.pn-fft-dpad-v {
+  position: absolute;
+  background: var(--pn-border);
+  border-radius: 1px;
+}
+
+.pn-fft-dpad-h {
+  top: 33%;
+  left: 0;
+  width: 100%;
+  height: 33%;
+}
+
+.pn-fft-dpad-v {
+  left: 33%;
+  top: 0;
+  width: 33%;
+  height: 100%;
+}
+
+.pn-fft-power-led {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--pn-surface);
+  box-shadow: 0 0 0 1px var(--pn-border-subtle);
+  flex-shrink: 0;
+}
+
+.patch-object[data-node-type="fft~"][data-dsp-active="true"] .pn-fft-power-led {
+  background: var(--pn-accent);
+  box-shadow: 0 0 6px var(--pn-accent-glow), 0 0 0 1px var(--pn-border-accent);
+}
+
+.pn-fft-buttons {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.pn-fft-btn {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--pn-font-mono);
+  font-size: 5px;
+  color: var(--pn-border-accent-soft);
+  background: var(--pn-surface);
+  border: 1px solid var(--pn-border);
+}
+
+.pn-fft-btn-b {
+  margin-top: 4px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────── */
 .patch-object-patchviz-body {
   padding: 0 !important;
   overflow: hidden;

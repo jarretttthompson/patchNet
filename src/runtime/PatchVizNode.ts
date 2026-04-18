@@ -1,19 +1,23 @@
-import { VisualizerRuntime } from "./VisualizerRuntime";
+import type { LayerNode } from "./LayerNode";
+import type { IRenderContext } from "./IRenderContext";
 
 /**
- * PatchVizNode — live in-patch mirror of a named VisualizerNode context.
+ * PatchVizNode — inline render context that lives inside a patchViz object.
  *
- * Owns a <canvas> that copies the visualizer popup canvas every frame via
- * drawImage(). Mount this canvas into the patchViz object DOM slot after
- * each render pass (same pattern as CodeboxController).
+ * Unlike VisualizerNode (popup), this composites layers directly into an
+ * embedded <canvas> in the patch canvas DOM. Layers target it by context
+ * name, the same way they target a popup VisualizerNode.
  *
- * If the named visualizer is closed / not open, the canvas shows black.
+ * The render loop starts automatically and runs continuously so the canvas
+ * stays live as soon as layers are wired in.
  */
-export class PatchVizNode {
+export class PatchVizNode implements IRenderContext {
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private rafId: number | null = null;
+  private layers: LayerNode[] = [];
   private _contextName: string;
+  private _enabled = true;
 
   constructor(contextName: string) {
     this._contextName = contextName;
@@ -29,42 +33,61 @@ export class PatchVizNode {
     });
 
     this.ctx = this.canvas.getContext("2d")!;
+    this.ctx.fillStyle = "#000";
+    this.ctx.fillRect(0, 0, 320, 240);
+
     this.startLoop();
   }
 
   set contextName(name: string) { this._contextName = name; }
   get contextName(): string     { return this._contextName; }
 
+  enable(): void  { this._enabled = true; }
+  disable(): void { this._enabled = false; }
+  toggle(): void  { this._enabled = !this._enabled; }
+  get enabled(): boolean { return this._enabled; }
+
+  // ── IRenderContext ────────────────────────────────────────────────
+
+  addLayer(layer: LayerNode): void {
+    if (!this.layers.includes(layer)) this.layers.push(layer);
+  }
+
+  removeLayer(layer: LayerNode): void {
+    this.layers = this.layers.filter(l => l !== layer);
+  }
+
+  clearLayers(): void {
+    this.layers = [];
+  }
+
+  getCanvas(): HTMLCanvasElement | null {
+    return this.canvas;
+  }
+
+  // ── Render loop ───────────────────────────────────────────────────
+
   private startLoop(): void {
     if (this.rafId !== null) return;
-    const runtime = VisualizerRuntime.getInstance();
-
     const tick = () => {
       this.rafId = requestAnimationFrame(tick);
-
-      const vn  = runtime.get(this._contextName);
-      const src = vn?.getCanvas() ?? null;
-
-      if (!src || src.width === 0 || src.height === 0) {
-        this.ctx.fillStyle = "#000";
-        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        return;
-      }
-
-      // Match internal resolution to source so drawImage is pixel-accurate
-      if (this.canvas.width !== src.width || this.canvas.height !== src.height) {
-        this.canvas.width  = src.width;
-        this.canvas.height = src.height;
-      }
-
-      try {
-        this.ctx.drawImage(src, 0, 0);
-      } catch {
-        // Popup was closed mid-frame — ignore tainted/detached canvas errors
-      }
+      this.drawFrame();
     };
-
     this.rafId = requestAnimationFrame(tick);
+  }
+
+  private drawFrame(): void {
+    const { ctx, canvas } = this;
+    if (!this._enabled) {
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const sorted = [...this.layers].sort((a, b) => a.priority - b.priority);
+    for (const layer of sorted) {
+      layer.draw(ctx, canvas.width, canvas.height);
+    }
   }
 
   destroy(): void {
@@ -72,6 +95,7 @@ export class PatchVizNode {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
+    this.layers = [];
     this.canvas.remove();
   }
 }
