@@ -65,7 +65,7 @@ export class DragController {
 
   destroy(): void {
     this.canvasEl.removeEventListener("mousedown", this.onMouseDown);
-    this.endDrag(false);
+    this.endDrag();
   }
 
   // ── Handlers ──────────────────────────────────────────────────────
@@ -74,18 +74,33 @@ export class DragController {
     if (e.button !== 0) return;
 
     // Only drag the object body — not port nubs, resize handle, cable SVG,
-    // native inputs (attribute sliders / text fields), or the custom slider track
+    // native inputs (attribute sliders / text fields), the custom slider track,
+    // or any bounded click-to-trigger widget inside a body (bang circle,
+    // toggle rocker, message content). Those match the cursor-system design
+    // where grab = move and pointer = click: hovering a pointer-cursor region
+    // must never start a move.
     const target = e.target as Element;
     if (target.tagName === "INPUT") return;
+    if (target.closest(".pn-subpatch-lock")) return;
+    if (target.closest(".pn-odo-col")) return;   // digit column — OIC handles drag
     if (target.closest(".patch-port")) return;
     if (target.closest(".pn-resize-handle")) return;
     if (target.closest(".pn-cable-svg")) return;
     if (target.closest(".patch-object-codebox-host")) return;
     if (target.closest(".cm-editor")) return;
     if (target.closest(".patch-object-slider-track")) return;
+    if (target.closest(".patch-object-face-button")) return;
+    if (target.closest(".patch-object-toggle-rocker")) return;
+    if (target.closest(".patch-object-message-content")) return;
+    // Sequencer cells: only block drag when the cell is editable (unlocked).
+    // Locked cells fall through to drag so the object can be moved from the grid.
+    const seqCell = target.closest<HTMLElement>(".pn-seq-cell");
+    if (seqCell?.isContentEditable) return;
 
     const objectEl = target.closest<HTMLElement>(".patch-object");
     if (!objectEl?.dataset.nodeId) return;
+    // Don't drag objects rendered inside a subPatch presentation panel
+    if (objectEl.closest(".pn-subpatch-panel")) return;
 
     e.preventDefault();
 
@@ -222,18 +237,19 @@ export class DragController {
     const x = (e.clientX - canvasRect.left) / z - this.drag.offsetX;
     const y = (e.clientY - canvasRect.top)  / z - this.drag.offsetY;
 
-    // Clamp to canvas bounds (scrollWidth/offsetWidth are in intrinsic layout px)
+    // No clamp: the pan-group sits inside a left/top gutter, and negative
+    // intrinsic coords render inside that gutter. The caller grows the
+    // pan-group live during drag via updatePanGroupSize() so the scrollable
+    // area expands as the object moves outward.
     const el = this.drag.el;
-    const maxX = this.canvasEl.scrollWidth  - el.offsetWidth;
-    const maxY = this.canvasEl.scrollHeight - el.offsetHeight;
-    const clampedX = Math.max(0, Math.min(x, maxX));
-    const clampedY = Math.max(0, Math.min(y, maxY));
+    const nx = Math.round(x);
+    const ny = Math.round(y);
 
-    el.style.left = `${Math.round(clampedX)}px`;
-    el.style.top = `${Math.round(clampedY)}px`;
+    el.style.left = `${nx}px`;
+    el.style.top = `${ny}px`;
     this.drag.moved = true;
 
-    this.onMove?.(this.drag.nodeId, Math.round(clampedX), Math.round(clampedY));
+    this.onMove?.(this.drag.nodeId, nx, ny);
 
     // Move co-selected nodes by the same delta (intrinsic)
     const mouseX = (e.clientX - canvasRect.left) / z;
@@ -268,13 +284,19 @@ export class DragController {
       }
     }
 
-    this.endDrag(moved);
+    this.endDrag();
     this.onDragEnd?.(nodeId);
   }
 
-  private endDrag(clearDraggingClass: boolean): void {
+  /**
+   * Tear down drag state. Always clears the `patch-object--dragging` class —
+   * previously only cleared it when the object had actually moved, which
+   * leaked the class onto any object the user clicked without dragging, and
+   * locked that object's cursor into `grabbing` until the next real drag.
+   */
+  private endDrag(): void {
     if (this.drag) {
-      if (clearDraggingClass) this.drag.el.classList.remove("patch-object--dragging");
+      this.drag.el.classList.remove("patch-object--dragging");
       this.drag = null;
     }
     for (const cm of this.coMovers) {

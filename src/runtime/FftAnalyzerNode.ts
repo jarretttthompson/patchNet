@@ -4,12 +4,12 @@ const SCREEN_W = 128;
 const SCREEN_H = 64;
 
 // App palette — matches --pn-* tokens as closely as canvas allows
-const BG        = "#030504";   // --pn-bg-deep
-const BAR_DIM   = "#080e09";   // --pn-surface (unlit column)
+const BG        = "#000000";   // --pn-bg-deep
+const BAR_DIM   = "#060a06";   // --pn-surface (unlit column)
 const GRID_LINE = "rgba(0,0,0,0.5)";
 
-// Low → hi: deep green through accent to bright mint — all in app palette
-const BAND_COLORS: string[] = ["#2adb60", "#6aff91", "#a0ffb8", "#ccffdd"];
+// Low → hi: deep infernal green ramping to pure lime — all in app palette
+const BAND_COLORS: string[] = ["#006400", "#00b300", "#00ff00", "#a8ffa8"];
 
 // Frequency band definitions [lo, hi] in Hz
 const BANDS: [number, number][] = [

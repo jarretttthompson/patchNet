@@ -13,6 +13,8 @@ import { VfxBlurNode } from "./VfxBlurNode";
 import { VideoStore } from "./VideoStore";
 import { ImageStore } from "./ImageStore";
 import { PatchVizNode } from "./PatchVizNode";
+import { LocalBus } from "../control/ControlBus";
+import { RenderDirector } from "../control/RenderDirector";
 
 /**
  * VisualizerGraph — keeps the VisualizerRuntime in sync with PatchGraph.
@@ -26,6 +28,12 @@ import { PatchVizNode } from "./PatchVizNode";
  */
 export class VisualizerGraph {
   private readonly runtime: VisualizerRuntime;
+
+  // Phase 1 of the control/render split — see docs/CONTROL_RENDER_SPLIT.md.
+  // Director + bus ride alongside the existing runtime for now; Phase 2 will
+  // migrate the remaining deliver* routes off this class onto the director.
+  readonly bus      = new LocalBus();
+  readonly director: RenderDirector;
 
   private vizNodes        = new Map<string, VisualizerNode>();   // patchNodeId → VisualizerNode
   private layerNodes      = new Map<string, LayerNode>();         // patchNodeId → LayerNode
@@ -47,6 +55,7 @@ export class VisualizerGraph {
 
   constructor(private readonly graph: PatchGraph) {
     this.runtime     = VisualizerRuntime.getInstance();
+    this.director    = new RenderDirector(graph, this.bus);
     this.unsubscribe = this.graph.on("change", () => this.sync());
     this.sync();
   }
@@ -106,6 +115,10 @@ export class VisualizerGraph {
           vn.close();
           if (pnOpen) { pnOpen.args[2] = "0"; this.graph.emit("change"); }
         }
+        break;
+      }
+      case "fullscreen": {
+        vn.fullscreen((args[0] ?? "1") !== "0");
         break;
       }
       case "screenX": {
@@ -207,6 +220,7 @@ export class VisualizerGraph {
     for (const [id, vn] of this.vizNodes) {
       if (!activeIds.has(id)) {
         this.runtime.unregister(vn.name);
+        this.director.detach(id);
         vn.destroy();
         this.vizNodes.delete(id);
       }
@@ -251,6 +265,7 @@ export class VisualizerGraph {
     for (const [id, pvn] of this.patchVizNodes) {
       if (!activeIds.has(id)) {
         this.runtime.unregister(pvn.contextName);
+        this.director.detach(id);
         pvn.destroy();
         this.patchVizNodes.delete(id);
       }
@@ -288,6 +303,7 @@ export class VisualizerGraph {
         vn.setFloat((node.args[1] ?? "0") !== "0");
         this.vizNodes.set(node.id, vn);
         this.runtime.register(contextName, vn);
+        this.director.attach(node.id, vn);
 
         // Restore open state — defer one tick so the page is interactive
         if ((node.args[2] ?? "0") === "1") {
@@ -421,6 +437,7 @@ export class VisualizerGraph {
         if ((node.args[1] ?? "1") === "0") pvn.disable();
         this.patchVizNodes.set(node.id, pvn);
         this.runtime.register(contextName, pvn);
+        this.director.attach(node.id, pvn);
       }
     }
 
@@ -600,17 +617,19 @@ export class VisualizerGraph {
     const pvn = this.patchVizNodes.get(nodeId);
     const pn  = this.graph.nodes.get(nodeId);
     if (!pvn) return;
+    // Phase 1 proof path: renderer touch goes through director → bus → renderer.apply.
+    // Args mirroring stays controller-side here; Phase 2 moves it to a Status subscriber.
     switch (selector) {
       case "bang":
-        pvn.toggle();
+        this.director.trigger(nodeId, "bang");
         if (pn) { pn.args[1] = pvn.enabled ? "1" : "0"; this.graph.emit("change"); }
         break;
       case "enable":
-        pvn.enable();
+        this.director.command(nodeId, "enable");
         if (pn) { pn.args[1] = "1"; this.graph.emit("change"); }
         break;
       case "disable":
-        pvn.disable();
+        this.director.command(nodeId, "disable");
         if (pn) { pn.args[1] = "0"; this.graph.emit("change"); }
         break;
       default:
@@ -903,6 +922,8 @@ export class VisualizerGraph {
 
   destroy(): void {
     this.unsubscribe();
+    this.director.destroy();
+    this.bus.destroy();
 
     for (const id of this.positionLoops.keys()) this.stopPositionLoop(id);
 

@@ -26,12 +26,31 @@ export function getPortPos(
   portIndex: number,
   panGroupEl?: HTMLElement,
 ): PortPos {
-  // Left-side ports: use DOM query for exact position
+  // Left-side inlet ports: use DOM query for exact position
   if (direction === "inlet" && panGroupEl) {
     const port = node.inlets.find(p => p.index === portIndex);
     if (port?.side === "left") {
       const nub = panGroupEl.querySelector<HTMLElement>(
         `[data-node-id="${node.id}"] .patch-port-side-left[data-port-index="${portIndex}"]`,
+      );
+      if (nub) {
+        const nubRect = nub.getBoundingClientRect();
+        const panRect = panGroupEl.getBoundingClientRect();
+        const z = getZoom();
+        return {
+          x: (nubRect.left - panRect.left + nubRect.width  / 2) / z,
+          y: (nubRect.top  - panRect.top  + nubRect.height / 2) / z,
+        };
+      }
+    }
+  }
+
+  // Right-side outlet ports: mirror the left-side inlet path.
+  if (direction === "outlet" && panGroupEl) {
+    const port = node.outlets.find(p => p.index === portIndex);
+    if (port?.side === "right") {
+      const nub = panGroupEl.querySelector<HTMLElement>(
+        `[data-node-id="${node.id}"] .patch-port-side-right[data-port-index="${portIndex}"]`,
       );
       if (nub) {
         const nubRect = nub.getBoundingClientRect();

@@ -1,60 +1,64 @@
 :root {
   /* --- Surfaces --- */
-  --pn-bg-deep: #030504;
-  --pn-bg: #050806;
-  --pn-surface: #080e09;
-  --pn-surface-raised: #0d1210;
-  --pn-surface-glow: rgba(106, 255, 145, 0.05);
+  --pn-bg-deep: #000000;
+  --pn-bg: #000000;
+  --pn-surface: #000000;
+  --pn-surface-raised: #000000;
+  --pn-surface-glow: rgba(0, 255, 0, 0.35);
 
   /* --- Borders --- */
-  --pn-border: rgba(106, 255, 145, 0.18);
-  --pn-border-subtle: rgba(106, 255, 145, 0.07);
-  --pn-border-accent: rgba(106, 255, 145, 0.60);
-  --pn-border-accent-soft: rgba(106, 255, 145, 0.22);
+  --pn-border: rgba(0, 255, 0, 0.42);
+  --pn-border-subtle: rgba(0, 255, 0, 0.35);
+  --pn-border-accent: rgba(0, 255, 0, 0.70);
+  --pn-border-accent-soft: rgba(0, 255, 0, 0.48);
 
-  /* --- Text --- */
-  --pn-text: #d8ffe1;
-  --pn-text-dim: rgba(216, 255, 225, 0.68);
-  --pn-muted: rgba(216, 255, 225, 0.38);
-  --pn-muted-deep: rgba(216, 255, 225, 0.18);
+  /* --- Text (dichromatic: lime on black) --- */
+  --pn-text: #00ff00;
+  --pn-text-dim: rgba(0, 255, 0, 0.80);
+  --pn-muted: rgba(0, 255, 0, 0.60);
+  --pn-muted-deep: rgba(0, 255, 0, 0.45);
 
-  /* --- Accents (phosphor green) --- */
-  --pn-accent: #6aff91;
-  --pn-accent-dim: #48c96b;
-  --pn-accent-glow: rgba(106, 255, 145, 0.20);
-  --pn-secondary: #ff8c42;
-  --pn-secondary-soft: rgba(255, 140, 66, 0.20);
-  --pn-group: #c084fc;
-  --pn-group-soft: rgba(192, 132, 252, 0.18);
-  --pn-cyan: #00ff9f;
-  --pn-cyan-soft: rgba(0, 255, 159, 0.12);
-  --pn-danger: #ff4d6d;
-  --pn-warning: #e8b84a;
-  --pn-info: #6aff91;
+  /* --- Accents — the whole palette is this lime green or black --- */
+  --pn-accent: #00ff00;
+  --pn-accent-dim: #008000;
+  --pn-accent-glow: rgba(0, 255, 0, 0.48);
+  --pn-secondary: #00ff00;
+  --pn-secondary-soft: rgba(0, 255, 0, 0.45);
+  --pn-group: #00ff00;
+  --pn-group-soft: rgba(0, 255, 0, 0.42);
+  --pn-cyan: #00ff00;
+  --pn-cyan-soft: rgba(0, 255, 0, 0.38);
+  --pn-danger: #00ff00;
+  --pn-warning: #00ff00;
+  --pn-info: #00ff00;
 
   /* --- Patch canvas specific --- */
-  --pn-cable: #6aff91;
-  --pn-cable-audio: #ff8c42;
-  --pn-cable-selected: #00ff9f;
-  --pn-object-bg: #0d1210;
-  --pn-object-border: rgba(106, 255, 145, 0.20);
-  --pn-object-border-active: #6aff91;
-  --pn-port-in: rgba(106, 255, 145, 0.55);
-  --pn-port-out: #6aff91;
-  --pn-canvas-grid: rgba(106, 255, 145, 0.045);
+  --pn-cable: #00ff00;
+  --pn-cable-audio: #00ff00;
+  --pn-cable-selected: #00ff00;
+  --pn-object-bg: #000000;
+  --pn-object-border: rgba(0, 255, 0, 0.48);
+  --pn-object-border-active: #00ff00;
+  --pn-port-in: rgba(0, 255, 0, 0.65);
+  --pn-port-out: #00ff00;
+  /* Canvas grid dots tile the entire surface — kept intentionally lower than
+     the 0.35 UI floor so the background pattern doesn't overwhelm the patch,
+     but still well above the previous 0.045 so it's visibly there. */
+  --pn-canvas-grid: rgba(0, 255, 0, 0.22);
 
   /* --- Shadows & depth --- */
-  --pn-shadow-inset: inset 0 1px 0 rgba(106, 255, 145, 0.05);
+  --pn-shadow-inset: inset 0 1px 0 rgba(0, 255, 0, 0.35);
   --pn-shadow-panel: 0 18px 56px rgba(0, 0, 0, 0.70);
   --pn-shadow-soft: 0 4px 24px rgba(0, 0, 0, 0.50);
-  --pn-shadow-halo: inset 0 1px 0 rgba(106, 255, 145, 0.06),
+  --pn-shadow-halo: inset 0 1px 0 rgba(0, 255, 0, 0.35),
     inset 0 -1px 0 rgba(0, 0, 0, 0.3);
 
-  /* --- Interaction states --- */
-  --pn-hover: rgba(106, 255, 145, 0.04);
-  --pn-hover-accent: rgba(106, 255, 145, 0.08);
-  --pn-active: rgba(106, 255, 145, 0.07);
-  --pn-active-accent: rgba(106, 255, 145, 0.14);
+  /* --- Interaction states — lifted from previous near-zero alphas so hover
+     and active are actually visible, while still staying below selection. --- */
+  --pn-hover: rgba(0, 255, 0, 0.20);
+  --pn-hover-accent: rgba(0, 255, 0, 0.30);
+  --pn-active: rgba(0, 255, 0, 0.25);
+  --pn-active-accent: rgba(0, 255, 0, 0.38);
   --pn-focus-ring: 0 0 0 2px var(--pn-accent);
 
   --pn-font-mono: "Vulf Mono", monospace;

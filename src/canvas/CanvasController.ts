@@ -5,7 +5,12 @@ import type { VisualizerGraph } from "../runtime/VisualizerGraph";
 import { ObjectEntryBox } from "./ObjectEntryBox";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvasSpace";
 import { getZoom, setZoomValue, MIN_ZOOM, MAX_ZOOM } from "./zoomState";
-import { OBJECT_DEFS } from "../graph/objectDefs";
+import { OBJECT_DEFS, getObjectDef } from "../graph/objectDefs";
+import {
+  getUserDefaultSize,
+  setUserDefaultSize,
+  clearUserDefaultSize,
+} from "../graph/userObjectDefaults";
 
 // Derived from OBJECT_DEFS — do not maintain a separate list here.
 const OBJECT_TYPES = Object.keys(OBJECT_DEFS).sort();
@@ -57,6 +62,7 @@ export class CanvasController {
   // Multi-select state
   private selectedNodeIds = new Set<string>();
 
+  private _active = true;
   private undoManager?: { undo: () => void };
   private menuEl: HTMLElement | null = null;
   private cables: CableRenderer | null = null;
@@ -215,6 +221,10 @@ export class CanvasController {
     this.setZoom(1);
   }
 
+  setActive(active: boolean): void {
+    this._active = active;
+  }
+
   setCableRenderer(cables: CableRenderer): void {
     this.cables = cables;
     cables.getSVGElement().addEventListener("click", this.onCableClick);
@@ -304,6 +314,7 @@ export class CanvasController {
   // ── Internal handlers ──────────────────────────────────────────────
 
   private handleCanvasClick(e: MouseEvent): void {
+    if (!this._active) return;
     if (e.button !== 0) return;
     if (this.suppressCanvasClick) {
       this.suppressCanvasClick = false;
@@ -327,6 +338,7 @@ export class CanvasController {
   }
 
   private handleDoubleClick(e: MouseEvent): void {
+    if (!this._active) return;
     if (e.button !== 0) return;
     const target = e.target as Element;
     if (target.closest(".patch-object")) return;
@@ -337,6 +349,7 @@ export class CanvasController {
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
+    if (!this._active) return;
     if (this.isEditableTarget(e.target)) return;
 
     if (e.code === "Space") {
@@ -474,6 +487,7 @@ export class CanvasController {
   }
 
   private handleKeyUp(e: KeyboardEvent): void {
+    if (!this._active) return;
     if (e.code !== "Space") return;
     this.spaceHeld = false;
     this.updateCursor();
@@ -543,6 +557,7 @@ export class CanvasController {
   // ── Pan + rubber-band mousedown ────────────────────────────────────
 
   private handlePanMouseDown(e: MouseEvent): void {
+    if (!this._active) return;
     const isMiddle = e.button === 1;
     const isSpacePrimary = e.button === 0 && this.spaceHeld;
 
@@ -664,9 +679,14 @@ export class CanvasController {
   // ── Context menu ───────────────────────────────────────────────────
 
   private handleContextMenu(e: MouseEvent): void {
+    if (!this._active) return;
     e.preventDefault();
     const target = e.target as Element;
-    if (target.closest(".patch-object")) return;
+    const objectEl = target.closest<HTMLElement>(".patch-object");
+    if (objectEl?.dataset.nodeId) {
+      this.openObjectMenu(e.clientX, e.clientY, objectEl.dataset.nodeId);
+      return;
+    }
 
     const { x: canvasX, y: canvasY } = this.getGraphCoords(e.clientX, e.clientY);
     this.openMenu(e.clientX, e.clientY, canvasX, canvasY);
@@ -711,6 +731,54 @@ export class CanvasController {
     const menuRect = menu.getBoundingClientRect();
     if (menuRect.right > window.innerWidth) menu.style.left = `${screenX - menuRect.width}px`;
     if (menuRect.bottom > window.innerHeight) menu.style.top = `${screenY - menuRect.height}px`;
+  }
+
+  private openObjectMenu(screenX: number, screenY: number, nodeId: string): void {
+    this.closeMenu();
+
+    const node = this.graph.nodes.get(nodeId);
+    if (!node) return;
+
+    const def = getObjectDef(node.type);
+    const width  = Math.round(node.width  ?? def.defaultWidth);
+    const height = Math.round(node.height ?? def.defaultHeight);
+    const hasUserDefault = !!getUserDefaultSize(node.type);
+
+    const menu = document.createElement("div");
+    menu.className = "pn-context-menu";
+    menu.style.left = `${screenX}px`;
+    menu.style.top = `${screenY}px`;
+
+    const addItem = (label: string, onClick: () => void): void => {
+      const btn = document.createElement("button");
+      btn.className = "pn-context-menu-item";
+      btn.textContent = label;
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        onClick();
+        this.closeMenu();
+      });
+      menu.appendChild(btn);
+    };
+
+    addItem(`Set default size for ${node.type} (${width}×${height})`, () => {
+      setUserDefaultSize(node.type, width, height);
+      this.graph.emit("change");
+    });
+
+    if (hasUserDefault) {
+      addItem(`Reset ${node.type} to built-in default`, () => {
+        clearUserDefaultSize(node.type);
+        this.graph.emit("change");
+      });
+    }
+
+    document.body.appendChild(menu);
+    this.menuEl = menu;
+
+    const menuRect = menu.getBoundingClientRect();
+    if (menuRect.right  > window.innerWidth)  menu.style.left = `${screenX - menuRect.width}px`;
+    if (menuRect.bottom > window.innerHeight) menu.style.top  = `${screenY - menuRect.height}px`;
   }
 
   private closeMenu(): void {

@@ -1,5 +1,6 @@
 import type { PortDef, PortType } from "./PatchNode";
 import type { PatchNode } from "./PatchNode";
+import { getUserDefaultSize } from "./userObjectDefaults";
 
 /** Height of the attribute panel header — must match --pn-attrui-header-h in shell.css */
 export const ATTR_SIDE_INLET_HEADER_H = 22;
@@ -114,14 +115,17 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     category: "ui",
     args: [{ name: "content", type: "symbol", description: "Initial message content." }],
     messages: [
-      { inlet: 0, selector: "bang",    description: "output stored content unchanged" },
+      { inlet: 0, selector: "bang",    description: "output stored content" },
       { inlet: 0, selector: "set",     description: "replace stored content without output" },
-      { inlet: 1, selector: "append",  description: "append to stored content without output" },
-      { inlet: 1, selector: "prepend", description: "prepend to stored content without output" },
+      { inlet: 0, selector: "append",  description: "append to stored content without output" },
+      { inlet: 0, selector: "prepend", description: "prepend to stored content without output" },
+      { inlet: 0, selector: "any",     description: "substitute $1–$9 from incoming args and output" },
+      { inlet: 1, selector: "bang",    description: "set stored content to 'bang' without output" },
+      { inlet: 1, selector: "any",     description: "store incoming value without output" },
     ],
     inlets: [
-      { index: 0, type: "message", label: "hot: bang/value → store & send", temperature: "hot" },
-      { index: 1, type: "message", label: "cold: value → store only",        temperature: "cold" },
+      { index: 0, type: "message", label: "bang → output | value → substitute $1–$9 and output | set/append/prepend → store", temperature: "hot" },
+      { index: 1, type: "message", label: "value → store | bang → set content to 'bang'",                                      temperature: "cold" },
     ],
     outlets: [{ index: 0, type: "message", label: "message out" }],
     defaultWidth: 120,
@@ -144,39 +148,95 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { inlet: 1, selector: "float",    description: "set interval ms and restart if running" },
     ],
     inlets: [
-      { index: 0, type: "any",   label: "bang: toggle  |  1/0: start/stop  |  interval <ms>" },
-      { index: 1, type: "float", label: "interval (ms)" },
+      { index: 0, type: "any",   label: "bang: toggle  |  1/0: start/stop  |  interval <ms>", temperature: "hot"  },
+      { index: 1, type: "float", label: "interval (ms)",                                       temperature: "cold" },
     ],
     outlets: [{ index: 0, type: "bang", label: "bang (each tick)" }],
     defaultWidth: 100,
     defaultHeight: 40,
   },
 
+  oscillateNumbers: {
+    description: "Continuous sine-wave oscillator that outputs floats in [0.0, 1.0]. Requires a gate (float 1 to start, 0 to stop).",
+    category: "control",
+    args: [
+      { name: "freq",    type: "float", default: "1", min: 0.01, max: 20, step: 0.01,
+        description: "Oscillation frequency in Hz (cycles per second)." },
+      { name: "running", type: "int",   default: "0", hidden: true,
+        description: "Running state (1 = oscillating, 0 = stopped)." },
+    ],
+    messages: [
+      { inlet: 0, selector: "bang",  description: "toggle running on/off" },
+      { inlet: 0, selector: "float", description: "1 = start, 0 = stop" },
+      { inlet: 0, selector: "freq",  description: "set frequency Hz: freq <float>" },
+      { inlet: 1, selector: "float", description: "set frequency Hz (restarts phase if already running)" },
+    ],
+    inlets: [
+      { index: 0, type: "any",   label: "1: start  |  0: stop  |  bang: toggle  |  freq <hz>", temperature: "hot"  },
+      { index: 1, type: "float", label: "frequency (Hz)",                                       temperature: "cold" },
+    ],
+    outlets: [{ index: 0, type: "float", label: "value (0.0–1.0)" }],
+    defaultWidth:  160,
+    defaultHeight: 40,
+  },
+
   integer: {
-    description: "Integer number box — drag vertically to change value.",
+    description: "Integer number box — drag vertically to change value. Max-style hot/cold inlets.",
     category: "control",
     args: [{ name: "value", type: "int", default: "0", description: "Current integer value." }],
     messages: [
-      { inlet: 0, selector: "bang",  description: "output current value" },
-      { inlet: 0, selector: "float", description: "set value (truncates to int) and output" },
+      { inlet: 0, selector: "bang",  description: "output stored value" },
+      { inlet: 0, selector: "int",   description: "store and output" },
+      { inlet: 0, selector: "float", description: "truncate to int, store, and output" },
+      { inlet: 0, selector: "set",   description: "store without outputting: set <n>" },
+      { inlet: 1, selector: "int",   description: "store (cold) — no output" },
+      { inlet: 1, selector: "float", description: "truncate to int and store (cold) — no output" },
     ],
-    inlets:  [{ index: 0, type: "any",   label: "set value  |  bang: output", temperature: "hot" }],
+    inlets: [
+      { index: 0, type: "any", label: "set + output  |  bang: output  |  set <n>: store only", temperature: "hot"  },
+      { index: 1, type: "any", label: "store value (no output)",                                 temperature: "cold" },
+    ],
     outlets: [{ index: 0, type: "float", label: "integer value" }],
-    defaultWidth: 60,
+    defaultWidth: 80,
     defaultHeight: 40,
   },
 
   float: {
-    description: "Float number box — drag vertically to change value; click a digit to set drag increment.",
+    description: "Float number box — drag vertically to change value; click a digit to set drag increment. Max-style hot/cold inlets.",
     category: "control",
     args: [{ name: "value", type: "float", default: "0.0", description: "Current float value." }],
     messages: [
-      { inlet: 0, selector: "bang",  description: "output current value" },
-      { inlet: 0, selector: "float", description: "set value and output" },
+      { inlet: 0, selector: "bang",  description: "output stored value" },
+      { inlet: 0, selector: "int",   description: "store and output" },
+      { inlet: 0, selector: "float", description: "store and output" },
+      { inlet: 0, selector: "set",   description: "store without outputting: set <n>" },
+      { inlet: 1, selector: "int",   description: "store (cold) — no output" },
+      { inlet: 1, selector: "float", description: "store (cold) — no output" },
     ],
-    inlets:  [{ index: 0, type: "any",   label: "set value  |  bang: output", temperature: "hot" }],
+    inlets: [
+      { index: 0, type: "any", label: "set + output  |  bang: output  |  set <n>: store only", temperature: "hot"  },
+      { index: 1, type: "any", label: "store value (no output)",                                 temperature: "cold" },
+    ],
     outlets: [{ index: 0, type: "float", label: "float value" }],
     defaultWidth: 80,
+    defaultHeight: 40,
+  },
+
+  t: {
+    description: "Trigger (abbreviated t). Distributes input to multiple outlets in right-to-left order, converting each to the type specified by its argument letter: i=int, f=float, b=bang, s=symbol, l=list. Default args: i i.",
+    category: "control",
+    args: [],
+    messages: [
+      { inlet: 0, selector: "bang",  description: "fire outlets right-to-left; b outlets emit bang, numeric outlets emit 0, symbol/list outlets emit empty" },
+      { inlet: 0, selector: "float", description: "fire outlets right-to-left, converting the value per outlet type" },
+      { inlet: 0, selector: "any",   description: "fire outlets right-to-left, converting the value per outlet type" },
+    ],
+    inlets:  [{ index: 0, type: "any", label: "any → fan out right-to-left", temperature: "hot" }],
+    outlets: [
+      { index: 0, type: "float", label: "int" },
+      { index: 1, type: "float", label: "int" },
+    ],
+    defaultWidth:  80,
     defaultHeight: 40,
   },
 
@@ -322,18 +382,19 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
         description: "Console height — inner height of the popup (pixels); scales the render surface." },
     ],
     messages: [
-      { inlet: 0, selector: "bang",    description: "toggle open/close" },
-      { inlet: 0, selector: "open",    description: "open/close: open 1 = show, open 0 = hide" },
-      { inlet: 0, selector: "close",   description: "hide the popup window" },
-      { inlet: 0, selector: "size",    description: "resize window: size <w> <h>" },
-      { inlet: 0, selector: "pos",     description: "move window: pos <x> <y>" },
-      { inlet: 0, selector: "float",   description: "floating mode: float 0|1" },
-      { inlet: 0, selector: "screenX", description: "set window screen X position: screenX <px>" },
-      { inlet: 0, selector: "screenY", description: "set window screen Y position: screenY <px>" },
-      { inlet: 0, selector: "winW",    description: "set window width: winW <px>" },
-      { inlet: 0, selector: "winH",    description: "set window height: winH <px>" },
+      { inlet: 0, selector: "bang",       description: "toggle open/close" },
+      { inlet: 0, selector: "open",       description: "open/close: open 1 = show, open 0 = hide" },
+      { inlet: 0, selector: "close",      description: "hide the popup window" },
+      { inlet: 0, selector: "fullscreen", description: "fullscreen 1 = enter, fullscreen 0 = exit. Browsers often block cross-window requests; reliable paths: double-click the popup, or press F inside it (Esc exits)." },
+      { inlet: 0, selector: "size",       description: "resize window: size <w> <h>" },
+      { inlet: 0, selector: "pos",        description: "move window: pos <x> <y>" },
+      { inlet: 0, selector: "float",      description: "floating mode: float 0|1" },
+      { inlet: 0, selector: "screenX",    description: "set window screen X position: screenX <px>" },
+      { inlet: 0, selector: "screenY",    description: "set window screen Y position: screenY <px>" },
+      { inlet: 0, selector: "winW",       description: "set window width: winW <px>" },
+      { inlet: 0, selector: "winH",       description: "set window height: winH <px>" },
     ],
-    inlets:  [{ index: 0, type: "any",  label: "1: open  |  0: close  |  bang: toggle  |  size w h  |  pos x y" }],
+    inlets:  [{ index: 0, type: "any",  label: "1: open  |  0: close  |  bang: toggle  |  fullscreen 1  |  size w h  |  pos x y" }],
     outlets: [
       { index: 0, type: "bang", label: "bang: window opened" },
       { index: 1, type: "bang", label: "bang: window closed" },
@@ -570,7 +631,192 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultWidth:  320,
     defaultHeight: 240,
   },
+
+  inlet: {
+    description: "Subpatch inlet — fires its outlet when the parent patch triggers it.",
+    category: "control",
+    args: [
+      { name: "index", type: "int", default: "0", min: 0, max: 31, step: 1,
+        description: "Inlet index on the parent subPatch object (0-based)." },
+    ],
+    messages: [],
+    inlets:  [],
+    outlets: [{ index: 0, type: "any", label: "data from parent" }],
+    defaultWidth:  40,
+    defaultHeight: 30,
+  },
+
+  outlet: {
+    description: "Subpatch outlet — forwards data out through the parent patch.",
+    category: "control",
+    args: [
+      { name: "index", type: "int", default: "0", min: 0, max: 31, step: 1,
+        description: "Outlet index on the parent subPatch object (0-based)." },
+    ],
+    messages: [
+      { inlet: 0, selector: "bang",  description: "forward bang to parent outlet" },
+      { inlet: 0, selector: "float", description: "forward value to parent outlet" },
+    ],
+    inlets:  [{ index: 0, type: "any", label: "data → parent", temperature: "hot" }],
+    outlets: [],
+    defaultWidth:  40,
+    defaultHeight: 30,
+  },
+
+  sequencer: {
+    description: "Step sequencer. Bang advances the playhead by one column; each row outputs its active-column value through its own outlet. Rows define outlet count.",
+    category: "control",
+    args: [
+      { name: "rows", type: "int", default: "4", min: 1, max: 32, step: 1,
+        description: "Number of rows (= outlet count)." },
+      { name: "cols", type: "int", default: "8", min: 1, max: 64, step: 1,
+        description: "Number of columns (= step count)." },
+      { name: "playhead", type: "int", default: "0", hidden: true,
+        description: "Current column index (0-based)." },
+      { name: "cells",    type: "symbol", default: "", hidden: true,
+        description: "Base64-encoded JSON matrix of cell values." },
+      { name: "locked",   type: "int", default: "1", min: 0, max: 1, step: 1, hidden: true,
+        description: "1 = locked (cells read-only), 0 = unlocked (cells editable)." },
+    ],
+    messages: [
+      { inlet: 0, selector: "bang", description: "advance playhead by one column, wrapping at end; fire each row outlet" },
+    ],
+    inlets:  [{ index: 0, type: "bang", label: "bang → advance playhead", temperature: "hot" }],
+    outlets: [], // derived from rows
+    defaultWidth:  240,
+    defaultHeight: 120,
+  },
+
+  subPatch: {
+    description: "Embedded subpatch. Double-click to open and edit in a new tab.",
+    category: "control",
+    args: [
+      { name: "inlets",  type: "int",    default: "0", hidden: true,
+        description: "Number of inlets (derived from inlet objects inside)." },
+      { name: "outlets", type: "int",    default: "0", hidden: true,
+        description: "Number of outlets (derived from outlet objects inside)." },
+      { name: "content", type: "symbol", default: "", hidden: true,
+        description: "Base64-encoded subpatch content." },
+      { name: "locked",  type: "int",    default: "1", min: 0, max: 1, step: 1, hidden: true,
+        description: "1 = locked (interact with GUI), 0 = unlocked (reposition GUI objects)." },
+    ],
+    messages: [],
+    inlets:  [],
+    outlets: [],
+    defaultWidth:  120,
+    defaultHeight: 40,
+  },
 };
+
+/**
+ * Canonicalize object-type aliases (e.g. `trigger` → `t`). Called at node
+ * creation, parse, and type-rename boundaries so the graph always stores
+ * the canonical form that Max itself displays.
+ */
+const TYPE_ALIASES: Record<string, string> = {
+  trigger: "t",
+};
+export function canonicalizeType(type: string): string {
+  return TYPE_ALIASES[type] ?? type;
+}
+
+// Make `trigger` discoverable via autocomplete while sharing t's spec.
+OBJECT_DEFS.trigger = OBJECT_DEFS.t;
+
+/**
+ * Ensure all sequencer arg slots are present. The serializer spreads
+ * `node.args` into a space-joined line; sparse arrays (`args[4] = "0"` with
+ * `args[0..3]` undefined) would produce `"undefined"` tokens and break the
+ * round-trip. Mutates and returns the input array.
+ */
+export function ensureSequencerArgs(args: string[]): string[] {
+  if (args[0] === undefined) args[0] = "4";
+  if (args[1] === undefined) args[1] = "8";
+  if (args[2] === undefined) args[2] = "0";
+  if (args[3] === undefined) args[3] = "W10="; // btoa("[]")
+  if (args[4] === undefined) args[4] = "1";
+  return args;
+}
+
+/**
+ * Sequencer: one outlet per row. Inlet is a fixed bang inlet that advances
+ * the playhead. Row count is clamped to the arg range.
+ */
+export function deriveSequencerPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const rows = Math.max(1, Math.min(32, Math.trunc(Number.parseFloat(args[0] ?? "4")) || 4));
+  const inlets: PortDef[] = [
+    { index: 0, type: "bang", label: "bang → advance playhead", temperature: "hot" },
+  ];
+  const outlets: PortDef[] = Array.from({ length: rows }, (_, i) => ({
+    index: i,
+    type: "any" as PortType,
+    label: `row ${i}`,
+    side: "right" as const,
+  }));
+  return { inlets, outlets };
+}
+
+/** Clamped row count for a sequencer node. */
+export function sequencerRows(node: PatchNode): number {
+  return Math.max(1, Math.min(32, Math.trunc(Number.parseFloat(node.args[0] ?? "4")) || 4));
+}
+
+/** Clamped column count for a sequencer node. */
+export function sequencerCols(node: PatchNode): number {
+  return Math.max(1, Math.min(64, Math.trunc(Number.parseFloat(node.args[1] ?? "8")) || 8));
+}
+
+/** Decode base64-encoded sequencer cells into a possibly-ragged string matrix. */
+function decodeSequencerCellsRaw(b64: string): string[][] {
+  if (!b64) return [];
+  try {
+    const json = decodeURIComponent(escape(atob(b64)));
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(r => Array.isArray(r) ? r.map(v => String(v ?? "")) : []);
+  } catch {
+    return [];
+  }
+}
+
+/** Returns the cell matrix resized to rows × cols, padding missing slots with "". */
+export function getSequencerCells(node: PatchNode): string[][] {
+  const rows = sequencerRows(node);
+  const cols = sequencerCols(node);
+  const stored = decodeSequencerCellsRaw(node.args[3] ?? "");
+  return Array.from({ length: rows }, (_, r) =>
+    Array.from({ length: cols }, (_, c) => stored[r]?.[c] ?? ""),
+  );
+}
+
+/** Encode a cell matrix back into the node's args[3]. */
+export function setSequencerCells(node: PatchNode, cells: string[][]): void {
+  const json = JSON.stringify(cells);
+  node.args[3] = btoa(unescape(encodeURIComponent(json)));
+}
+
+/**
+ * Trigger: outlets are derived from arg letters (i/f/b/s/l). With no args,
+ * default to `i i` (two ints) to match Max's behavior.
+ */
+export function deriveTriggerPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const letters = args.length > 0 ? args : ["i", "i"];
+  const inlets: PortDef[] = [
+    { index: 0, type: "any", label: "any → fan out right-to-left", temperature: "hot" },
+  ];
+  const outlets: PortDef[] = letters.map((raw, i) => {
+    const letter = raw.toLowerCase();
+    switch (letter) {
+      case "i": return { index: i, type: "float"   as PortType, label: "int" };
+      case "f": return { index: i, type: "float"   as PortType, label: "float" };
+      case "b": return { index: i, type: "bang"    as PortType, label: "bang" };
+      case "s": return { index: i, type: "message" as PortType, label: "symbol" };
+      case "l": return { index: i, type: "message" as PortType, label: "list" };
+      default:  return { index: i, type: "any"     as PortType, label: raw };
+    }
+  });
+  return { inlets, outlets };
+}
 
 export function getObjectDef(type: string): ObjectSpec {
   const def = OBJECT_DEFS[type];
@@ -590,8 +836,15 @@ export function getObjectDef(type: string): ObjectSpec {
   // Any object with configurable args needs at least one inlet so the
   // attribute inspector can connect to it. Codebox is excluded because its
   // inlets are derived from the code at parse time, not from the spec.
-  if (result.args.length > 0 && result.inlets.length === 0 && type !== "codebox") {
+  if (result.args.length > 0 && result.inlets.length === 0 && type !== "codebox" && type !== "inlet" && type !== "subPatch") {
     result.inlets.push({ index: 0, type: "any", label: "attr" });
+  }
+
+  // User may have overridden the built-in default size via right-click.
+  const userSize = getUserDefaultSize(type);
+  if (userSize) {
+    result.defaultWidth  = userSize.width;
+    result.defaultHeight = userSize.height;
   }
 
   return result;

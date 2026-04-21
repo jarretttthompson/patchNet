@@ -32,6 +32,7 @@ Legend for columns:
 | `integer`     | control   | ✓ | ✓ | OR:134 (shared numbox)           | —                                | OIC:152 | ✗ | — |
 | `float`       | control   | ✓ | ✓ | OR:134 (shared numbox)           | —                                | OIC:152 | ✗ | — |
 | `metro`       | control   | ✓ | ✓ | OR:302 (default + meta)          | interval timer in OIC:1104       | OIC:1104 | ✓ | — |
+| `oscillateNumbers` | control | ✓ | ✓ | default text label (no branch) | RAF loop in OIC (startOsc)       | OIC (bang/value) | ✓ | — |
 | `scale`       | control   | ✓ | ✓ | default text label (no branch)   | —                                | generic message | ✗ | — |
 | `s`           | control   | ✓ | ✓ | OR:279 (shared s/r)              | —                                | OIC:548 broadcast | ✗ | — |
 | `r`           | control   | ✓ | ✓ | OR:279 (shared s/r)              | —                                | OIC:548 broadcast | ✗ | — |

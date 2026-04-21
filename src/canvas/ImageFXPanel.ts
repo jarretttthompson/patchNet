@@ -317,9 +317,9 @@ export class ImageFXPanel {
     if (!img) {
       this.previewCanvas.width  = 240;
       this.previewCanvas.height = 160;
-      this.previewCtx.fillStyle = "#111";
+      this.previewCtx.fillStyle = "#000";
       this.previewCtx.fillRect(0, 0, 240, 160);
-      this.previewCtx.fillStyle = "#444";
+      this.previewCtx.fillStyle = "#00ff00";
       this.previewCtx.font = "11px monospace";
       this.previewCtx.textAlign = "center";
       this.previewCtx.fillText("no image connected", 120, 85);

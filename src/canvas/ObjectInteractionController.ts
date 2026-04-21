@@ -1,8 +1,9 @@
 import type { PatchGraph } from "../graph/PatchGraph";
-import type { PatchNode } from "../graph/PatchNode";
+import type { PatchNode, PortType } from "../graph/PatchNode";
 import type { AudioGraph } from "../runtime/AudioGraph";
 import type { CodeboxController } from "./CodeboxController";
 import type { VisualizerGraph } from "../runtime/VisualizerGraph";
+import type { SubPatchManager } from "./SubPatchManager";
 import {
   OBJECT_DEFS,
   getObjectDef,
@@ -10,9 +11,16 @@ import {
   resetAttributeNode,
   buildArgMessage,
   getVisibleArgs,
+  deriveTriggerPorts,
+  canonicalizeType,
+  ensureSequencerArgs,
+  getSequencerCells,
+  setSequencerCells,
+  sequencerCols,
+  sequencerRows,
 } from "../graph/objectDefs";
 import { ImageFXPanel } from "./ImageFXPanel";
-import { buildNumboxContent } from "./ObjectRenderer";
+import { buildOdometerContent } from "./ObjectRenderer";
 
 function applyDollarArgs(template: string, values: string[]): string {
   return template.replace(/\$(\d)/g, (_, n: string) => values[Number.parseInt(n, 10) - 1] ?? `$${n}`);
@@ -56,11 +64,20 @@ export class ObjectInteractionController {
   private readonly onDocMouseUp: (e: MouseEvent) => void;
   private readonly onAttrInput: (e: Event) => void;
   private readonly onAttrChange: (e: Event) => void;
+  private readonly onCellFocusOut: (e: FocusEvent) => void;
+  private readonly onCellKeyDown: (e: KeyboardEvent) => void;
   private readonly metroTimers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly oscTimers = new Map<string, { rafId: number; startT: number }>();
   private readonly mathLeftOps = new Map<string, number>();
   private codeboxController?: CodeboxController;
   private visualizerGraph?: VisualizerGraph;
+  private outletCallback?: (outletIndex: number, value: string | null) => void;
+  private subPatchManager?: SubPatchManager;
   private attrDragging = false;
+  /** Presentation panel elements (in the main canvas) that this OIC also handles. */
+  private readonly externalPanels: HTMLElement[] = [];
+  /** Node ids currently mid-flash — re-applied after render() rebuilds the DOM. */
+  private readonly activeFlashes = new Set<string>();
 
   constructor(
     private readonly panGroup: HTMLElement,
@@ -74,9 +91,13 @@ export class ObjectInteractionController {
     this.onDocMouseUp = this.handleSliderUp.bind(this);
     this.onAttrInput  = this.handleAttrInput.bind(this);
     this.onAttrChange = this.handleAttrChange.bind(this);
+    this.onCellFocusOut = this.handleCellFocusOut.bind(this);
+    this.onCellKeyDown  = this.handleCellKeyDown.bind(this);
     this.onGraphChangeUnsubscribe = this.graph.on("change", () => {
       this.pruneMetroTimers();
       this.restoreMetroTimers();
+      this.pruneOscTimers();
+      this.restoreOscTimers();
       this.syncAttributeNodes();
     });
 
@@ -85,6 +106,8 @@ export class ObjectInteractionController {
     this.panGroup.addEventListener("dblclick", this.onPanGroupDblClick);
     this.panGroup.addEventListener("input",  this.onAttrInput);
     this.panGroup.addEventListener("change", this.onAttrChange);
+    this.panGroup.addEventListener("focusout", this.onCellFocusOut);
+    this.panGroup.addEventListener("keydown",  this.onCellKeyDown);
   }
 
   setAudioGraph(ag: AudioGraph | undefined): void {
@@ -99,18 +122,57 @@ export class ObjectInteractionController {
     this.visualizerGraph = vg;
   }
 
+  setOutletCallback(cb: (outletIndex: number, value: string | null) => void): void {
+    this.outletCallback = cb;
+  }
+
+  setSubPatchManager(mgr: SubPatchManager): void {
+    this.subPatchManager = mgr;
+  }
+
   destroy(): void {
     this.panGroup.removeEventListener("click", this.onPanGroupClick);
     this.panGroup.removeEventListener("mousedown", this.onPanGroupMouseDown);
     this.panGroup.removeEventListener("dblclick", this.onPanGroupDblClick);
     this.panGroup.removeEventListener("input",  this.onAttrInput);
     this.panGroup.removeEventListener("change", this.onAttrChange);
+    this.panGroup.removeEventListener("focusout", this.onCellFocusOut);
+    this.panGroup.removeEventListener("keydown",  this.onCellKeyDown);
+    for (const panel of this.externalPanels) {
+      panel.removeEventListener("click",     this.onPanGroupClick);
+      panel.removeEventListener("mousedown", this.onPanGroupMouseDown);
+      panel.removeEventListener("dblclick",  this.onPanGroupDblClick);
+      panel.removeEventListener("input",     this.onAttrInput);
+      panel.removeEventListener("change",    this.onAttrChange);
+      panel.removeEventListener("focusout",  this.onCellFocusOut);
+      panel.removeEventListener("keydown",   this.onCellKeyDown);
+    }
+    this.externalPanels.length = 0;
     document.removeEventListener("mousemove", this.onDocMouseMove);
     document.removeEventListener("mouseup", this.onDocMouseUp);
     this.onGraphChangeUnsubscribe();
     for (const nodeId of this.metroTimers.keys()) {
       this.stopMetro(nodeId, false);
     }
+    for (const nodeId of this.oscTimers.keys()) {
+      this.stopOsc(nodeId, false);
+    }
+  }
+
+  /**
+   * Attaches interaction handlers to an external panel element (e.g. a subPatch
+   * presentation panel on the main canvas) so clicks/drags route through this OIC.
+   */
+  addInteractionPanel(el: HTMLElement): void {
+    if (this.externalPanels.includes(el)) return;
+    this.externalPanels.push(el);
+    el.addEventListener("click",     this.onPanGroupClick);
+    el.addEventListener("mousedown", this.onPanGroupMouseDown);
+    el.addEventListener("dblclick",  this.onPanGroupDblClick);
+    el.addEventListener("input",     this.onAttrInput);
+    el.addEventListener("change",    this.onAttrChange);
+    el.addEventListener("focusout",  this.onCellFocusOut);
+    el.addEventListener("keydown",   this.onCellKeyDown);
   }
 
   private getObjectEl(target: EventTarget | null): HTMLElement | null {
@@ -152,20 +214,24 @@ export class ObjectInteractionController {
       this.updateSliderFromEvent(e);
 
     } else if (node.type === "integer" || node.type === "float") {
-      const numboxEl = objectEl.querySelector<HTMLElement>(".pn-numbox");
-      if (!numboxEl) return;
+      // Only intercept if the user clicked directly on a digit drum column.
+      // Clicks on the frame, sign, or dot fall through to DragController for moving.
+      const digitEl = (e.target as Element).closest<HTMLElement>(".pn-odo-col");
+      if (!digitEl) return;
+
+      const odoEl = objectEl.querySelector<HTMLElement>(".pn-odometer");
+      if (!odoEl) return;
 
       e.preventDefault();
 
       const isFloat = node.type === "float";
-      const digitEl = (e.target as Element).closest<HTMLElement>(".pn-numbox__digit");
-      const activePlace = digitEl?.dataset.place !== undefined
+      const activePlace = digitEl.dataset.place !== undefined
         ? parseInt(digitEl.dataset.place, 10)
-        : (isFloat ? 0 : null);
+        : null;
       const increment = activePlace !== null ? Math.pow(10, activePlace) : 1;
       const startValue = parseFloat(node.args[0] ?? "0") || 0;
 
-      this.numboxDrag = { node, el: numboxEl, startY: e.clientY, startValue, increment, isFloat, activePlace };
+      this.numboxDrag = { node, el: odoEl, startY: e.clientY, startValue, increment, isFloat, activePlace };
       document.body.classList.add("pn-state-numbox-drag");
       document.addEventListener("mousemove", this.onDocMouseMove);
       document.addEventListener("mouseup", this.onDocMouseUp);
@@ -178,6 +244,28 @@ export class ObjectInteractionController {
     const dx = e.clientX - this.mouseDownX;
     const dy = e.clientY - this.mouseDownY;
     if (Math.sqrt(dx * dx + dy * dy) > this.DRAG_THRESHOLD) return;
+
+    // Lock-toggle button on subPatch + sequencer objects
+    const lockBtn = (e.target as Element).closest<HTMLElement>(".pn-subpatch-lock");
+    if (lockBtn) {
+      const objectEl = lockBtn.closest<HTMLElement>(".patch-object");
+      const node = objectEl ? this.getNode(objectEl) : null;
+      if (node?.type === "subPatch") {
+        const nowLocked = (node.args[3] ?? "1") !== "0";
+        node.args[3] = nowLocked ? "0" : "1";
+        this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
+      if (node?.type === "sequencer") {
+        ensureSequencerArgs(node.args);
+        const nowLocked = node.args[4] !== "0";
+        node.args[4] = nowLocked ? "0" : "1";
+        this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
+    }
 
     const objectEl = this.getObjectEl(e.target);
     if (!objectEl) return;
@@ -251,6 +339,8 @@ export class ObjectInteractionController {
         if (inlet === 0) {
           this.dispatchStoredMessage(node);
           this.flashButton(node.id);
+        } else if (inlet === 1) {
+          this.setStoredMessage(node, "bang");
         }
         break;
 
@@ -262,6 +352,20 @@ export class ObjectInteractionController {
             this.startMetro(node);
           }
         }
+        break;
+
+      case "oscillateNumbers":
+        if (inlet === 0) {
+          if (this.isOscRunning(node.id)) {
+            this.stopOsc(node.id);
+          } else {
+            this.startOsc(node);
+          }
+        }
+        break;
+
+      case "sequencer":
+        if (inlet === 0) this.advanceSequencer(node);
         break;
 
       case "click~":
@@ -305,6 +409,22 @@ export class ObjectInteractionController {
       case "scale":
         break; // bang has no effect on scale
 
+      case "t": {
+        if (inlet !== 0) break;
+        const letters = node.args.length > 0 ? node.args : ["i", "i"];
+        for (let i = letters.length - 1; i >= 0; i--) {
+          const letter = letters[i].toLowerCase();
+          if (letter === "b") {
+            this.dispatchBang(node.id, i);
+          } else if (letter === "s" || letter === "l") {
+            this.dispatchValue(node.id, i, "");
+          } else {
+            this.dispatchValue(node.id, i, "0");
+          }
+        }
+        break;
+      }
+
       case "+": case "-": case "*": case "/": case "%":
       case "==": case "!=": case ">": case "<": case ">=": case "<=":
         if (inlet === 0) {
@@ -324,6 +444,20 @@ export class ObjectInteractionController {
         } else if (inlet === 0) {
           this.dispatchAttributeAll(node);
         }
+        break;
+
+      case "inlet":
+        break; // inlet has 0 inlets — triggered externally by SubPatchManager
+
+      case "outlet":
+        if (inlet === 0) {
+          const idx = parseInt(node.args[0] ?? "0", 10);
+          this.outletCallback?.(isNaN(idx) ? 0 : idx, null);
+        }
+        break;
+
+      case "subPatch":
+        if (inlet >= 0) this.subPatchManager?.deliver(node.id, inlet, null);
         break;
 
       default:
@@ -349,7 +483,7 @@ export class ObjectInteractionController {
           const clamped = Math.round(Math.max(min, Math.min(max, parsed)));
           node.args[0] = String(clamped);
           this.syncSliderThumb(node.id, clamped, node);
-          this.graph.emit("change");
+          this.graph.emit(this.attrDragging ? "display" : "change");
           this.dispatchValue(node.id, 0, String(clamped));
         }
         break;
@@ -374,7 +508,7 @@ export class ObjectInteractionController {
           const ms = parseFloat(metroTokens[1] ?? "500");
           if (!isNaN(ms)) {
             node.args[0] = String(Math.max(1, ms));
-            this.graph.emit("change");
+            this.graph.emit(this.attrDragging ? "display" : "change");
             if (this.isMetroRunning(node.id)) this.startMetro(node);
           }
         } else {
@@ -382,6 +516,28 @@ export class ObjectInteractionController {
         }
         break;
       }
+
+      case "oscillateNumbers": {
+        const oscTokens = value.trim().split(/\s+/);
+        if (inlet === 0 && oscTokens[0] === "freq") {
+          const hz = parseFloat(oscTokens[1] ?? "1");
+          if (!isNaN(hz)) {
+            node.args[0] = String(Math.max(0.01, hz));
+            this.graph.emit(this.attrDragging ? "display" : "change");
+            if (this.isOscRunning(node.id)) this.startOsc(node);
+          }
+        } else {
+          this.deliverOscValue(node, inlet, value);
+        }
+        break;
+      }
+
+      case "sequencer":
+        // Any non-attr value on inlet 0 advances the playhead. The `rows` and
+        // `cols` attribute-panel paths fall through to trySetArgByName below
+        // and then into syncSequencerPorts via the generic arg hook.
+        if (inlet === 0 && !/^\w+ /.test(value)) this.advanceSequencer(node);
+        break;
 
       case "codebox":
         this.codeboxController?.executeValue(node, inlet, value);
@@ -419,27 +575,91 @@ export class ObjectInteractionController {
         break;
 
       case "integer": {
+        // Max-style: hot inlet 0 stores+outputs (or `set <n>` stores silently);
+        // cold inlet 1 stores silently.
         if (inlet === 0) {
+          const trimmed = value.trim();
+          if (trimmed === "set" || trimmed.startsWith("set ")) {
+            const payload = trimmed === "set" ? "" : trimmed.slice(4).trim();
+            const parsed = parseFloat(payload);
+            if (!isNaN(parsed)) {
+              node.args[0] = String(Math.trunc(parsed));
+              this.syncNumboxDisplay(node);
+              this.graph.emit(this.attrDragging ? "display" : "change");
+            }
+          } else {
+            const parsed = parseFloat(trimmed);
+            if (!isNaN(parsed)) {
+              const intVal = Math.trunc(parsed);
+              node.args[0] = String(intVal);
+              this.syncNumboxDisplay(node);
+              this.graph.emit(this.attrDragging ? "display" : "change");
+              this.dispatchValue(node.id, 0, String(intVal));
+            }
+          }
+        } else if (inlet === 1) {
           const parsed = parseFloat(value);
           if (!isNaN(parsed)) {
-            const intVal = Math.trunc(parsed);
-            node.args[0] = String(intVal);
+            node.args[0] = String(Math.trunc(parsed));
             this.syncNumboxDisplay(node);
-            this.graph.emit("change");
-            this.dispatchValue(node.id, 0, String(intVal));
+            this.graph.emit(this.attrDragging ? "display" : "change");
           }
         }
         break;
       }
 
       case "float": {
+        // Max-style: hot inlet 0 stores+outputs (or `set <n>` stores silently);
+        // cold inlet 1 stores silently.
         if (inlet === 0) {
+          const trimmed = value.trim();
+          if (trimmed === "set" || trimmed.startsWith("set ")) {
+            const payload = trimmed === "set" ? "" : trimmed.slice(4).trim();
+            const parsed = parseFloat(payload);
+            if (!isNaN(parsed)) {
+              node.args[0] = String(parsed);
+              this.syncNumboxDisplay(node);
+              this.graph.emit(this.attrDragging ? "display" : "change");
+            }
+          } else {
+            const parsed = parseFloat(trimmed);
+            if (!isNaN(parsed)) {
+              node.args[0] = String(parsed);
+              this.syncNumboxDisplay(node);
+              this.graph.emit(this.attrDragging ? "display" : "change");
+              this.dispatchValue(node.id, 0, String(parsed));
+            }
+          }
+        } else if (inlet === 1) {
           const parsed = parseFloat(value);
           if (!isNaN(parsed)) {
             node.args[0] = String(parsed);
             this.syncNumboxDisplay(node);
-            this.graph.emit("change");
-            this.dispatchValue(node.id, 0, String(parsed));
+            this.graph.emit(this.attrDragging ? "display" : "change");
+          }
+        }
+        break;
+      }
+
+      case "t": {
+        if (inlet !== 0) break;
+        const letters = node.args.length > 0 ? node.args : ["i", "i"];
+        const numeric = parseFloat(value);
+        const hasNumeric = !isNaN(numeric);
+        for (let i = letters.length - 1; i >= 0; i--) {
+          const letter = letters[i].toLowerCase();
+          if (letter === "b") {
+            this.dispatchBang(node.id, i);
+          } else if (letter === "i") {
+            this.dispatchValue(node.id, i, hasNumeric ? String(Math.trunc(numeric)) : "0");
+          } else if (letter === "f") {
+            this.dispatchValue(node.id, i, hasNumeric ? String(numeric) : "0");
+          } else if (letter === "s") {
+            this.dispatchValue(node.id, i, hasNumeric ? "" : value);
+          } else if (letter === "l") {
+            this.dispatchValue(node.id, i, value);
+          } else {
+            this.dispatchValue(node.id, i, value);
           }
         }
         break;
@@ -496,6 +716,17 @@ export class ObjectInteractionController {
         break;
 
       case "mediaImage":
+        break;
+
+      case "outlet":
+        if (inlet === 0) {
+          const idx = parseInt(node.args[0] ?? "0", 10);
+          this.outletCallback?.(isNaN(idx) ? 0 : idx, value);
+        }
+        break;
+
+      case "subPatch":
+        if (inlet >= 0) this.subPatchManager?.deliver(node.id, inlet, value);
         break;
 
       case "patchViz":
@@ -748,6 +979,13 @@ export class ObjectInteractionController {
     if (node.args[argIdx] === argVal) return;
 
     node.args[argIdx] = argVal;
+
+    // Sequencer: rebuild outlets if rows changed. Cell matrix is clamped to
+    // the new shape at read time, so shrinking cols truncates harmlessly.
+    if (node.type === "sequencer" && (selector === "rows" || selector === "cols")) {
+      this.syncSequencerPorts(node);
+    }
+
     // During attribute drag/text-entry, emit "display" only so the text panel
     // stays in sync without triggering render(). render() destroys all DOM
     // including the currently-focused input, which loses focus and lets
@@ -835,15 +1073,50 @@ export class ObjectInteractionController {
     const parsed = Number.parseFloat(value);
     const isOn = Number.isNaN(parsed) ? value !== "0" : parsed !== 0;
     node.args[0] = isOn ? "1" : "0";
-    this.graph.emit("change");
+    this.graph.emit(this.attrDragging ? "display" : "change");
     this.dispatchValue(node.id, 0, isOn ? "1.0" : "0.0");
   }
 
+  /** Searches panGroup then each external panel for an element by nodeId. */
+  private findNodeEl(nodeId: string): HTMLElement | null {
+    const sel = `[data-node-id="${nodeId}"]`;
+    const inPanel = this.panGroup.querySelector<HTMLElement>(sel);
+    if (inPanel) return inPanel;
+    for (const panel of this.externalPanels) {
+      const found = panel.querySelector<HTMLElement>(sel);
+      if (found) return found;
+    }
+    return null;
+  }
+
   private flashButton(nodeId: string): void {
-    const el = this.panGroup.querySelector<HTMLElement>(`[data-node-id="${nodeId}"]`);
-    if (!el) return;
-    el.classList.add("patch-object--active");
-    setTimeout(() => el.classList.remove("patch-object--active"), 150);
+    this.activeFlashes.add(nodeId);
+    this.applyFlashClass(nodeId);
+    setTimeout(() => {
+      this.activeFlashes.delete(nodeId);
+      this.removeFlashClass(nodeId);
+    }, 150);
+  }
+
+  private flashElements(nodeId: string): HTMLElement[] {
+    const sel = `[data-node-id="${nodeId}"]`;
+    return [
+      ...this.panGroup.querySelectorAll<HTMLElement>(sel),
+      ...this.externalPanels.flatMap(p => [...p.querySelectorAll<HTMLElement>(sel)]),
+    ];
+  }
+
+  private applyFlashClass(nodeId: string): void {
+    for (const el of this.flashElements(nodeId)) el.classList.add("patch-object--active");
+  }
+
+  private removeFlashClass(nodeId: string): void {
+    for (const el of this.flashElements(nodeId)) el.classList.remove("patch-object--active");
+  }
+
+  /** Called after render() rebuilds the DOM so in-flight flash states survive. */
+  reapplyTransientState(): void {
+    for (const id of this.activeFlashes) this.applyFlashClass(id);
   }
 
   private updateSliderFromEvent(e: MouseEvent): void {
@@ -900,7 +1173,7 @@ export class ObjectInteractionController {
     const value = isFloat ? raw : Math.round(raw);
 
     node.args[0] = String(value);
-    buildNumboxContent(el, value, isFloat, activePlace);
+    buildOdometerContent(el, value, isFloat, activePlace);
     // Live output during drag
     this.dispatchValue(node.id, 0, String(value));
   }
@@ -924,6 +1197,20 @@ export class ObjectInteractionController {
       const fxNode = this.visualizerGraph?.getImageFXNode(node.id);
       if (!fxNode) return;
       new ImageFXPanel(fxNode, node, this.graph).open();
+      return;
+    }
+
+    if (node.type === "subPatch") {
+      e.preventDefault();
+      e.stopPropagation();
+      this.subPatchManager?.open(node.id);
+      return;
+    }
+
+    if (node.type === "integer" || node.type === "float") {
+      e.preventDefault();
+      e.stopPropagation();
+      this.beginNumericEdit(objectEl, node);
       return;
     }
 
@@ -954,6 +1241,51 @@ export class ObjectInteractionController {
     this.beginMessageEdit(objectEl, node);
   }
 
+  private beginNumericEdit(objectEl: HTMLElement, node: PatchNode): void {
+    const odoEl = objectEl.querySelector<HTMLElement>(".pn-odometer");
+    if (!odoEl) return;
+
+    const isFloat = node.type === "float";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "pn-odometer-input";
+    input.value = node.args[0] ?? "0";
+    odoEl.appendChild(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+
+    const commit = () => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      const raw = input.value.trim();
+      const parsed = isFloat ? parseFloat(raw) : parseInt(raw, 10);
+      if (!isNaN(parsed)) {
+        const value = isFloat ? parsed : Math.trunc(parsed);
+        node.args[0] = String(value);
+        this.dispatchValue(node.id, 0, String(value));
+      }
+      this.graph.emit("change");
+    };
+
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      this.graph.emit("change");
+    };
+
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter")  { ev.preventDefault(); commit(); }
+      if (ev.key === "Escape") { ev.preventDefault(); cancel(); }
+      ev.stopPropagation();
+    });
+    input.addEventListener("blur", commit);
+  }
+
   private beginArgEdit(objectEl: HTMLElement, node: PatchNode, titleEl: HTMLElement): void {
     const originalText = titleEl.textContent ?? node.type;
 
@@ -978,7 +1310,7 @@ export class ObjectInteractionController {
       const tokens = input.value.trim().split(/\s+/).filter(Boolean);
       if (!tokens.length) { this.graph.emit("change"); return; }
 
-      const newType = tokens[0];
+      const newType = canonicalizeType(tokens[0]);
       const newArgs = tokens.slice(1);
 
       if (newType !== node.type && OBJECT_DEFS[newType]) {
@@ -988,6 +1320,13 @@ export class ObjectInteractionController {
         node.args = newArgs;
         node.inlets  = newDef.inlets.map(p => ({ ...p }));
         node.outlets = newDef.outlets.map(p => ({ ...p }));
+        if (newType === "t") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveTriggerPorts(newArgs));
+        }
+        if (newType === "sequencer") {
+          ensureSequencerArgs(node.args);
+          this.syncSequencerPorts(node);
+        }
         // Remove edges that now reference out-of-range ports
         for (const edge of this.graph.getEdges()) {
           const isFromThis = edge.fromNodeId === node.id;
@@ -998,6 +1337,16 @@ export class ObjectInteractionController {
       } else {
         // Same type (or invalid new type) — just update args
         node.args = newArgs;
+        if (node.type === "t") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveTriggerPorts(newArgs));
+          for (const edge of this.graph.getEdges()) {
+            if (edge.fromNodeId === node.id && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
+          }
+        }
+        if (node.type === "sequencer") {
+          ensureSequencerArgs(node.args);
+          this.syncSequencerPorts(node);
+        }
       }
 
       this.graph.emit("change");
@@ -1059,58 +1408,42 @@ export class ObjectInteractionController {
   }
 
   private deliverStoredMessageValue(node: PatchNode, inlet: number, value: string): void {
-    const selector = this.parseSelectorMessage(value);
-    if (selector) {
-      switch (selector.selector) {
-        case "set":
-          this.setStoredMessage(node, selector.payload);
-          return;
-        case "append":
-          this.setStoredMessage(node, this.joinSegments(this.getStoredMessage(node), selector.payload));
-          return;
-        case "prepend":
-          this.setStoredMessage(node, this.joinSegments(selector.payload, this.getStoredMessage(node)));
-          return;
-        default:
-          break;
+    if (inlet === 0) {
+      // Selector messages on left inlet: modify stored content without output
+      const selector = this.parseSelectorMessage(value);
+      if (selector) {
+        switch (selector.selector) {
+          case "set":
+            this.setStoredMessage(node, selector.payload);
+            return;
+          case "append":
+            this.setStoredMessage(node, this.joinSegments(this.getStoredMessage(node), selector.payload));
+            return;
+          case "prepend":
+            this.setStoredMessage(node, this.joinSegments(selector.payload, this.getStoredMessage(node)));
+            return;
+          default:
+            break;
+        }
       }
-    }
-
-    if (inlet !== 0) {
-      // Right-hand inlets: store incoming value and update display
+      // Any other value at inlet 0: substitute $1–$9 into the stored template and output.
+      // The template itself is never mutated — $n placeholders remain intact.
+      const template = this.getStoredMessage(node);
+      const values = value.trim().split(/\s+/).filter(Boolean);
+      const resolved = applyDollarArgs(template, values);
+      this.dispatchMessageContent(node, resolved);
+      this.flashButton(node.id);
+    } else {
+      // Right inlet: store incoming value silently without output.
+      // bang at right inlet is handled in deliverBang.
       this.setStoredMessage(node, value);
-      return;
     }
-
-    const template = this.getStoredMessage(node);
-    const isBang = value.trim() === "";
-    const values = isBang ? [] : value.trim().split(/\s+/);
-
-    // Only treat the stored string as a template when it has $1/$2/… vars.
-    // A box with a plain literal (no $ vars) acts as pass-through on inlet 0;
-    // a bang into a literal box sends the literal; an empty box passes through.
-    const hasDollarVars = /\$\d/.test(template);
-    const effectiveTemplate = hasDollarVars
-      ? template                          // substitute into template
-      : (isBang ? template : value.trim()); // bang → send stored literal; value → pass through
-
-    const resolved = applyDollarArgs(effectiveTemplate, values);
-
-    // Update args + DOM whenever the displayed value changes
-    if (resolved !== (node.args[0] ?? "")) {
-      node.args = resolved ? [resolved] : [];
-      this.updateMessageDom(node.id, resolved);
-    }
-
-    this.dispatchMessageContent(node, resolved);
-    this.flashButton(node.id);
   }
 
   /** Update the message box DOM without emitting a change event. */
   private updateMessageDom(nodeId: string, content: string): void {
-    const el = this.panGroup.querySelector<HTMLElement>(
-      `[data-node-id="${nodeId}"] .patch-object-message-content`,
-    );
+    const nodeEl = this.findNodeEl(nodeId);
+    const el = nodeEl?.querySelector<HTMLElement>(".patch-object-message-content");
     if (el) el.textContent = content;
   }
 
@@ -1199,7 +1532,7 @@ export class ObjectInteractionController {
   private setStoredMessage(node: PatchNode, content: string): void {
     node.args = content ? [content] : [];
     this.updateMessageDom(node.id, content);
-    this.graph.emit("change");
+    this.graph.emit(this.attrDragging ? "display" : "change");
   }
 
   private joinSegments(left: string, right: string): string {
@@ -1223,18 +1556,16 @@ export class ObjectInteractionController {
   }
 
   private syncNumboxDisplay(node: PatchNode): void {
-    const el = this.panGroup.querySelector<HTMLElement>(
-      `[data-node-id="${node.id}"] .pn-numbox`,
-    );
+    const nodeEl = this.findNodeEl(node.id);
+    const el = nodeEl?.querySelector<HTMLElement>(".pn-odometer");
     if (el) {
-      buildNumboxContent(el, parseFloat(node.args[0] ?? "0"), node.type === "float", null);
+      buildOdometerContent(el, parseFloat(node.args[0] ?? "0"), node.type === "float", null);
     }
   }
 
   private syncSliderThumb(nodeId: string, value: number, node: PatchNode): void {
-    const thumbEl = this.panGroup.querySelector<HTMLElement>(
-      `[data-node-id="${nodeId}"] .patch-object-slider-thumb`,
-    );
+    const nodeEl = this.findNodeEl(nodeId);
+    const thumbEl = nodeEl?.querySelector<HTMLElement>(".patch-object-slider-thumb");
     if (thumbEl) {
       const { min, range } = this.getSliderRange(node);
       thumbEl.style.left = `${Math.max(0, Math.min(100, ((value - min) / range) * 100))}%`;
@@ -1306,6 +1637,197 @@ export class ObjectInteractionController {
         const handle = setInterval(() => this.dispatchBang(node.id, 0), ms);
         this.metroTimers.set(node.id, handle);
       }
+    }
+  }
+
+  private deliverOscValue(node: PatchNode, inlet: number, value: string): void {
+    if (inlet === 0) {
+      const parsed = Number.parseFloat(value);
+      if (Number.isNaN(parsed)) return;
+      if (parsed === 0) this.stopOsc(node.id);
+      else this.startOsc(node);
+      return;
+    }
+    if (inlet === 1) {
+      const parsed = Number.parseFloat(value);
+      if (Number.isNaN(parsed)) return;
+      node.args[0] = `${Math.max(0.01, parsed)}`;
+      this.graph.emit("change");
+      if (this.isOscRunning(node.id)) this.startOsc(node);
+    }
+  }
+
+  private startOsc(node: PatchNode): void {
+    this.stopOsc(node.id, false);
+    const startT = performance.now() / 1000;
+    const state: { rafId: number; startT: number } = { rafId: 0, startT };
+    const tick = () => {
+      const current = this.oscTimers.get(node.id);
+      if (!current) return;
+      const liveNode = this.graph.nodes.get(node.id);
+      if (!liveNode) { this.stopOsc(node.id, false); return; }
+      const freq = Math.max(0.01, Number.parseFloat(liveNode.args[0] ?? "1"));
+      const t = performance.now() / 1000 - current.startT;
+      const v = 0.5 + 0.5 * Math.sin(2 * Math.PI * freq * t);
+      this.dispatchValue(node.id, 0, v.toFixed(4));
+      current.rafId = requestAnimationFrame(tick);
+    };
+    state.rafId = requestAnimationFrame(tick);
+    this.oscTimers.set(node.id, state);
+    node.args[1] = "1";
+    this.graph.emit("change");
+  }
+
+  private stopOsc(nodeId: string, persist = true): void {
+    const current = this.oscTimers.get(nodeId);
+    if (current !== undefined) {
+      cancelAnimationFrame(current.rafId);
+      this.oscTimers.delete(nodeId);
+    }
+    if (persist) {
+      const node = this.graph.nodes.get(nodeId);
+      if (node) {
+        node.args[1] = "0";
+        this.graph.emit("change");
+      }
+    }
+  }
+
+  private isOscRunning(nodeId: string): boolean {
+    return this.oscTimers.has(nodeId);
+  }
+
+  private pruneOscTimers(): void {
+    for (const nodeId of this.oscTimers.keys()) {
+      if (!this.graph.nodes.has(nodeId)) this.stopOsc(nodeId, false);
+    }
+  }
+
+  private restoreOscTimers(): void {
+    for (const node of this.graph.getNodes()) {
+      if (node.type === "oscillateNumbers" && node.args[1] === "1" && !this.isOscRunning(node.id)) {
+        this.startOsc(node);
+      }
+    }
+  }
+
+  // ── Sequencer ──────────────────────────────────────────────────────
+
+  /**
+   * Rebuild outlets from the `rows` arg. Removes edges that point at outlets
+   * that no longer exist. Caller is responsible for emitting.
+   */
+  private syncSequencerPorts(node: PatchNode): void {
+    const rows = sequencerRows(node);
+    if (node.outlets.length === rows) return;
+
+    node.outlets = Array.from({ length: rows }, (_, i) => ({
+      index: i,
+      type: "any" as PortType,
+      label: `row ${i}`,
+    }));
+
+    // Drop any edges whose source outlet on this node is now out of range.
+    // Delete directly from the map: graph.removeEdge would emit "change",
+    // re-entering render mid-update.
+    for (const edge of this.graph.getEdges()) {
+      if (edge.fromNodeId === node.id && edge.fromOutlet >= rows) {
+        this.graph.edges.delete(edge.id);
+      }
+    }
+  }
+
+  /**
+   * Advance the playhead by one column (wrapping) and fire the active cell
+   * value out of each row's outlet. Empty cells produce nothing; numeric
+   * tokens fire as floats; everything else fires as a message. The DOM is
+   * patched in place — a full re-render at bang cadence would thrash cells.
+   */
+  private advanceSequencer(node: PatchNode): void {
+    ensureSequencerArgs(node.args);
+    const rows = sequencerRows(node);
+    const cols = sequencerCols(node);
+    const prev = Math.trunc(Number.parseFloat(node.args[2] ?? "0")) || 0;
+    const next = ((prev + 1) % cols + cols) % cols;
+    node.args[2] = String(next);
+
+    const cells = getSequencerCells(node);
+    for (let r = 0; r < rows; r++) {
+      const raw = (cells[r]?.[next] ?? "").trim();
+      if (raw === "") continue;
+      if (raw === "bang") {
+        this.dispatchBang(node.id, r);
+      } else {
+        this.dispatchValue(node.id, r, raw);
+      }
+    }
+
+    // In-place DOM update — move the .pn-seq-cell--active class to the new column.
+    const nodeEl = this.findNodeEl(node.id);
+    const grid = nodeEl?.querySelector<HTMLElement>(".pn-seq-grid");
+    if (grid) {
+      for (const active of grid.querySelectorAll<HTMLElement>(".pn-seq-cell--active")) {
+        active.classList.remove("pn-seq-cell--active");
+      }
+      for (const cell of grid.querySelectorAll<HTMLElement>(".pn-seq-cell")) {
+        if (Number(cell.dataset.seqCol) === next) cell.classList.add("pn-seq-cell--active");
+      }
+    }
+
+    // "display" keeps the text panel in sync without destroying the grid DOM.
+    this.graph.emit("display");
+  }
+
+  /** Commit a cell's text content back into the node's cells storage. */
+  private commitSequencerCell(cellEl: HTMLElement): void {
+    const objectEl = cellEl.closest<HTMLElement>(".patch-object");
+    if (!objectEl) return;
+    const node = this.getNode(objectEl);
+    if (!node || node.type !== "sequencer") return;
+
+    const r = Number(cellEl.dataset.seqRow);
+    const c = Number(cellEl.dataset.seqCol);
+    if (!Number.isInteger(r) || !Number.isInteger(c)) return;
+
+    ensureSequencerArgs(node.args);
+    const cells = getSequencerCells(node);
+    if (!cells[r]) return;
+    const next = (cellEl.textContent ?? "").trim();
+    if (cells[r][c] === next) return;
+    cells[r][c] = next;
+    setSequencerCells(node, cells);
+    this.graph.emit("change");
+  }
+
+  private handleCellFocusOut(e: FocusEvent): void {
+    const target = e.target as HTMLElement | null;
+    if (!target || !target.classList.contains("pn-seq-cell")) return;
+    this.commitSequencerCell(target);
+  }
+
+  private handleCellKeyDown(e: KeyboardEvent): void {
+    const target = e.target as HTMLElement | null;
+    if (!target || !target.classList.contains("pn-seq-cell")) return;
+
+    // Stop propagation so canvas shortcuts (Delete, `b`, `t`, etc.) don't fire
+    // while the user is typing into a cell.
+    e.stopPropagation();
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      target.blur(); // triggers focusout → commitSequencerCell
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      // Revert to stored value and blur without committing a new one.
+      const objectEl = target.closest<HTMLElement>(".patch-object");
+      const node = objectEl ? this.getNode(objectEl) : null;
+      if (node?.type === "sequencer") {
+        const r = Number(target.dataset.seqRow);
+        const c = Number(target.dataset.seqCol);
+        const cells = getSequencerCells(node);
+        target.textContent = cells[r]?.[c] ?? "";
+      }
+      target.blur();
     }
   }
 }

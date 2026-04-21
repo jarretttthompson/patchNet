@@ -1,5 +1,7 @@
 import type { LayerNode } from "./LayerNode";
 import type { IRenderContext } from "./IRenderContext";
+import type { IRenderer } from "../control/IRenderer";
+import type { DownstreamMessage, UpstreamMessage } from "../control/ControlMessage";
 
 /**
  * VisualizerNode — manages one named popup render window.
@@ -10,8 +12,12 @@ import type { IRenderContext } from "./IRenderContext";
  *
  * Priority semantics: lower number = drawn first (background).
  *                     Higher number = drawn last (foreground / on top).
+ *
+ * Implements IRenderer (Phase 1 of control/render split) as a forwarder
+ * over its existing methods. Phase 2 migrates this to a dedicated
+ * `PopupRenderer` class with a pure ControlMessage surface.
  */
-export class VisualizerNode implements IRenderContext {
+export class VisualizerNode implements IRenderContext, IRenderer {
   private popup: Window | null = null;
   private canvas: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
@@ -44,6 +50,51 @@ export class VisualizerNode implements IRenderContext {
     private width = 640,
     private height = 480,
   ) {}
+
+  get rendererId(): string { return this.name; }
+
+  // ── IRenderer ─────────────────────────────────────────────────────
+
+  onUpstream?: (msg: UpstreamMessage) => void;
+
+  /**
+   * Apply a downstream ControlMessage. Phase 1 supports the subset that
+   * the current patch-side delivery methods already invoke on this class.
+   * The `open` / `bang` flows that depend on `openAndRestore()` (which
+   * reads patch-side args) remain on the old code path until Phase 2.
+   */
+  apply(msg: DownstreamMessage): void {
+    switch (msg.t) {
+      case "Command":
+        switch (msg.cmd) {
+          case "close":
+            this.close();
+            break;
+          case "size": {
+            const w = Number(msg.args?.[0] ?? this.width);
+            const h = Number(msg.args?.[1] ?? this.height);
+            if (!isNaN(w) && !isNaN(h)) this.resizeTo(w, h);
+            break;
+          }
+          case "move": {
+            const x = Number(msg.args?.[0] ?? 0);
+            const y = Number(msg.args?.[1] ?? 0);
+            if (!isNaN(x) && !isNaN(y)) this.moveTo(x, y);
+            break;
+          }
+          case "setFloat":
+            this.setFloat(Boolean(msg.args?.[0]));
+            break;
+          case "fullscreen":
+            this.fullscreen(Boolean(msg.args?.[0]));
+            break;
+        }
+        break;
+      default:
+        // Scene* / ParamUpdate / Trigger / Tick / ScenePreset — Phase 2+
+        break;
+    }
+  }
 
   /** Open the popup window and start the render loop. */
   open(): void {
@@ -83,6 +134,24 @@ export class VisualizerNode implements IRenderContext {
     doc.documentElement.style.cssText = "height:100%;background:#000;";
     doc.body.style.cssText = "margin:0;width:100%;height:100%;background:#000;overflow:hidden;";
 
+    // Fullscreen styling — when the canvas is the :fullscreen element, browsers
+    // size it to its intrinsic bitmap dimensions centered on black. Override so
+    // the canvas box fills the viewport; object-fit:contain preserves aspect
+    // ratio with letterboxing like YouTube. Change to `fill` to stretch, `cover`
+    // to crop-fill.
+    const fsStyle = doc.createElement("style");
+    fsStyle.textContent = `
+      canvas:fullscreen, canvas:-webkit-full-screen {
+        width: 100vw !important;
+        height: 100vh !important;
+        max-width: 100vw;
+        max-height: 100vh;
+        object-fit: contain;
+        background: #000;
+      }
+    `;
+    doc.head.appendChild(fsStyle);
+
     this.canvas = doc.createElement("canvas");
     this.canvas.width  = this.width;
     this.canvas.height = this.height;
@@ -93,11 +162,44 @@ export class VisualizerNode implements IRenderContext {
 
     this.popup.addEventListener("resize", () => {
       if (!this.popup || !this.canvas) return;
+      // Keep the canvas at its configured resolution whenever the popup covers
+      // (most of) the screen — fullscreen via ANY mechanism: Fullscreen API,
+      // macOS green-button window fullscreen, or OS-level window maximize.
+      // Rendering at screen resolution (e.g. 3840×2160) stalls video playback;
+      // CSS `width:100%;height:100%` on the canvas scales visually with zero cost.
+      const scr = this.popup.screen;
+      const screenFullsize =
+        (this.popup.innerWidth  >= scr.width  * 0.95 &&
+         this.popup.innerHeight >= scr.height * 0.85) ||
+        !!this.popup.document.fullscreenElement;
+      if (screenFullsize) return;
       this.width  = this.popup.innerWidth;
       this.height = this.popup.innerHeight;
       this.canvas.width  = this.width;
       this.canvas.height = this.height;
       this.onResize?.(this.width, this.height);
+    });
+
+    // Fullscreen entry paths inside the popup — both are native gestures
+    // in the popup's own browsing context, so browsers always allow them.
+    // (The `fullscreen` message from the main canvas is best-effort; Chrome
+    // often blocks cross-window requestFullscreen even with a user gesture.)
+    const toggleFullscreen = () => {
+      const d = this.popup!.document;
+      if (d.fullscreenElement) {
+        d.exitFullscreen().catch(() => {});
+      } else {
+        this.canvas!.requestFullscreen().catch(err => {
+          console.warn("[VisualizerNode] Fullscreen failed:", err);
+        });
+      }
+    };
+    this.canvas.addEventListener("dblclick", toggleFullscreen);
+    this.popup.addEventListener("keydown", (e) => {
+      if (e.key === "f" || e.key === "F") toggleFullscreen();
+      else if (e.key === "Escape" && this.popup!.document.fullscreenElement) {
+        this.popup!.document.exitFullscreen().catch(() => {});
+      }
     });
 
     this.popup.addEventListener("beforeunload", () => {
@@ -133,6 +235,29 @@ export class VisualizerNode implements IRenderContext {
   }
 
   moveTo(x: number, y: number): void { this.popup?.moveTo(x, y); }
+
+  /**
+   * Enter or exit fullscreen on the popup's canvas element.
+   * Must be called from within a user gesture handler — works when triggered
+   * by a button or message click, but NOT through metro/timer.
+   */
+  fullscreen(enable: boolean): void {
+    if (!this.popup || this.popup.closed || !this.canvas) return;
+    const doc = this.popup.document;
+    if (enable) {
+      // Cross-window requestFullscreen is gesture-restricted and often blocked
+      // even when called from a direct click. Reliable paths live inside the
+      // popup: double-click the canvas, or press `f`.
+      this.canvas.requestFullscreen().catch(err => {
+        console.warn(
+          `[VisualizerNode] fullscreen message blocked (${err.name ?? err}). ` +
+          `Double-click the popup or press F to go fullscreen.`
+        );
+      });
+    } else if (doc.fullscreenElement) {
+      doc.exitFullscreen().catch(() => {});
+    }
+  }
 
   /** Set dimensions before open() so the popup is created at the right size. */
   setDimensions(w: number, h: number): void {
@@ -201,17 +326,25 @@ export class VisualizerNode implements IRenderContext {
   // ── Render loop ──────────────────────────────────────────────────
 
   private startLoop(): void {
-    if (this.rafId !== null) return;
+    if (this.rafId !== null || !this.popup) return;
+    // Use the popup's rAF, not the main window's. When the popup goes
+    // fullscreen (especially macOS-style, which moves it to its own Space),
+    // the main window becomes backgrounded and Chrome throttles its rAF to
+    // ~1 fps. Driving the render tick off the VISIBLE popup keeps playback
+    // at full framerate regardless of the main window's state.
+    const popup = this.popup;
     const tick = () => {
       if (!this.popup || this.popup.closed) { this.rafId = null; return; }
       this.drawFrame();
-      this.rafId = requestAnimationFrame(tick);
+      this.rafId = popup.requestAnimationFrame(tick);
     };
-    this.rafId = requestAnimationFrame(tick);
+    this.rafId = popup.requestAnimationFrame(tick);
   }
 
   private stopLoop(): void {
-    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
+    if (this.rafId !== null && this.popup && !this.popup.closed) {
+      this.popup.cancelAnimationFrame(this.rafId);
+    }
     this.rafId = null;
   }
 
@@ -229,6 +362,8 @@ export class VisualizerNode implements IRenderContext {
   // ── Position polling ─────────────────────────────────────────────
 
   private startPositionPoll(): void {
+    if (!this.popup) return;
+    const popup = this.popup;
     const poll = () => {
       if (!this.popup || this.popup.closed) { this.positionPollId = null; return; }
       const x = this.popup.screenX;
@@ -238,14 +373,14 @@ export class VisualizerNode implements IRenderContext {
         this._lastScreenY = y;
         this.onMove?.(x, y);
       }
-      this.positionPollId = requestAnimationFrame(poll);
+      this.positionPollId = popup.requestAnimationFrame(poll);
     };
-    this.positionPollId = requestAnimationFrame(poll);
+    this.positionPollId = popup.requestAnimationFrame(poll);
   }
 
   private stopPositionPoll(): void {
     if (this.positionPollId !== null) {
-      cancelAnimationFrame(this.positionPollId);
+      if (this.popup && !this.popup.closed) this.popup.cancelAnimationFrame(this.positionPollId);
       this.positionPollId = null;
     }
   }

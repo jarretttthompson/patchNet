@@ -1,6 +1,16 @@
 import { renderPorts } from "./PortRenderer";
-import { getObjectDef, OBJECT_DEFS, getVisibleArgs, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
+import { getObjectDef, OBJECT_DEFS, getVisibleArgs, getSequencerCells, sequencerCols, sequencerRows, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
 import type { PatchNode } from "../graph/PatchNode";
+
+const LOCK_ICON_SVG = `
+      <svg class="pn-lock-icon pn-lock-closed" viewBox="0 0 14 16" width="11" height="13" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="7" width="10" height="8" rx="1.5" fill="currentColor"/>
+        <path d="M4.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <svg class="pn-lock-icon pn-lock-open" viewBox="0 0 14 16" width="11" height="13" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="7" width="10" height="8" rx="1.5" fill="currentColor"/>
+        <path d="M4.5 7V5.5a2.5 2.5 0 0 1 5 0V3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>`;
 
 const MATH_OPS = new Set(["+", "-", "*", "/", "%", "==", "!=", ">", "<", ">=", "<="]);
 
@@ -147,10 +157,10 @@ function buildBody(node: PatchNode): HTMLDivElement {
     body.appendChild(plate);
 
   } else if (node.type === "integer" || node.type === "float") {
-    const numbox = document.createElement("div");
-    numbox.className = "pn-numbox";
-    buildNumboxContent(numbox, parseFloat(node.args[0] ?? "0"), node.type === "float", null);
-    body.appendChild(numbox);
+    const odo = document.createElement("div");
+    odo.className = "pn-odometer";
+    buildOdometerContent(odo, parseFloat(node.args[0] ?? "0"), node.type === "float", null);
+    body.appendChild(odo);
 
   } else if (node.type === "message") {
     // Max-style message box: displays text content, click to send
@@ -310,16 +320,10 @@ function buildBody(node: PatchNode): HTMLDivElement {
     const row = document.createElement("div");
     row.className = "patch-object-sr";
 
-    const letter = document.createElement("span");
-    letter.className = "patch-object-sr-type";
-    letter.textContent = node.type;
-
-    const channel = document.createElement("span");
-    channel.className = "patch-object-sr-channel";
-    channel.textContent = node.args[0] ?? "";
-
-    row.appendChild(letter);
-    row.appendChild(channel);
+    const title = document.createElement("div");
+    title.className = "patch-object-title";
+    title.textContent = node.args[0] ? `${node.type} ${node.args[0]}` : node.type;
+    row.appendChild(title);
     body.appendChild(row);
 
   } else if (node.type === "fft~") {
@@ -350,6 +354,80 @@ function buildBody(node: PatchNode): HTMLDivElement {
           </div>
         </div>
       </div>`;
+
+  } else if (node.type === "sequencer") {
+    body.classList.add("patch-object-sequencer-body");
+
+    const rows = sequencerRows(node);
+    const cols = sequencerCols(node);
+    const cells = getSequencerCells(node);
+    const locked = (node.args[4] ?? "1") !== "0";
+    const rawHead = Math.trunc(Number.parseFloat(node.args[2] ?? "0"));
+    const playhead = ((rawHead % cols) + cols) % cols;
+
+    const grid = document.createElement("div");
+    grid.className = "pn-seq-grid";
+    grid.dataset.locked = locked ? "1" : "0";
+    grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+    grid.style.gridTemplateRows    = `repeat(${rows}, minmax(0, 1fr))`;
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const cell = document.createElement("div");
+        cell.className = "pn-seq-cell";
+        if (c === playhead) cell.classList.add("pn-seq-cell--active");
+        cell.dataset.seqRow = String(r);
+        cell.dataset.seqCol = String(c);
+        cell.contentEditable = locked ? "false" : "true";
+        cell.spellcheck = false;
+        cell.textContent = cells[r][c];
+        grid.appendChild(cell);
+      }
+    }
+    body.appendChild(grid);
+
+    const lockBtn = document.createElement("button");
+    lockBtn.className = "pn-subpatch-lock pn-sequencer-lock";
+    lockBtn.dataset.locked = locked ? "1" : "0";
+    lockBtn.setAttribute("aria-label", locked ? "Unlock cells to edit" : "Lock cells");
+    lockBtn.innerHTML = LOCK_ICON_SVG;
+    body.appendChild(lockBtn);
+
+  } else if (node.type === "subPatch") {
+    const mount = document.createElement("div");
+    mount.className = "pn-subpatch-panel-mount";
+    mount.dataset.panelFor = node.id;
+    body.appendChild(mount);
+
+    const locked = (node.args[3] ?? "1") !== "0";
+    const lockBtn = document.createElement("button");
+    lockBtn.className = "pn-subpatch-lock";
+    lockBtn.dataset.locked = locked ? "1" : "0";
+    lockBtn.setAttribute("aria-label", locked ? "Unlock to reposition GUI objects" : "Lock to interact");
+    lockBtn.innerHTML = `
+      <svg class="pn-lock-icon pn-lock-closed" viewBox="0 0 14 16" width="11" height="13" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="7" width="10" height="8" rx="1.5" fill="currentColor"/>
+        <path d="M4.5 7V5.5a2.5 2.5 0 0 1 5 0V7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <svg class="pn-lock-icon pn-lock-open" viewBox="0 0 14 16" width="11" height="13" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="2" y="7" width="10" height="8" rx="1.5" fill="currentColor"/>
+        <path d="M4.5 7V5.5a2.5 2.5 0 0 1 5 0V3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>`;
+    body.appendChild(lockBtn);
+
+  } else if (node.type === "inlet") {
+    const idx = node.args[0] ?? "0";
+    const d = document.createElement("div");
+    d.className = "pn-iolet-label";
+    d.textContent = `in ${idx}`;
+    body.appendChild(d);
+
+  } else if (node.type === "outlet") {
+    const idx = node.args[0] ?? "0";
+    const d = document.createElement("div");
+    d.className = "pn-iolet-label";
+    d.textContent = `out ${idx}`;
+    body.appendChild(d);
 
   } else if (node.type === "dac~" || node.type === "adc~") {
     // Icon above meters
@@ -391,9 +469,15 @@ function buildBody(node: PatchNode): HTMLDivElement {
       const outLow  = node.args[2] ?? "0";
       const outHigh = node.args[3] ?? "127";
       title.textContent = `scale ${inLow} ${inHigh} ${outLow} ${outHigh}`;
+      body.classList.add("patch-object-body--args-inline");
     } else if (MATH_OPS.has(node.type)) {
       const rightOp = node.args[0] ?? "0";
       title.textContent = `${node.type} ${rightOp}`;
+      body.classList.add("patch-object-body--args-inline");
+    } else if (node.type === "t") {
+      const letters = node.args.length > 0 ? node.args.join(" ") : "i i";
+      title.textContent = `t ${letters}`;
+      body.classList.add("patch-object-body--args-inline");
     } else {
       title.textContent = node.type;
     }
@@ -416,11 +500,14 @@ function buildBody(node: PatchNode): HTMLDivElement {
 }
 
 /**
- * Rebuild the digit spans inside a .pn-numbox element.
- * activePlace: null = no digit highlighted (initial render / integer)
- *              number = power-of-10 place to underline (float drag)
+ * Rebuild the odometer drum columns inside a .pn-odometer element.
+ * Each digit gets its own column showing the digit above, current, and below,
+ * recreating the look of a vintage rolling-cylinder odometer.
+ *
+ * activePlace: null  = no column highlighted (initial render)
+ *              number = place value being dragged (column brightens)
  */
-export function buildNumboxContent(
+export function buildOdometerContent(
   container: HTMLElement,
   value: number,
   isFloat: boolean,
@@ -428,43 +515,67 @@ export function buildNumboxContent(
 ): void {
   container.innerHTML = "";
 
+  const isNeg = value < 0;
+  const absVal = Math.abs(value);
   const decimals = isFloat
-    ? Math.min(10, Math.max(3, activePlace !== null ? Math.max(0, -activePlace) : 3))
+    ? Math.min(6, Math.max(3, activePlace !== null ? Math.max(0, -activePlace) : 3))
     : 0;
-  const formatted = isFloat ? value.toFixed(decimals) : String(Math.trunc(value));
+  const formatted = absVal.toFixed(decimals);
+  const dotIdx = formatted.indexOf(".");
+  const intPart = dotIdx === -1 ? formatted : formatted.slice(0, dotIdx);
+  const decPart = dotIdx === -1 ? "" : formatted.slice(dotIdx + 1);
 
-  const isNeg = formatted.startsWith("-");
-  const absStr = isNeg ? formatted.slice(1) : formatted;
-  const dotIdx = absStr.indexOf(".");
+  // Inner window — digit display area sits inside the frame
+  const inner = document.createElement("div");
+  inner.className = "pn-odo-inner";
 
-  if (isNeg) {
-    const sign = document.createElement("span");
-    sign.className = "pn-numbox__sign";
-    sign.textContent = "−";
-    container.appendChild(sign);
+  // Sign column
+  const sign = document.createElement("span");
+  sign.className = "pn-odo-sign";
+  sign.textContent = isNeg ? "−" : "+";
+  inner.appendChild(sign);
+
+  // Helper: one rolling drum column
+  const addDrum = (ch: string, place: number) => {
+    const d = parseInt(ch, 10);
+    const col = document.createElement("div");
+    col.className = "pn-odo-col";
+    col.dataset.place = String(place);
+    if (activePlace !== null && place === activePlace) col.classList.add("pn-odo-col--active");
+
+    const above = document.createElement("div");
+    above.className = "pn-odo-above";
+    above.textContent = String((d + 1) % 10);
+
+    const curr = document.createElement("div");
+    curr.className = "pn-odo-curr";
+    curr.textContent = ch;
+
+    const below = document.createElement("div");
+    below.className = "pn-odo-below";
+    below.textContent = String((d + 9) % 10);
+
+    col.append(above, curr, below);
+    inner.appendChild(col);
+  };
+
+  // Integer digits
+  for (let i = 0; i < intPart.length; i++) {
+    addDrum(intPart[i], intPart.length - 1 - i);
   }
 
-  for (let j = 0; j < absStr.length; j++) {
-    const ch = absStr[j];
-    if (ch === ".") {
-      const dot = document.createElement("span");
-      dot.className = "pn-numbox__dot";
-      dot.textContent = ".";
-      container.appendChild(dot);
-    } else {
-      const place = dotIdx === -1
-        ? absStr.length - 1 - j
-        : j < dotIdx ? dotIdx - 1 - j : dotIdx - j;
-      const span = document.createElement("span");
-      span.className = "pn-numbox__digit";
-      if (activePlace !== null && place === activePlace) {
-        span.classList.add("pn-numbox__digit--active");
-      }
-      span.dataset.place = String(place);
-      span.textContent = ch;
-      container.appendChild(span);
+  if (isFloat) {
+    const dot = document.createElement("span");
+    dot.className = "pn-odo-dot";
+    dot.textContent = ".";
+    inner.appendChild(dot);
+
+    for (let i = 0; i < decPart.length; i++) {
+      addDrum(decPart[i], -(i + 1));
     }
   }
+
+  container.appendChild(inner);
 }
 
 export function renderObject(node: PatchNode): HTMLDivElement {
@@ -500,10 +611,12 @@ export function renderObject(node: PatchNode): HTMLDivElement {
 
   const topInlets = node.inlets.filter(p => !p.side || p.side === "top");
   const sideInlets = node.inlets.filter(p => p.side === "left");
+  const topOutlets  = node.outlets.filter(p => !p.side || p.side === "top");
+  const sideOutlets = node.outlets.filter(p => p.side === "right");
 
   el.appendChild(renderPorts("inlet", topInlets));
   el.appendChild(buildBody(node));
-  el.appendChild(renderPorts("outlet", node.outlets));
+  el.appendChild(renderPorts("outlet", topOutlets));
 
   // Side inlet nubs — absolutely positioned on the left edge, aligned with rows
   for (const port of sideInlets) {
@@ -518,6 +631,22 @@ export function renderObject(node: PatchNode): HTMLDivElement {
     nub.setAttribute("aria-label", `inlet ${port.index}: ${port.label ?? ""}`);
     nub.style.top  = `${portY}px`;
     nub.style.left = "0";
+    el.appendChild(nub);
+  }
+
+  // Side outlet nubs — absolutely positioned on the right edge, row-centered.
+  // Vertical position is a percentage of the object height so the nubs track
+  // the grid rows even after the object is resized.
+  const sideOutletCount = sideOutlets.length;
+  for (const port of sideOutlets) {
+    const nub = document.createElement("div");
+    nub.className = `patch-port patch-port-outlet patch-port-type-${port.type} patch-port-hot patch-port-side-right`;
+    nub.dataset.portIndex = String(port.index);
+    nub.dataset.portType  = port.type;
+    nub.dataset.pnLabel   = port.label ?? `outlet ${port.index}`;
+    nub.setAttribute("aria-label", `outlet ${port.index}: ${port.label ?? ""}`);
+    nub.style.top  = `${((port.index + 0.5) / Math.max(1, sideOutletCount)) * 100}%`;
+    nub.style.left = "100%";
     el.appendChild(nub);
   }
 

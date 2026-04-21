@@ -4,7 +4,7 @@ import "./shell.css";
 
 import { initCrtOverlayScroll } from "./crtOverlaySync";
 import { PatchGraph } from "./graph/PatchGraph";
-import { renderObject } from "./canvas/ObjectRenderer";
+import { renderObject, buildOdometerContent } from "./canvas/ObjectRenderer";
 import { CableRenderer } from "./canvas/CableRenderer";
 import { CanvasController } from "./canvas/CanvasController";
 import { DragController } from "./canvas/DragController";
@@ -16,12 +16,15 @@ import { PortTooltip } from "./canvas/PortTooltip";
 import { VisualizerObjectUI } from "./canvas/VisualizerObjectUI";
 import { CodeboxController } from "./canvas/CodeboxController";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvas/canvasSpace";
+import { getZoom } from "./canvas/zoomState";
 import { getObjectDef } from "./graph/objectDefs";
 import { UndoManager } from "./graph/UndoManager";
 import { AudioRuntime } from "./runtime/AudioRuntime";
 import { AudioGraph } from "./runtime/AudioGraph";
 import { VisualizerRuntime } from "./runtime/VisualizerRuntime";
 import { VisualizerGraph } from "./runtime/VisualizerGraph";
+import { SubPatchManager } from "./canvas/SubPatchManager";
+import { TabManager } from "./canvas/TabManager";
 
 function requireElement<T extends Element>(
   selector: string,
@@ -95,6 +98,8 @@ new DragController(panGroup, graph, undefined, (nodeId, x, y) => {
   const node = graph.nodes.get(nodeId);
   if (node) { node.x = x; node.y = y; }
   cables.render();
+  // Grow the pan-group live so drag isn't capped at drag-start extent
+  canvas.updatePanGroupSize();
   syncTextPanel();
 }, () => canvas.getSelectedNodeIds(), (newIds) => {
   // After Cmd+drag clone, select the new copies
@@ -193,13 +198,28 @@ function startMeterLoop(): void {
         if (val === undefined) continue;
         const formatted = val.toFixed(4);
         const targetNode = graph.nodes.get(edge.toNodeId);
-        if (targetNode) targetNode.args[0] = formatted;
-        const contentEl = panGroup.querySelector(
-          `[data-node-id="${edge.toNodeId}"] .patch-object-message-content`,
+        if (!targetNode) continue;
+
+        const targetEl = panGroup.querySelector<HTMLElement>(
+          `[data-node-id="${edge.toNodeId}"]`,
         );
-        if (contentEl) contentEl.textContent = formatted;
-        // Fire the target node's outlet so downstream chains receive the value.
-        objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+
+        if (targetNode.type === "float" || targetNode.type === "integer") {
+          const isFloat = targetNode.type === "float";
+          const stored = isFloat ? formatted : String(Math.trunc(val));
+          targetNode.args[0] = stored;
+          const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
+          if (odo) buildOdometerContent(odo, isFloat ? val : Math.trunc(val), isFloat, null);
+          // Hot inlet 0 stores + fires; cold inlet 1 stores silently.
+          if (edge.toInlet === 0) {
+            objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
+          }
+        } else {
+          targetNode.args[0] = formatted;
+          const contentEl = targetEl?.querySelector(".patch-object-message-content");
+          if (contentEl) contentEl.textContent = formatted;
+          objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+        }
       }
     }
     const levels = audioGraph.getMeterLevels();
@@ -276,6 +296,21 @@ masterVolSlider?.addEventListener("input", () => {
   if (masterVolReadout) masterVolReadout.textContent = String(Math.round(v * 100));
 });
 
+// ── SubPatch / Tab system ─────────────────────────────────────────────────────
+
+const tabBarEl = document.getElementById("pn-tab-bar") as HTMLDivElement;
+const tabManager = new TabManager(tabBarEl, panGroup, canvas);
+
+const subPatchManager = new SubPatchManager(
+  graph,
+  objectInteraction,
+  canvasArea,
+  (nodeId, label, session) => {
+    tabManager.openSubPatch(nodeId, label, session);
+  },
+);
+objectInteraction.setSubPatchManager(subPatchManager);
+
 // ── Render ───────────────────────────────────────────────────────────────────
 
 // Guard: true while a canvas change is propagating to the text panel, so the
@@ -297,10 +332,16 @@ function syncTextPanel(): void {
   renderingToTextPanel = false;
 }
 
+let isRendering = false;
+let needsRender = false;
+
 function render(): void {
-  // Remove all object elements (not the SVG)
-  const existingObjects = panGroup.querySelectorAll<HTMLElement>(".patch-object");
-  existingObjects.forEach((el) => el.remove());
+  if (isRendering) { needsRender = true; return; }
+  isRendering = true;
+
+  try {
+  // Remove only direct-child objects — do not descend into subPatch presentation panels
+  panGroup.querySelectorAll<HTMLElement>(":scope > .patch-object").forEach(el => el.remove());
 
   // Re-render objects from graph
   for (const node of graph.getNodes()) {
@@ -344,9 +385,20 @@ function render(): void {
 
   // Expand scrollable canvas boundary to fit all nodes + margin
   canvas.updatePanGroupSize();
+
+  } finally {
+    isRendering = false;
+  }
+
+  if (needsRender) {
+    needsRender = false;
+    render();
+  }
 }
 
 graph.on("change", render);
+graph.on("change", () => subPatchManager.mountPresentationPanels(panGroup));
+graph.on("change", () => objectInteraction.reapplyTransientState());
 graph.on("display", syncTextPanel);
 
 // ── Text panel → canvas (bidirectional sync) ─────────────────────────────────
@@ -429,10 +481,12 @@ requestAnimationFrame(() => {
 });
 
 // ── Scroll bounds ────────────────────────────────────────────────────────────
-// Prevent the user from scrolling more than SCROLL_PAD pixels away from the
-// patch bounding box in any direction.
+// Prevent the user from scrolling more than SCROLL_PAD pixels (screen-space)
+// away from the patch bounding box in any direction. Patch bbox is in
+// intrinsic world coords; scrollLeft/Top are in zoomed content space, so we
+// scale by the current zoom before clamping.
 
-const SCROLL_PAD = 400;
+const SCROLL_PAD = 600;
 
 function patchScrollBounds() {
   const nodes = graph.getNodes();
@@ -449,11 +503,11 @@ function patchScrollBounds() {
     maxY = Math.max(maxY, node.y + h);
   }
 
-  // Convert patch bbox to scroll-space and add padding
-  const lo_x = minX + CANVAS_LEFT_GUTTER_PX - SCROLL_PAD;
-  const hi_x = maxX + CANVAS_LEFT_GUTTER_PX + SCROLL_PAD - canvasArea.clientWidth;
-  const lo_y = minY + CANVAS_TOP_GUTTER_PX  - SCROLL_PAD;
-  const hi_y = maxY + CANVAS_TOP_GUTTER_PX  + SCROLL_PAD - canvasArea.clientHeight;
+  const z = getZoom();
+  const lo_x = minX * z + CANVAS_LEFT_GUTTER_PX - SCROLL_PAD;
+  const hi_x = maxX * z + CANVAS_LEFT_GUTTER_PX + SCROLL_PAD - canvasArea.clientWidth;
+  const lo_y = minY * z + CANVAS_TOP_GUTTER_PX  - SCROLL_PAD;
+  const hi_y = maxY * z + CANVAS_TOP_GUTTER_PX  + SCROLL_PAD - canvasArea.clientHeight;
 
   return {
     minX: Math.max(0, lo_x),
@@ -481,6 +535,7 @@ canvasArea.addEventListener("scroll", () => {
 });
 
 window.addEventListener("beforeunload", () => {
+  subPatchManager.destroy();
   codeboxController.destroy();
   vizGraph.destroy();
   undoManager.destroy();

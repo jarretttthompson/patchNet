@@ -6,8 +6,8 @@ export interface PortDef {
   type: PortType;
   /** Hot inlets trigger output; cold inlets store only. Default: hot. */
   temperature?: "hot" | "cold";
-  /** Rendering edge. "top" = normal top/bottom strip (default). "left" = left-edge side inlet. */
-  side?: "top" | "left";
+  /** Rendering edge. "top" = normal top/bottom strip (default). "left" = left-edge side inlet. "right" = right-edge side outlet. */
+  side?: "top" | "left" | "right";
 }
 
 export interface PatchNodeData {
@@ -21,6 +21,11 @@ export interface PatchNodeData {
   width?: number;
   height?: number;
   groupId?: string;
+  /** Panel position — independent of editor x/y. Serialized as #X panel. */
+  panelX?: number;
+  panelY?: number;
+  panelW?: number;
+  panelH?: number;
 }
 
 export class PatchNode implements PatchNodeData {
@@ -34,6 +39,10 @@ export class PatchNode implements PatchNodeData {
   width?: number;
   height?: number;
   groupId?: string;
+  panelX?: number;
+  panelY?: number;
+  panelW?: number;
+  panelH?: number;
   /** Transient display URL (blob: or data:) — never serialized, set by runtime after IDB load. */
   displayUrl?: string;
 
@@ -48,5 +57,9 @@ export class PatchNode implements PatchNodeData {
     this.width = data.width;
     this.height = data.height;
     this.groupId = data.groupId;
+    this.panelX = data.panelX;
+    this.panelY = data.panelY;
+    this.panelW = data.panelW;
+    this.panelH = data.panelH;
   }
 }

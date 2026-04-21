@@ -1,5 +1,7 @@
 import type { LayerNode } from "./LayerNode";
 import type { IRenderContext } from "./IRenderContext";
+import type { IRenderer } from "../control/IRenderer";
+import type { DownstreamMessage, UpstreamMessage } from "../control/ControlMessage";
 
 /**
  * PatchVizNode — inline render context that lives inside a patchViz object.
@@ -10,8 +12,13 @@ import type { IRenderContext } from "./IRenderContext";
  *
  * The render loop starts automatically and runs continuously so the canvas
  * stays live as soon as layers are wired in.
+ *
+ * Implements IRenderer (Phase 1 of control/render split) as a forwarder
+ * over its existing methods. Phase 2 migrates this to a dedicated
+ * `CanvasRenderer` class and drops direct method access in favor of
+ * ControlMessages only.
  */
-export class PatchVizNode implements IRenderContext {
+export class PatchVizNode implements IRenderContext, IRenderer {
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private rafId: number | null = null;
@@ -41,6 +48,30 @@ export class PatchVizNode implements IRenderContext {
 
   set contextName(name: string) { this._contextName = name; }
   get contextName(): string     { return this._contextName; }
+
+  get rendererId(): string { return this._contextName; }
+
+  // ── IRenderer ─────────────────────────────────────────────────────
+
+  onUpstream?: (msg: UpstreamMessage) => void;
+
+  apply(msg: DownstreamMessage): void {
+    switch (msg.t) {
+      case "Command":
+        switch (msg.cmd) {
+          case "enable":  this.enable();  break;
+          case "disable": this.disable(); break;
+          case "toggle":  this.toggle();  break;
+        }
+        break;
+      case "Trigger":
+        if (msg.event === "bang") this.toggle();
+        break;
+      default:
+        // Scene* / ParamUpdate / Tick / ScenePreset — Phase 2+ will wire these
+        break;
+    }
+  }
 
   enable(): void  { this._enabled = true; }
   disable(): void { this._enabled = false; }

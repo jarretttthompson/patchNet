@@ -1,5 +1,5 @@
 import { PatchEdge, type PatchEdgeData } from "./PatchEdge";
-import { getObjectDef } from "./objectDefs";
+import { canonicalizeType, deriveSequencerPorts, deriveTriggerPorts, ensureSequencerArgs, getObjectDef } from "./objectDefs";
 import { PatchNode, type PatchNodeData } from "./PatchNode";
 import { parsePatch } from "../serializer/parse";
 import { serializePatch } from "../serializer/serialize";
@@ -15,15 +15,25 @@ export class PatchGraph {
   private readonly displayListeners = new Set<ChangeHandler>();
 
   addNode(type: string, x: number, y: number, args: string[] = []): PatchNode {
+    type = canonicalizeType(type);
     const objectDef = getObjectDef(type);
+    let inlets  = objectDef.inlets;
+    let outlets = objectDef.outlets;
+    if (type === "t") {
+      ({ inlets, outlets } = deriveTriggerPorts(args));
+    }
+    if (type === "sequencer") {
+      ensureSequencerArgs(args);
+      ({ inlets, outlets } = deriveSequencerPorts(args));
+    }
     const node = new PatchNode({
       id: crypto.randomUUID(),
       type,
       x,
       y,
       args,
-      inlets: objectDef.inlets,
-      outlets: objectDef.outlets,
+      inlets,
+      outlets,
     });
 
     this.nodes.set(node.id, node);

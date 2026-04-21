@@ -53,9 +53,9 @@ Team: Cursor (canvas/UI), Codex (audio/runtime), Copilot (inline acceleration)
 
 ## Project State
 
-**Current Phase:** Evaluation Plan — Parts 1, 2, 4 in flight + persistence refactor landed
-**Active tasks:** Part 1.1/1.2/1.3/1.5 landed; Part 1.4 deferred (BLOCKER-2). Part 2.1 mechanical deletions landed. Part 4.1 recipe, 4.2 template, and 3 of 21 ref pages landed. **Persistence refactor (text as source of truth) landed** — `#X id` identity preservation, diff-based deserialize, mediaImage IDB migration.
-**Last updated:** 2026-04-17 by Claude Code
+**Current Phase:** Control/Render Split Phase 1 landed + Evaluation Plan Parts 1, 2, 4 still in flight
+**Active tasks:** Control/Render Split Phase 1 scaffolding landed (see `docs/CONTROL_RENDER_SPLIT.md`); `deliverPatchVizMessage` migrated to bus as proof path. Phase 2 gated on test infra (resolves BLOCKER-1). Evaluation Plan: Part 1.1/1.2/1.3/1.5 landed; Part 1.4 deferred (BLOCKER-2); Part 2.1 landed; Part 4 recipe + 3 of 21 ref pages landed. Persistence refactor landed earlier.
+**Last updated:** 2026-04-19 by Claude Code
 
 ---
 
@@ -74,6 +74,128 @@ Agents: append here when making a decision that affects the whole project.
 ---
 
 ## Changelog
+
+---
+## [2026-04-20] COMPLETED | sequencer object
+**Agent:** Claude Code
+**Phase:** Out-of-band user request — new control-category step sequencer
+**Done:**
+- Added `sequencer` to `OBJECT_DEFS` (`src/graph/objectDefs.ts`). Control-category. Args: `rows` (int 1–32, default 4), `cols` (int 1–64, default 8), `playhead` (hidden int), `cells` (hidden base64 JSON matrix), `locked` (hidden int 0/1, default 1). Single bang inlet; one `any` outlet per row (derived).
+- Port derivation: `deriveSequencerPorts(args)` rebuilds outlets from the row arg. Called from `PatchGraph.addNode`, `parse.ts`, and inline at every arg-mutation site (`beginArgEdit` for type swaps and same-type edits, `trySetArgByName` when `rows`/`cols` change via the attribute panel).
+- Ensure-args helper (`ensureSequencerArgs`) backfills any sparse arg slots with defaults before serialization — prevents `"undefined"` tokens from leaking into the text panel when args[4] is set while earlier slots remain empty. Base64 default for `cells` is `"W10="` (`btoa("[]")`) so args[3] is never the empty string (which would collapse under parse's `split(/\s+/)`).
+- Cell storage + helpers: `getSequencerCells(node)` returns a rows×cols string matrix, padding missing slots with `""`; `setSequencerCells(node, cells)` writes back as base64 JSON to `args[3]`.
+- Renderer (`ObjectRenderer.ts`): `sequencer` branch builds a CSS-grid of `.pn-seq-cell` divs, marking the active column with `pn-seq-cell--active`. Each cell is `contenteditable` iff unlocked. A lock button (shares the `pn-subpatch-lock` class so the existing DragController exclusion covers it) sits at the top-right to stay clear of the resize handle.
+- Interaction (`ObjectInteractionController.ts`):
+  - `advanceSequencer(node)`: wraps playhead via `(prev + 1) % cols`, dispatches each row's active-column value. Empty cells skip; literal `"bang"` dispatches a bang; everything else dispatches as a value. DOM is patched in place (no full re-render at bang cadence); emits `"display"` to keep the text panel in sync without re-rendering.
+  - Lock-button handler in `handleClick` mirrors subPatch's toggle for `args[4]`.
+  - Cell-edit events: new `focusout` + `keydown` listeners on `panGroup` (and mirrored on external panels so subPatch presentations also work). Enter commits via blur; Escape reverts. Commit writes back via `setSequencerCells` and emits `"change"`.
+  - `syncSequencerPorts(node)` rebuilds outlets and drops orphan edges via direct `graph.edges.delete` (no `removeEdge` re-emit) so it is safe to call during `attrDragging`.
+  - `deliverMessageValue` branch for `sequencer`: treats any non-selector value on inlet 0 as a bang-equivalent advance (selector-form messages like `rows 6` fall through to `trySetArgByName` → `syncSequencerPorts`).
+- `DragController.ts`: `pn-seq-cell` added to the click-through allowlist so caret placement / text selection inside a cell doesn't start a reposition drag.
+- `tsc --noEmit` passes. `npm run build` clean (574 KB bundle, same order as before).
+
+**Changed files:**
+- src/graph/objectDefs.ts — sequencer ObjectSpec + derivation/ensure/cells helpers
+- src/graph/PatchGraph.ts — addNode sequencer branch
+- src/serializer/parse.ts — sequencer parse branch (ensure args + derive ports)
+- src/canvas/ObjectRenderer.ts — sequencer body branch + shared `LOCK_ICON_SVG`
+- src/canvas/ObjectInteractionController.ts — bang/value delivery, lock toggle, cell commit, port sync, focusout/keydown wiring
+- src/canvas/DragController.ts — pn-seq-cell drag exclusion
+- src/shell.css — sequencer grid / cell / playhead / lock-button styles
+- AGENTS.md — this entry
+
+**Notes / decisions made:**
+- Chose a single bang inlet (not one per row) per Max `coll`/`counter`/`matrixctrl` convention: upstream rhythm is authored once, outputs fan out per row.
+- Cells serialize as base64 JSON inside `args[3]`. Reasoning: raw JSON would break the PD-style space-delimited line format (quotes, commas, spaces); base64 is already the codebox/subPatch precedent.
+- Row/col changes truncate the visible cell matrix but do not destroy stored cell data — `getSequencerCells` reads whatever is stored and pads. That means shrinking → growing preserves cell content, matching Max's behavior.
+- Playhead advance emits `"display"` (not `"change"`): text panel stays in sync, but re-render is skipped so the grid DOM, cables, and any actively-focused cell survive bang cadence. Advance patches the `--active` class in place.
+- Lock button uses the same class as subPatch (`pn-subpatch-lock`) with a second class for positioning. Shares the existing SVG icon + styles + DragController exclusion with zero new surface area.
+
+**Next needed:**
+- Browser smoke test: place `sequencer`, unlock, type values into cells (Enter commits, Escape reverts), lock, wire `metro → sequencer`, wire each outlet into `float` boxes, start metro → confirm playhead walks and each row's active cell fires out its outlet. Verify round-trip: copy text panel → clear → paste → same grid + outlet count.
+- Attribute panel check: connect `attribute → sequencer`, drag `rows` slider from 4 → 6 → 2, confirm outlet count tracks and that cables attached to now-gone rows are auto-cleaned.
+- Follow-up (out of scope here): `docs/objects/sequencer.md` reference page + `INVENTORY.md` row.
+
+---
+## [2026-04-19] COMPLETED | oscillateNumbers object
+**Agent:** Claude Code
+**Phase:** Out-of-band user request — new control-category object
+**Done:**
+- Added `oscillateNumbers` to `OBJECT_DEFS` (`src/graph/objectDefs.ts`). Control-category. Args: `freq` (0.01–20 Hz, default 1), `running` (hidden). Hot inlet 0 accepts `1/0/bang/freq <hz>`; cold inlet 1 is a dedicated float-Hz inlet. Outlet 0 emits a float in `[0.0, 1.0]`.
+- Wired RAF-driven oscillator machinery into `ObjectInteractionController`:
+  - `oscTimers: Map<nodeId, { rafId, startT }>` field alongside `metroTimers`.
+  - Graph-change hook gained `pruneOscTimers` + `restoreOscTimers` so running state survives text-panel diff-based deserialize (same pattern as metro's `running` arg).
+  - `deliverBang` and `deliverMessageValue` branches added for `oscillateNumbers`; `freq <hz>` selector and bare float gate both supported on inlet 0, dedicated float-Hz on inlet 1.
+  - `destroy()` cancels any in-flight RAFs.
+- Output formula: `0.5 + 0.5 * sin(2π * freq * t)` where `t` is seconds since last start. Emitted every animation frame via `dispatchValue(node.id, 0, v.toFixed(4))`.
+- Reference page `docs/objects/oscillateNumbers.md` authored from `_TEMPLATE.md` (frontmatter + all six required sections + canonical `toggle → oscillateNumbers → float` example). `docs/objects/INVENTORY.md` row added.
+- `npx tsc --noEmit` passes. `npm run build` clean (560 KB bundle; same order of magnitude as pre-change).
+
+**Changed files:**
+- src/graph/objectDefs.ts — OBJECT_DEFS.oscillateNumbers added
+- src/canvas/ObjectInteractionController.ts — oscTimers field, graph-change + destroy hooks, deliverBang/deliverMessageValue branches, startOsc/stopOsc/isOscRunning/pruneOscTimers/restoreOscTimers/deliverOscValue private methods
+- docs/objects/oscillateNumbers.md — new reference page
+- docs/objects/INVENTORY.md — new row
+- docs/phase-oscillateNumbers-prompt.md — implementation prompt (written by Director before execution)
+- AGENTS.md — this entry
+
+**Notes / decisions made:**
+- Chose option (A) from planning: `freq` = cycle Hz (oscillation frequency), output rate decoupled via RAF. Rejected option (B) (slider = update-rate with fixed-phase step) because it produces visibly choppy output at low speeds and doesn't match Max/MSP LFO idioms.
+- Gate semantics mirror `metro` exactly — float 1/0 start/stop, bang toggles, hidden `running` arg persists. No upstream-type introspection; a toggle connected into inlet 0 is the idiomatic enable path but any float source works (slider, r, message, codebox, etc.).
+- Emits values formatted to 4 decimal places. Enough precision for control-rate use (0.0001 resolution on a 0–1 sweep); keeps text-panel / message-box output readable if a user inspects the stream.
+- Phase resets on (re)start including frequency changes via inlet 1. Documented explicitly in the reference page Notes section — users who need phase-continuous freq changes can add a downstream smoother.
+- No runtime node (control-rate floats, not audio signal / media frames). No `AudioGraph` / `VisualizerGraph` registration. No renderer branch (default text-label fallthrough handles it; `defaultWidth: 160` fits the `oscillateNumbers` label). No new CSS.
+- Registration is the single `OBJECT_DEFS` entry — autocomplete (`ObjectEntryBox.ts:18`) and context menu (`CanvasController.ts:11`) derive from `Object.keys(OBJECT_DEFS)` automatically, so no allowlist edits were needed. (The `docs/OBJECT_RECIPE.md` step 2 describing a separate `VALID_TYPES` list is stale relative to the current code.)
+
+**Next needed:**
+- Browser smoke test: `toggle → oscillateNumbers → float` + `slider → oscillateNumbers inlet 1`; confirm flip-on begins smooth 0↔1 sweep, slider changes cycle speed live, flip-off halts emission (last value lingers on the float box — expected), reload restores running state.
+- Round-trip: copy text-panel contents, clear patch, paste text back → oscillator re-materializes with the same freq + running state.
+- Follow-up worth filing if recurring: `docs/OBJECT_RECIPE.md` step 2 ("Add to VALID_TYPES") is obsolete; recipe should be updated to reflect that `OBJECT_DEFS` is the single registration point.
+
+---
+## [2026-04-19] COMPLETED | Control/render split — plan authored + Phase 1 scaffold landed
+**Agent:** Claude Code
+**Phase:** Control/Render Split — Phase 1 (Control surface extraction)
+**Done:**
+- Authored the full architecture plan at `docs/CONTROL_RENDER_SPLIT.md` (7 sections: exec summary, architecture, object redesign, protocols, perf analysis, phased roadmap, final recommendations). Firm recommendations — v1 stays browser-based in-process; the real win is a clean control-plane abstraction, not process isolation. Popup → BroadcastChannel is v2; WebSocket is v3. No OSC in core; no frame streaming.
+- Mirrored decisions to the vault: `patchNet-Vault/wiki/concepts/control-render-split.md` + sibling pages for `visualizer-object.md` and `patchviz-object.md`. Index + log updated.
+- Phase 1 scaffolding landed in a new `src/control/` module:
+  - `ControlMessage.ts` — discriminated union for `SceneAdd`/`SceneRemove`/`SceneWire`/`ParamUpdate`/`Command`/`Trigger`/`Tick`/`ScenePreset` downstream + `Status`/`Telemetry`/`Error`/`Heartbeat` upstream. Versioned envelope shape for future BroadcastChannel / WebSocket transports.
+  - `IRenderer.ts` — extends `IRenderContext` with `apply(msg)` + optional `onUpstream` hook. Pluggable SPI.
+  - `ControlBus.ts` — `IControlBus` interface + `LocalBus` direct-dispatch impl. Renderer keyed by opaque `rendererId` (Phase 1 uses `patchNodeId`; Phase 4 may switch to `contextName` once shared-context routing is unified).
+  - `RenderDirector.ts` — owns the bus, exposes `command` / `param` / `trigger` primitives. Upstream handler is a stub reserved for Phase 2 args-mirroring migration.
+- Renderers implement `IRenderer` as forwarders:
+  - `VisualizerNode.apply()` handles `Command { close | size | move | setFloat | fullscreen }`. The `bang`/`open` flows that depend on `openAndRestore()` (which reads patch-side args) remain on the old direct call path; that moves in Phase 2.
+  - `PatchVizNode.apply()` handles `Command { enable | disable | toggle }` + `Trigger { bang }`.
+- `VisualizerGraph` constructs its own `LocalBus` + `RenderDirector`. Renderers attach on create (`sync()` in all five create sites) and detach on destroy. `destroy()` tears both down.
+- Proof-of-concept path migrated: `deliverPatchVizMessage` now routes the renderer touch through `director.trigger` / `director.command` → `bus.publishDown` → `PatchVizNode.apply`. Args mirroring stays controller-side in Phase 1; Phase 2 moves it onto upstream `Status`.
+
+**Changed files:**
+- docs/CONTROL_RENDER_SPLIT.md — new
+- patchNet-Vault/wiki/concepts/control-render-split.md — new
+- patchNet-Vault/wiki/concepts/visualizer-object.md — new
+- patchNet-Vault/wiki/concepts/patchviz-object.md — new
+- patchNet-Vault/wiki/index.md — bumped date + 3 new concept links
+- patchNet-Vault/wiki/log.md — new entry
+- src/control/ControlMessage.ts — new
+- src/control/IRenderer.ts — new
+- src/control/ControlBus.ts — new
+- src/control/RenderDirector.ts — new
+- src/runtime/VisualizerNode.ts — implements IRenderer (forwarder `apply`)
+- src/runtime/PatchVizNode.ts — implements IRenderer (forwarder `apply`)
+- src/runtime/VisualizerGraph.ts — owns bus+director; attach/detach on renderer lifecycle; `deliverPatchVizMessage` routes via director
+
+**Notes / decisions made:**
+- `rendererId` is intentionally opaque to the bus — caller picks the namespace. Phase 1 uses `patchNodeId` because multiple renderers can share a `contextName` (popup + inline both `world1`). Unifying to `contextName`-as-key is a Phase 4 concern.
+- Conservative migration: only `deliverPatchVizMessage` went through the bus. `deliverMessage` / `deliverMediaMessage` / `deliverVfxMessage` / `deliverLayerMessage` / `deliverImageFXMessage` all remain on the pre-refactor direct-call path until Phase 2, which will add test infra first (resolves BLOCKER-1).
+- The `openAndRestore` flow stays on the direct path — it reads patch-side args mid-open, which is a controller concern that Phase 2 will either inline into the Command or compute upstream before emitting.
+- `IRenderContext` is unchanged. `IRenderer` extends it. Existing `VisualizerRuntime` singleton lookups still work; they will be ripped in Phase 4 after contextName-vs-rendererId unification.
+- `tsc --noEmit` passes. `npm run build` clean (558 KB bundle, same order of magnitude as before).
+- No automated tests — Phase 2 will add vitest + a mock `IRenderer` harness for `RenderDirector` before migrating any other delivery methods.
+
+**Next needed:**
+- Browser smoke test: open a `patchViz` object, bang it / toggle enable/disable from a message box, confirm canvas still enables/disables. The other five `deliverXxx` paths are unchanged — visualizer popup, media, vfx, layer, imageFX should behave exactly as before.
+- Phase 2 greenlight: add vitest + `tests/control/RenderDirector.test.ts` round-trip test, then migrate `deliverMessage` (the largest remaining surface) through the bus with status-driven arg mirroring.
 
 ---
 ## [2026-04-17] COMPLETED | Evaluation Plan — Part 1 audit (partial)

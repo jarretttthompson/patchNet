@@ -1,6 +1,7 @@
 import { PatchEdge } from "../graph/PatchEdge";
-import { getObjectDef } from "../graph/objectDefs";
+import { canonicalizeType, deriveSequencerPorts, deriveTriggerPorts, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
 import { PatchNode } from "../graph/PatchNode";
+import type { PortType } from "../graph/PatchNode";
 import { derivePortsFromCode } from "../canvas/codeboxPorts";
 
 export class PatchParseError extends Error {
@@ -50,6 +51,13 @@ export function parsePatch(text: string): ParsedPatch {
     width: number;
     height: number;
   }> = [];
+  const pendingPanelPositions: Array<{
+    nodeIndex: number;
+    panelX: number;
+    panelY: number;
+    panelW?: number;
+    panelH?: number;
+  }> = [];
   const pendingIds: Array<{ nodeIndex: number; id: string; lineNumber: number }> = [];
   const pendingGroups: Array<{ indices: number[]; lineNumber: number }> = [];
   let sawCanvasHeader = false;
@@ -92,7 +100,7 @@ export function parsePatch(text: string): ParsedPatch {
         throw new PatchParseError(lineNumber, "Object coordinates must be numeric");
       }
 
-      const type = parts[4];
+      const type = canonicalizeType(parts[4]);
       const args = parts.slice(5);
       const objectDef = getObjectDef(type);
       let inlets = objectDef.inlets;
@@ -113,6 +121,22 @@ export function parsePatch(text: string): ParsedPatch {
         args[0] = language;
         args[1] = source;
         ({ inlets, outlets } = derivePortsFromCode(source));
+      }
+
+      if (type === "subPatch") {
+        const ic = Math.max(0, parseInt(args[0] ?? "0", 10) || 0);
+        const oc = Math.max(0, parseInt(args[1] ?? "0", 10) || 0);
+        inlets  = Array.from({length: ic}, (_, i) => ({ index: i, type: "any" as PortType, label: `inlet ${i}` }));
+        outlets = Array.from({length: oc}, (_, i) => ({ index: i, type: "any" as PortType, label: `outlet ${i}` }));
+      }
+
+      if (type === "t") {
+        ({ inlets, outlets } = deriveTriggerPorts(args));
+      }
+
+      if (type === "sequencer") {
+        ensureSequencerArgs(args);
+        ({ inlets, outlets } = deriveSequencerPorts(args));
       }
 
       nodes.push(
@@ -181,6 +205,20 @@ export function parsePatch(text: string): ParsedPatch {
       continue;
     }
 
+    if (parts[1] === "panel") {
+      requireParts(parts, 5, lineNumber, "Panel lines must include node index, x, and y");
+      const nodeIndex = Number(parts[2]);
+      const panelX = Number(parts[3]);
+      const panelY = Number(parts[4]);
+      if (!Number.isInteger(nodeIndex) || !Number.isFinite(panelX) || !Number.isFinite(panelY)) {
+        throw new PatchParseError(lineNumber, "Panel values must be numeric");
+      }
+      const panelW = parts[5] !== undefined ? Number(parts[5]) : undefined;
+      const panelH = parts[6] !== undefined ? Number(parts[6]) : undefined;
+      pendingPanelPositions.push({ nodeIndex, panelX, panelY, panelW, panelH });
+      continue;
+    }
+
     if (parts[1] === "group") {
       requireParts(parts, 4, lineNumber, "Group lines must include at least two node indices");
       const indices = parts.slice(2).map(Number);
@@ -220,9 +258,9 @@ export function parsePatch(text: string): ParsedPatch {
       throw new PatchParseError(connection.lineNumber, "Source outlet index is out of range");
     }
 
-    // Attribute nodes have dynamically-built inlets that aren't present at parse time;
-    // skip range validation for them — syncAttributeNodes() will rebuild inlets on load.
-    const targetIsAttribute = targetNode.type === "attribute";
+    // Attribute and subPatch nodes have dynamically-built inlets that aren't present at parse time;
+    // skip range validation for them — they rebuild inlets from their stored args on load.
+    const targetIsAttribute = targetNode.type === "attribute" || targetNode.type === "subPatch";
     if (!targetIsAttribute && (connection.targetInlet < 0 || connection.targetInlet >= targetNode.inlets.length)) {
       throw new PatchParseError(connection.lineNumber, "Target inlet index is out of range");
     }
@@ -243,6 +281,16 @@ export function parsePatch(text: string): ParsedPatch {
     if (node) {
       node.width = width;
       node.height = height;
+    }
+  }
+
+  for (const { nodeIndex, panelX, panelY, panelW, panelH } of pendingPanelPositions) {
+    const node = nodes[nodeIndex];
+    if (node) {
+      node.panelX = panelX;
+      node.panelY = panelY;
+      if (panelW !== undefined) node.panelW = panelW;
+      if (panelH !== undefined) node.panelH = panelH;
     }
   }
 

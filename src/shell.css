@@ -1,15 +1,77 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   CURSOR SYSTEM (read before changing)
+   ─────────────────────────────────────────────────────────────────────────
+   patchNet ships a custom phosphor-green cursor family. Every cursor is a
+   CSS variable defined in :root below, used via `cursor: var(--pn-cursor-*)`.
+   Never introduce ad-hoc `cursor: pointer` / `cursor: text` rules — always
+   route through these tokens so the whole UI stays on the same design.
+
+   Layering (from weakest to strongest specificity):
+     1. `* { cursor: var(--pn-cursor-default) !important; }`  — baseline
+        phosphor arrow, everywhere.
+     2. Patch-object bodies (`.patch-object-body` and descendants) show
+        `--pn-cursor-grab` — the MOVE cursor. Hovering an object signals
+        "drag me to reposition"; clicking for real behaviour only happens
+        on specific bounded affordances inside the body (see layer 3).
+        Chrome surfaces (.toolbar buttons, text-panel header, tabs,
+        attribute sliders, …) use `--pn-cursor-pointer` because every
+        interaction on them is a click.
+     3. Bounded interactive affordances inside an object body override
+        the grab cursor with `--pn-cursor-pointer` — the bang circle, the
+        toggle rocker, the message content box, the subPatch lock button,
+        etc. Specialised affordances (`--pn-cursor-text` on inputs,
+        `--pn-cursor-crosshair` on port nubs, `--pn-cursor-col-resize` on
+        slider track, `--pn-cursor-row-resize` on number-box drums,
+        `--pn-cursor-resize` on resize handles, `--pn-cursor-cable` on cable
+        hit-lines) override 2 using higher specificity (or !important).
+     4. Body state classes (`body.pn-state-panning *`,
+        `body.pn-state-slider-drag *`, …) lock the cursor globally during
+        active drags. These use `body.<state> *` so they beat everything.
+
+   Adding a new interactive element?
+     → Inside `.patch-object-body`: the default is now `--pn-cursor-grab`
+       (move). If the new element is a bounded click-to-trigger affordance
+       (a button, a toggle, a clickable region — NOT just a draggable
+       surface), add a higher-specificity rule mapping it to
+       `--pn-cursor-pointer`. The element also needs to actually receive
+       pointer events (flip `pointer-events: auto` if its ancestor has
+       `pointer-events: none`).
+     → If it's in the chrome (toolbar, text panel, modal, tab bar), add a
+       rule that maps the element to `--pn-cursor-pointer` or another token.
+
+   The pointing-hand cursor: a clean outlined hand with index finger up.
+   Hot spot (9, 1) — at the fingertip, so clicks register exactly where the
+   finger touches.
+   ───────────────────────────────────────────────────────────────────────── */
 :root {
-  --pn-cursor-default: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M4 3L4 19L8 15L11 21L13 20L10 14L16 14Z' fill='%236aff91' stroke='%23020402' stroke-width='1.5' stroke-linejoin='miter' paint-order='stroke fill'/%3E%3C/svg%3E") 4 3, auto;
-  --pn-cursor-pointer: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M4 3L4 19L8 15L11 21L13 20L10 14L16 14Z' fill='%236aff91' stroke='%23020402' stroke-width='1.5' stroke-linejoin='miter' paint-order='stroke fill'/%3E%3Ccircle cx='17.5' cy='6.5' r='2.2' fill='%236aff91' fill-opacity='.28' stroke='%23020402' stroke-width='1'/%3E%3C/svg%3E") 4 3, pointer;
-  --pn-cursor-text: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect x='10' y='4' width='4' height='16' fill='%236aff91' fill-opacity='.18'/%3E%3Cpath d='M8 4H16M12 4V20M8 20H16' fill='none' stroke='%236aff91' stroke-width='2' stroke-linecap='square'/%3E%3C/svg%3E") 12 12, text;
-  --pn-cursor-crosshair: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='12' cy='12' r='4' fill='none' stroke='%236aff91' stroke-width='1.7'/%3E%3Cpath d='M12 2V7M12 17V22M2 12H7M17 12H22' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square'/%3E%3C/svg%3E") 12 12, crosshair;
-  --pn-cursor-grab: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M12 3V21M3 12H21M12 3L9 6M12 3L15 6M12 21L9 18M12 21L15 18M3 12L6 9M3 12L6 15M21 12L18 9M21 12L18 15' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, grab;
-  --pn-cursor-grabbing: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect x='9' y='9' width='6' height='6' fill='%236aff91' fill-opacity='.24' stroke='%236aff91' stroke-width='1.4'/%3E%3Cpath d='M12 3V8M12 16V21M3 12H8M16 12H21M12 3L9 6M12 3L15 6M12 21L9 18M12 21L15 18M3 12L6 9M3 12L6 15M21 12L18 9M21 12L18 15' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, grabbing;
-  --pn-cursor-resize: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M6 6L18 18M6 6H12M6 6V12M18 18H12M18 18V12' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, nwse-resize;
-  --pn-cursor-col-resize: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M4 12H20M4 12L8 8M4 12L8 16M20 12L16 8M20 12L16 16M12 6V18' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, col-resize;
-  --pn-cursor-row-resize: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M12 4V20M12 4L8 8M12 4L16 8M12 20L8 16M12 20L16 16' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, ns-resize;
+  --pn-cursor-default: url("./cursors/normal-select.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M4 3L4 19L8 15L11 21L13 20L10 14L16 14Z' fill='%236aff91' stroke='%23020402' stroke-width='1.5' stroke-linejoin='miter' paint-order='stroke fill'/%3E%3C/svg%3E") 4 3, auto;
+
+  /* Pointing finger — the one interactive cursor for the whole app.
+     Shape traces the reference Alamy/classic pointing-hand drawing:
+       • slender index finger on the left, rounded pill-shaped tip
+       • three scalloped knuckles on the right (smooth quadratic curves,
+         not stepped bumps)
+       • thumb extended down-left at a slight angle, with a visible gap
+         between thumb and palm
+       • broad palm with the wrist going off-frame at the bottom
+     Rendered in a 32×32 viewport with the hot spot at the fingertip
+     (10, 1). White fill with dark stroke mirrors the reference style and
+     stays legible on patchNet's dark canvas. */
+  --pn-cursor-pointer: url("./cursors/link-select.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'%3E%3Cpath d='M10 1 Q13 1 13 4 L13 12 C13 8.5 17 8.5 17 12 C17 8.5 21 8.5 21 12 C21 8.5 25 9 25 12.5 L25 31 L4 31 L4 22 Q2 22 1 20 Q0.5 17 1 14 Q1.5 12 3.5 12 L7 12 Q8 12 8 11 L8 4 Q8 1 10 1 Z' fill='%23ffffff' stroke='%23020402' stroke-width='1.8' stroke-linejoin='round' stroke-linecap='round' paint-order='stroke fill'/%3E%3Cpath d='M4 22 Q5.5 18 7.5 13' fill='none' stroke='%23020402' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E") 10 1, pointer;
+
+  /* Alias — prior name retained for back-compat. `finger` and `pointer`
+     must always resolve to the same hand cursor. */
+  --pn-cursor-finger: var(--pn-cursor-pointer);
+
+  --pn-cursor-text: url("./cursors/text-select.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect x='10' y='4' width='4' height='16' fill='%236aff91' fill-opacity='.18'/%3E%3Cpath d='M8 4H16M12 4V20M8 20H16' fill='none' stroke='%236aff91' stroke-width='2' stroke-linecap='square'/%3E%3C/svg%3E") 12 12, text;
+  --pn-cursor-crosshair: url("./cursors/precision-select.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='12' cy='12' r='4' fill='none' stroke='%236aff91' stroke-width='1.7'/%3E%3Cpath d='M12 2V7M12 17V22M2 12H7M17 12H22' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square'/%3E%3C/svg%3E") 12 12, crosshair;
+  --pn-cursor-grab: url("./cursors/move.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M12 3V21M3 12H21M12 3L9 6M12 3L15 6M12 21L9 18M12 21L15 18M3 12L6 9M3 12L6 15M21 12L18 9M21 12L18 15' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, grab;
+  --pn-cursor-grabbing: url("./cursors/move.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Crect x='9' y='9' width='6' height='6' fill='%236aff91' fill-opacity='.24' stroke='%236aff91' stroke-width='1.4'/%3E%3Cpath d='M12 3V8M12 16V21M3 12H8M16 12H21M12 3L9 6M12 3L15 6M12 21L9 18M12 21L15 18M3 12L6 9M3 12L6 15M21 12L18 9M21 12L18 15' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, grabbing;
+  --pn-cursor-resize: url("./cursors/diagonal-resize-1.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M6 6L18 18M6 6H12M6 6V12M18 18H12M18 18V12' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, nwse-resize;
+  --pn-cursor-col-resize: url("./cursors/horizontal-resize.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M4 12H20M4 12L8 8M4 12L8 16M20 12L16 8M20 12L16 16M12 6V18' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, col-resize;
+  --pn-cursor-row-resize: url("./cursors/vertical-resize.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M12 4V20M12 4L8 8M12 4L16 8M12 20L8 16M12 20L16 16' fill='none' stroke='%236aff91' stroke-width='1.7' stroke-linecap='square' stroke-linejoin='miter'/%3E%3C/svg%3E") 12 12, ns-resize;
   /* Patch cable — diagonal cord with jack nubs (straight lines only) */
-  --pn-cursor-cable: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='12' cy='5.5' r='3' fill='%236aff91' stroke='%23020402' stroke-width='1.2'/%3E%3Ccircle cx='12' cy='18.5' r='3' fill='%236aff91' stroke='%23020402' stroke-width='1.2'/%3E%3Cpath d='M12 8.5 L12 15.5' stroke='%236aff91' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E") 12 12, pointer;
+  --pn-cursor-cable: url("./cursors/handwriting.cur"), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Ccircle cx='12' cy='5.5' r='3' fill='%236aff91' stroke='%23020402' stroke-width='1.2'/%3E%3Ccircle cx='12' cy='18.5' r='3' fill='%236aff91' stroke='%23020402' stroke-width='1.2'/%3E%3Cpath d='M12 8.5 L12 15.5' stroke='%236aff91' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E") 12 12, pointer;
 }
 
 /* Phosphor cursor family — applied globally */
@@ -50,9 +112,9 @@ input[type="range"] {
 
 body {
   background:
-    radial-gradient(circle at top, rgba(106, 255, 145, 0.10), transparent 32%),
-    radial-gradient(circle at center, rgba(106, 255, 145, 0.03), transparent 60%),
-    linear-gradient(180deg, #050806, var(--pn-bg-deep));
+    radial-gradient(circle at top, rgba(0, 255, 0, 0.38), transparent 32%),
+    radial-gradient(circle at center, rgba(0, 255, 0, 0.35), transparent 60%),
+    linear-gradient(180deg, #000000, var(--pn-bg-deep));
   color: var(--pn-text);
   font-family: var(--pn-font-sans);
   margin: 0;
@@ -76,7 +138,7 @@ body {
   height: 40px;
   background: var(--pn-surface-raised);
   border-bottom: 1px solid var(--pn-border);
-  box-shadow: 0 1px 20px rgba(106, 255, 145, 0.18);
+  box-shadow: 0 1px 20px rgba(0, 255, 0, 0.45);
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -94,7 +156,7 @@ body {
   text-transform: uppercase;
   text-shadow:
     0 0 8px var(--pn-accent),
-    0 0 22px rgba(106, 255, 145, 0.5);
+    0 0 22px rgba(0, 255, 0, 0.5);
 }
 
 /* ── Toolbar separator ───────────────────────────────────────────────── */
@@ -126,14 +188,14 @@ body {
 .toolbar-audio-btn:hover {
   color: var(--pn-accent);
   border-color: var(--pn-border-accent);
-  box-shadow: 0 0 8px rgba(106, 255, 145, 0.30);
+  box-shadow: 0 0 8px rgba(0, 255, 0, 0.52);
 }
 .toolbar-audio-btn--on {
   color: var(--pn-accent);
   border-color: var(--pn-border-accent);
   box-shadow:
-    0 0 8px rgba(106, 255, 145, 0.40),
-    0 0 16px rgba(106, 255, 145, 0.15);
+    0 0 8px rgba(0, 255, 0, 0.40),
+    0 0 16px rgba(0, 255, 0, 0.42);
   text-shadow: 0 0 6px var(--pn-accent);
 }
 .toolbar-audio-icon {
@@ -227,12 +289,6 @@ body {
   flex: 1;
   position: relative;
   background-color: var(--pn-surface);
-  background-image: radial-gradient(
-    circle,
-    rgba(106, 255, 145, 0.20) 1px,
-    transparent 1px
-  );
-  background-size: 24px 24px;
   overflow: scroll;
   min-width: 0;
   /* Thin scrollbars — hidden until hover so they don't clutter the canvas */
@@ -242,7 +298,7 @@ body {
 }
 
 .canvas-area:hover {
-  scrollbar-color: rgba(106, 255, 145, 0.22) transparent;
+  scrollbar-color: rgba(0, 255, 0, 0.50) transparent;
 }
 
 .canvas-area::-webkit-scrollbar {
@@ -265,7 +321,7 @@ body {
 }
 
 .canvas-area:hover::-webkit-scrollbar-thumb {
-  background: rgba(106, 255, 145, 0.22);
+  background: rgba(0, 255, 0, 0.50);
 }
 
 /* Grid is now part of the pan-group so it tiles the entire scrollable canvas */
@@ -285,8 +341,8 @@ body {
   box-shadow:
     var(--pn-shadow-soft),
     var(--pn-shadow-inset),
-    0 0 18px rgba(106, 255, 145, 0.18),
-    0 0 2px rgba(106, 255, 145, 0.55);
+    0 0 18px rgba(0, 255, 0, 0.45),
+    0 0 2px rgba(0, 255, 0, 0.55);
   color: var(--pn-text);
   font-family: var(--pn-font-mono);
   container-type: size;
@@ -303,8 +359,30 @@ body {
   justify-content: center;
   gap: var(--pn-space-2);
   padding: var(--pn-space-3);
-  /* Drag handle — matches prior cable-stroke affordance (grab hand) */
+  /* UNIVERSAL MOVE CURSOR — every object body is draggable to reposition.
+     The body itself is a move affordance, never a click affordance.
+     Click-to-trigger behaviour lives only on specific bounded sub-regions
+     (bang circle, toggle rocker, message content, subPatch lock) which
+     override this with --pn-cursor-pointer via higher-specificity rules
+     below. Specialised affordances (drum columns, slider track, port
+     nubs, text inputs, codebox editor) get their own cursors too.
+     Active drag flips the cursor via the body.pn-state-* classes at the
+     top of this file. */
   cursor: var(--pn-cursor-grab) !important;
+}
+
+/* Cover every descendant of the body too, so sub-elements that aren't
+   explicitly marked as interactive inherit the move affordance. */
+.patch-object-body * {
+  cursor: var(--pn-cursor-grab) !important;
+}
+
+/* Text-editing descendants of a patch body keep the phosphor I-beam.
+   Specificity (0,2,1) beats the universal `.patch-object-body *` rule. */
+.patch-object-body input:not([type="range"]),
+.patch-object-body textarea,
+.patch-object-body [contenteditable] {
+  cursor: var(--pn-cursor-text) !important;
 }
 
 .patch-object-title {
@@ -313,19 +391,28 @@ body {
   text-align: center;
   color: var(--pn-text);
   letter-spacing: 0.04em;
-  text-shadow: 0 0 8px rgba(216, 255, 225, 0.55);
+  text-shadow: 0 0 8px rgba(0, 255, 0, 0.55);
+}
+
+/* Objects that render `<type> <args...>` inline (t, scale, +/-/* …) anchor
+   the title to the top of the body so extra arg text stacks downward
+   predictably. Font size still scales with the box via the shared
+   .patch-object-title rule above. */
+.patch-object-body--args-inline {
+  justify-content: flex-start;
+  padding-top: 10px;
 }
 
 .patch-object-meta {
   font-size: clamp(7px, min(16cqw, 34cqh), 18px);
   line-height: 1;
   color: var(--pn-text-dim);
-  text-shadow: 0 0 6px rgba(216, 255, 225, 0.35);
+  text-shadow: 0 0 6px rgba(0, 255, 0, 0.35);
 }
 
 .patch-object-glyph {
   color: var(--pn-secondary);
-  text-shadow: 0 0 8px rgba(255, 140, 66, 0.6);
+  text-shadow: 0 0 8px rgba(0, 255, 0, 0.6);
 }
 
 /* ── s / r (send / receive) objects ──────────────────────────────────────── */
@@ -339,7 +426,7 @@ body {
 .patch-object-sr-type {
   font-size: clamp(8px, min(24cqw, 48cqh), 22px);
   color: var(--pn-secondary);
-  text-shadow: 0 0 8px rgba(255, 140, 66, 0.55);
+  text-shadow: 0 0 8px rgba(0, 255, 0, 0.55);
   font-family: var(--pn-font-mono);
 }
 
@@ -356,28 +443,36 @@ body {
 
 /* ── UI control objects (button, toggle, slider) — PD style ──────────── */
 
-/* UI controls use cursor pointer to signal they're interactive */
-.patch-object--ui .patch-object-body {
-  cursor: var(--pn-cursor-pointer) !important;
+/* Slider track shows a horizontal scrub cursor to communicate the drag
+   axis. Wins against the universal body rule via deeper specificity. */
+.patch-object-body .patch-object-slider-track,
+.patch-object-body .patch-object-slider-track * {
+  cursor: var(--pn-cursor-col-resize) !important;
 }
 
 .patch-object-face {
   pointer-events: none;
 }
 
-/* PD-style bang button: large circle, constrained to fit both dimensions */
+/* PD-style bang button: large circle, constrained to fit both dimensions.
+   The circle is the click-to-bang affordance — re-enable pointer events
+   (the parent .patch-object-face disables them) and show the pointer
+   finger so the user knows this region is clickable. Outside the circle,
+   the object-body's grab cursor signals "drag me to move". */
 .patch-object-face-button {
   width: 72%;
   aspect-ratio: 1;
   max-height: calc(100% - 12px);
   border: 1.5px solid var(--pn-border-accent);
   border-radius: 50%;
-  background: rgba(106, 255, 145, 0.04);
+  background: rgba(0, 255, 0, 0.35);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 10px rgba(106, 255, 145, 0.30),
-    0 0 22px rgba(106, 255, 145, 0.12);
+    inset 0 1px 0 rgba(0, 255, 0, 0.35),
+    0 0 10px rgba(0, 255, 0, 0.52),
+    0 0 22px rgba(0, 255, 0, 0.40);
   transition: background 60ms ease, box-shadow 60ms ease;
+  pointer-events: auto;
+  cursor: var(--pn-cursor-pointer) !important;
 }
 
 /* ── Codebox object ── */
@@ -473,8 +568,8 @@ body {
   background: var(--pn-accent);
   box-shadow:
     0 0 14px var(--pn-accent),
-    0 0 32px rgba(106, 255, 145, 0.55),
-    inset 0 1px 0 rgba(255,255,255,0.2);
+    0 0 32px rgba(0, 255, 0, 0.55),
+    inset 0 1px 0 rgba(0, 255, 0, 0.48);
 }
 
 /* ── Lightswitch toggle ───────────────────────────────────────────── */
@@ -497,10 +592,10 @@ body {
   padding: 4px 0;
   border: 1.5px solid var(--pn-border-accent);
   border-radius: 4px;
-  background: rgba(106, 255, 145, 0.03);
+  background: rgba(0, 255, 0, 0.06);
   box-shadow:
-    0 0 8px rgba(106, 255, 145, 0.22),
-    0 0 18px rgba(106, 255, 145, 0.08);
+    0 0 8px rgba(0, 255, 0, 0.22),
+    0 0 18px rgba(0, 255, 0, 0.10);
   pointer-events: none;
   user-select: none;
 }
@@ -513,7 +608,10 @@ body {
   opacity: 0.6;
 }
 
-/* Rocker switch — the actual moving part */
+/* Rocker switch — the actual moving part. This is the click-to-toggle
+   affordance; re-enable pointer events (the parent plate disables them)
+   and show the pointer finger. Plate screws stay inert (PE:none via the
+   plate) so hovering them shows the body's move cursor. */
 .patch-object-toggle-rocker {
   flex: 1;
   width: 52%;
@@ -524,6 +622,12 @@ body {
   border-radius: 2px;
   overflow: hidden;
   margin: 2px 0;
+  pointer-events: auto;
+}
+
+.patch-object-toggle-rocker,
+.patch-object-toggle-rocker * {
+  cursor: var(--pn-cursor-pointer) !important;
 }
 
 /* Each half of the rocker */
@@ -536,7 +640,7 @@ body {
   line-height: 1;
   font-family: var(--pn-font-mono);
   color: var(--pn-text-dim);
-  background: rgba(106, 255, 145, 0.03);
+  background: rgba(0, 255, 0, 0.05);
   transition: background 80ms ease, color 80ms ease, text-shadow 80ms ease;
 }
 
@@ -548,10 +652,10 @@ body {
 /* Active half glows */
 .patch-object-toggle-half--active {
   color: var(--pn-accent);
-  background: rgba(106, 255, 145, 0.12);
+  background: rgba(0, 255, 0, 0.20);
   text-shadow:
     0 0 6px var(--pn-accent),
-    0 0 16px rgba(106, 255, 145, 0.5);
+    0 0 16px rgba(0, 255, 0, 0.5);
 }
 
 /* PD-style hslider: track fills the object body */
@@ -572,45 +676,213 @@ body {
   background: var(--pn-accent);
   box-shadow:
     0 0 8px var(--pn-accent),
-    0 0 20px rgba(106, 255, 145, 0.45);
+    0 0 20px rgba(0, 255, 0, 0.45);
   transform: translateX(-50%);
   border-radius: 1px;
   transition: box-shadow 0.1s;
 }
 
-/* Number boxes: integer and float */
-.pn-numbox {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  height: 100%;
-  padding: 0 5px;
-  cursor: ns-resize;
-  user-select: none;
+/* ── Odometer number boxes (integer / float) ────────────────────────────── */
+
+/* Body takes full space — no padding, frame fills it. Cursor inherits
+   the universal hand cursor from .patch-object-body; drum columns below
+   override that with row-resize to signal vertical scrubbing. */
+.patch-object-integer .patch-object-body,
+.patch-object-float   .patch-object-body {
+  padding: 0;
   overflow: hidden;
-  white-space: nowrap;
-  font-family: "Vulf Mono", monospace;
-  font-size: 12px;
-  color: var(--pn-fg);
-  letter-spacing: 0.02em;
 }
 
-.pn-numbox__sign,
-.pn-numbox__dot {
-  color: var(--pn-fg);
-  opacity: 0.6;
+/* Minimum size so the frame never collapses the inner window */
+.patch-object-integer,
+.patch-object-float {
+  min-width:  52px;
+  min-height: 36px;
+  border-color: var(--pn-accent);
+}
+
+/* ── Frame / housing ────────────────────────────────────────────────────── */
+/* Gray frame with green outlines on both edges:
+   - outer green: the patch-object's existing green glow/border
+   - gray fill:   the 10px border on .pn-odometer
+   - inner green: the ::after pseudo-element */
+.pn-odometer {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 10px solid var(--pn-bg);
+  padding: 0;
+  background: transparent;
+  position: relative; /* anchor for the typing overlay */
+  user-select: none;
+  gap: 0;
+}
+
+/* Inner green outline — sits at the boundary between the gray frame and the dark window */
+.pn-odometer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--pn-accent);
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* ── Inner digit window ─────────────────────────────────────────────────── */
+.pn-odo-inner {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+  background: color-mix(in srgb, var(--pn-object-bg) 20%, #000 80%);
+  position: relative;
+  overflow: hidden;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.8),
+              inset 0 2px 6px rgba(0, 0, 0, 0.5);
+  padding: 0 2px;
+  gap: 0;
+}
+
+/* Top gradient — fades ghost digits into the window edge */
+.pn-odo-inner::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 32%;
+  background: linear-gradient(to bottom,
+    color-mix(in srgb, var(--pn-object-bg) 20%, #000 80%) 0%,
+    transparent 100%);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* Bottom gradient */
+.pn-odo-inner::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 32%;
+  background: linear-gradient(to top,
+    color-mix(in srgb, var(--pn-object-bg) 20%, #000 80%) 0%,
+    transparent 100%);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* Sign (+/−) column */
+.pn-odo-sign {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding: 0 2px 0 0;
+  color: var(--pn-text);
+  font-family: var(--pn-font-mono);
+  font-size: clamp(5px, calc(35cqh - 8px), 14px);
+  pointer-events: none;
+  opacity: 0.55;
+}
+
+/* Decimal point */
+.pn-odo-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--pn-accent);
+  font-family: var(--pn-font-mono);
+  font-size: clamp(5px, calc(35cqh - 8px), 14px);
+  font-weight: bold;
   pointer-events: none;
 }
 
-.pn-numbox__digit {
-  cursor: var(--pn-cursor-row-resize) !important;
+/* ── Digit drum columns ─────────────────────────────────────────────────── */
+.pn-odo-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+  border-left: 1px solid rgba(0, 255, 0, 0.35);
   position: relative;
+  z-index: 1;
+}
+.pn-odo-col:first-of-type {
+  border-left: none;
 }
 
-.pn-numbox__digit--active {
+/* Scrub cursor on the drum columns — must beat `.patch-object-body *`
+   (specificity 0,1,1), so we anchor on the body selector here too. */
+.patch-object-body .pn-odo-col,
+.patch-object-body .pn-odo-col * {
+  cursor: var(--pn-cursor-row-resize) !important;
+}
+
+/* Ghost digits — above and below the current value.
+   Increased contrast so they read as real digits, not just noise. */
+.pn-odo-above,
+.pn-odo-below {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  font-family: var(--pn-font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: rgba(0, 255, 0, 0.52);
+  font-size: clamp(4px, calc(20cqh - 4px), 10px);
+}
+
+/* Active (center) digit — accent colour, glow */
+.pn-odo-curr {
+  flex: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  font-family: var(--pn-font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  font-weight: 600;
   color: var(--pn-accent);
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  font-size: clamp(6px, calc(40cqh - 9px), 18px);
+  text-shadow: 0 0 6px currentColor;
+  /* Hairline rules flanking the center row — the "viewing window" */
+  box-shadow:
+    0  1px 0 rgba(0, 255, 0, 0.38),
+    0 -1px 0 rgba(0, 255, 0, 0.38);
+}
+
+/* ── Inline numeric entry overlay (double-click to type) ─────────────────── */
+.pn-odometer-input {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--pn-object-bg) 92%, transparent);
+  border: none;
+  outline: 1px solid var(--pn-accent);
+  outline-offset: -1px;
+  color: var(--pn-accent);
+  font-family: var(--pn-font-mono);
+  font-size: clamp(9px, 44cqh, 20px);
+  font-weight: 600;
+  text-align: center;
+  padding: 0 6px;
+  letter-spacing: 0.06em;
+  caret-color: var(--pn-accent);
+}
+
+/* Active column (being dragged) */
+.pn-odo-col--active {
+  background: rgba(0, 255, 0, 0.35);
+}
+.pn-odo-col--active .pn-odo-curr {
+  text-shadow: 0 0 8px currentColor, 0 0 22px currentColor;
 }
 
 .patch-object-integer .patch-object-body,
@@ -658,15 +930,26 @@ body {
 
 .patch-port-inlet {
   background: color-mix(in srgb, var(--pn-port-in) 40%, transparent);
-  box-shadow: 0 0 6px rgba(106, 255, 145, 0.35);
+  box-shadow: 0 0 6px rgba(0, 255, 0, 0.35);
 }
 
-/* Cold inlet — stores value without triggering output */
+/* Hot inlet — triggers output when it receives a value. Solid green fill,
+   bright halo. Contrasted against the hollow-orange cold ring below. */
+.patch-port-inlet.patch-port-hot {
+  background: var(--pn-accent) !important;
+  border-color: var(--pn-accent) !important;
+  box-shadow:
+    0 0 6px var(--pn-accent),
+    0 0 12px rgba(0, 255, 0, 0.45) !important;
+}
+
+/* Cold inlet — stores value without triggering output. Hollow orange ring —
+   deliberately a different hue from hot so the semantics are obvious at a glance. */
 .patch-port-cold {
   background: transparent !important;
-  border-color: rgba(106, 255, 145, 0.30) !important;
-  box-shadow: none !important;
-  opacity: 0.55;
+  border: 2px solid var(--pn-secondary) !important;
+  box-shadow: 0 0 4px rgba(0, 255, 0, 0.45) !important;
+  opacity: 1;
 }
 
 /* Endpoint highlight — shown on the two ports of a selected cable */
@@ -674,9 +957,9 @@ body {
   background: color-mix(in srgb, var(--pn-accent) 55%, transparent) !important;
   border-color: var(--pn-accent) !important;
   box-shadow:
-    0 0 0 2px rgba(106, 255, 145, 0.25),
+    0 0 0 2px rgba(0, 255, 0, 0.50),
     0 0 10px var(--pn-accent),
-    0 0 22px rgba(106, 255, 145, 0.45) !important;
+    0 0 22px rgba(0, 255, 0, 0.45) !important;
   width: 18px !important;
   height: 18px !important;
   transform: translate(-50%, -50%) !important;
@@ -689,7 +972,7 @@ body {
   background: color-mix(in srgb, var(--pn-accent) 70%, transparent) !important;
   box-shadow:
     0 0 10px var(--pn-accent),
-    0 0 22px rgba(106, 255, 145, 0.55) !important;
+    0 0 22px rgba(0, 255, 0, 0.55) !important;
   transform: translate(-50%, -50%) scale(1.6) !important;
   transition: transform 0.08s ease, box-shadow 0.08s ease;
 }
@@ -698,7 +981,7 @@ body {
   background: color-mix(in srgb, var(--pn-port-out) 40%, transparent);
   box-shadow:
     0 0 8px var(--pn-accent),
-    0 0 18px rgba(106, 255, 145, 0.40);
+    0 0 18px rgba(0, 255, 0, 0.40);
 }
 
 .patch-port-type-signal {
@@ -718,7 +1001,7 @@ body {
   transform: translate(-50%, -50%) scale(1.35) !important;
   box-shadow:
     0 0 8px var(--pn-accent),
-    0 0 18px rgba(106, 255, 145, 0.45) !important;
+    0 0 18px rgba(0, 255, 0, 0.45) !important;
   transition: transform 0.07s ease, box-shadow 0.07s ease;
 }
 
@@ -738,7 +1021,7 @@ body {
   padding: 4px 8px;
   box-shadow:
     0 0 12px rgba(0, 0, 0, 0.35),
-    0 0 18px rgba(106, 255, 145, 0.12);
+    0 0 18px rgba(0, 255, 0, 0.40);
   pointer-events: none;
   z-index: 1000;
   opacity: 0;
@@ -754,9 +1037,20 @@ body {
   box-shadow:
     var(--pn-shadow-soft),
     var(--pn-shadow-inset),
-    0 0 0 1px var(--pn-border-accent),
-    0 0 24px rgba(106, 255, 145, 0.40),
-    0 0 6px rgba(106, 255, 145, 0.70);
+    0 0 0 2px var(--pn-accent),
+    0 0 24px rgba(0, 255, 0, 0.40),
+    0 0 6px rgba(0, 255, 0, 0.70) !important;
+}
+
+/* Toggle zeroes its outer frame (border/bg/shadow) so its "wall plate" can
+   render inside — restore the selection halo on the outer box when selected
+   so rubber-band picks are visibly confirmed. Matches base selection. */
+.patch-object-toggle.patch-object--selected {
+  border: 1px solid var(--pn-object-border-active) !important;
+  box-shadow:
+    0 0 0 2px var(--pn-accent),
+    0 0 24px rgba(0, 255, 0, 0.40),
+    0 0 6px rgba(0, 255, 0, 0.70) !important;
 }
 
 /* Object drag */
@@ -798,14 +1092,6 @@ body {
   /* Grows dynamically via JS; always at least the viewport size */
   min-width: 100%;
   min-height: 100%;
-  /* Dot-grid pattern tiles the entire canvas surface */
-  background-image: radial-gradient(
-    circle,
-    rgba(106, 255, 145, 0.20) 1px,
-    transparent 1px
-  );
-  background-size: 24px 24px;
-  /* Subtle gradient at top (was on canvas-area before scroll) */
   background-color: var(--pn-surface);
   -webkit-user-select: none;
   user-select: none;
@@ -879,13 +1165,13 @@ body {
 /* signal objects (~) — live metering glow + warm color shift at high levels */
 .patch-object[data-node-type$="~"] {
   --pn-meter: 0;
-  border-color: color-mix(in srgb, #ffb432 calc(var(--pn-meter) * 70%), var(--pn-accent));
+  border-color: var(--pn-accent);
   box-shadow:
     var(--pn-shadow-soft),
     var(--pn-shadow-inset),
-    0 0 10px rgba(106, 255, 145, 0.3),
-    0 0 calc(6px + var(--pn-meter) * 22px) rgba(106, 255, 145, calc(0.35 + var(--pn-meter) * 0.45)),
-    0 0 calc(var(--pn-meter) * 18px) rgba(255, 180, 50, calc(var(--pn-meter) * 0.75));
+    0 0 10px rgba(0, 255, 0, 0.52),
+    0 0 calc(6px + var(--pn-meter) * 22px) rgba(0, 255, 0, calc(0.35 + var(--pn-meter) * 0.45)),
+    0 0 calc(var(--pn-meter) * 18px) rgba(0, 255, 0, calc(var(--pn-meter) * 0.75));
   transition: box-shadow 0.04s linear, border-color 0.04s linear;
 }
 
@@ -926,7 +1212,7 @@ body {
       transparent 1px,
       transparent 4px
     ),
-    #111;
+    #000;
 }
 
 .pn-meter-fill {
@@ -945,12 +1231,12 @@ body {
     ),
     linear-gradient(
       to top,
-      #00e855 0%,
-      #00e855 55%,
-      #ffe000 55%,
-      #ffe000 80%,
-      #ff2200 80%,
-      #ff2200 100%
+      #008000 0%,
+      #00b300 55%,
+      #00b300 55%,
+      #00ff00 80%,
+      #00ff00 80%,
+      #00ff00 100%
     );
 }
 
@@ -958,7 +1244,7 @@ body {
   font-family: var(--pn-font-mono);
   font-size: 6px;
   line-height: 1;
-  color: rgba(255,255,255,0.35);
+  color: rgba(0, 255, 0, 0.35);
   letter-spacing: 0.05em;
   text-align: center;
 }
@@ -968,18 +1254,18 @@ body {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  color: rgba(255,255,255,0.5);
+  color: rgba(0, 255, 0, 0.5);
   margin-bottom: 2px;
 }
 
 /* visualizer — cool blue glow to distinguish from audio objects */
 .patch-object[data-node-type="visualizer"] {
-  border-color: color-mix(in srgb, #6a91ff 50%, var(--pn-border));
+  border-color: var(--pn-border-accent);
   box-shadow:
     var(--pn-shadow-soft),
     var(--pn-shadow-inset),
-    0 0 18px rgba(106, 145, 255, 0.18),
-    0 0 2px rgba(106, 145, 255, 0.55);
+    0 0 18px rgba(0, 255, 0, 0.45),
+    0 0 2px rgba(0, 255, 0, 0.55);
 }
 
 /* layer — accent tint */
@@ -1017,7 +1303,7 @@ body {
 .toolbar-icon-btn:hover {
   color: var(--pn-accent);
   border-color: var(--pn-border-accent);
-  box-shadow: 0 0 8px rgba(106, 255, 145, 0.35);
+  box-shadow: 0 0 8px rgba(0, 255, 0, 0.35);
   text-shadow: 0 0 8px var(--pn-accent);
 }
 
@@ -1065,7 +1351,7 @@ body {
   transform: scale(1.18);
   filter:
     drop-shadow(0 0 4px var(--pn-accent))
-    drop-shadow(0 0 10px rgba(106, 255, 145, 0.45));
+    drop-shadow(0 0 10px rgba(0, 255, 0, 0.45));
 }
 
 .patch-object--resizing {
@@ -1100,9 +1386,10 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 0 8px rgba(216, 255, 225, 0.5);
+  text-shadow: 0 0 8px rgba(0, 255, 0, 0.5);
   user-select: none;
   line-height: 1;
+  cursor: var(--pn-cursor-pointer) !important;
 }
 
 /* Flash state — whole box lights up so it's visible even when empty */
@@ -1110,7 +1397,7 @@ body {
   border-color: var(--pn-accent) !important;
   box-shadow:
     0 0 14px var(--pn-accent),
-    0 0 32px rgba(106, 255, 145, 0.45),
+    0 0 32px rgba(0, 255, 0, 0.45),
     var(--pn-shadow-inset) !important;
 }
 
@@ -1118,7 +1405,7 @@ body {
   color: var(--pn-accent);
   text-shadow:
     0 0 8px var(--pn-accent),
-    0 0 20px rgba(106, 255, 145, 0.5);
+    0 0 20px rgba(0, 255, 0, 0.5);
 }
 
 /* Inline edit input */
@@ -1169,15 +1456,15 @@ body {
   background: var(--pn-object-bg);
   box-shadow:
     0 0 0 1px var(--pn-border-accent),
-    0 0 16px rgba(106, 255, 145, 0.30),
-    0 0 32px rgba(106, 255, 145, 0.12);
+    0 0 16px rgba(0, 255, 0, 0.52),
+    0 0 32px rgba(0, 255, 0, 0.40);
   display: flex;
   align-items: center;
   padding: 0 6px;
 }
 .pn-object-entry--error {
   border-color: var(--pn-danger);
-  box-shadow: 0 0 0 1px rgba(255, 77, 109, 0.4);
+  box-shadow: 0 0 0 1px rgba(0, 255, 0, 0.4);
 }
 .pn-object-entry-input {
   background: transparent;
@@ -1189,7 +1476,7 @@ body {
   width: 100%;
   min-width: 72px;
   caret-color: var(--pn-accent);
-  text-shadow: 0 0 8px rgba(216, 255, 225, 0.5);
+  text-shadow: 0 0 8px rgba(0, 255, 0, 0.5);
 }
 .pn-object-entry-input::placeholder {
   color: var(--pn-muted-deep);
@@ -1214,7 +1501,7 @@ body {
   border-radius: 0 0 var(--pn-radius-xs) var(--pn-radius-xs);
   box-shadow:
     0 4px 16px rgba(0, 0, 0, 0.5),
-    0 0 12px rgba(106, 255, 145, 0.15);
+    0 0 12px rgba(0, 255, 0, 0.42);
   overflow: hidden;
 }
 .pn-object-ac--visible {
@@ -1232,7 +1519,7 @@ body {
 }
 .pn-object-ac-item:hover,
 .pn-object-ac-item--active {
-  background: rgba(106, 255, 145, 0.10);
+  background: rgba(0, 255, 0, 0.38);
   color: var(--pn-accent);
   text-shadow: 0 0 6px var(--pn-accent);
 }
@@ -1255,7 +1542,7 @@ body {
   flex-shrink: 0;
   background: var(--pn-bg);
   border-left: 1px solid var(--pn-border);
-  box-shadow: -2px 0 28px rgba(106, 255, 145, 0.14);
+  box-shadow: -2px 0 28px rgba(0, 255, 0, 0.42);
   display: flex;
   flex-direction: column;
 }
@@ -1272,7 +1559,7 @@ body {
   color: var(--pn-muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  text-shadow: 0 0 6px rgba(106, 255, 145, 0.35);
+  text-shadow: 0 0 6px rgba(0, 255, 0, 0.35);
 }
 
 .text-panel textarea {
@@ -1287,13 +1574,13 @@ body {
   resize: none;
   padding: 12px;
   line-height: 1.6;
-  text-shadow: 0 0 6px rgba(106, 255, 145, 0.30);
+  text-shadow: 0 0 6px rgba(0, 255, 0, 0.52);
   transition: box-shadow 0.15s;
 }
 
 /* Parse error state — subtle red glow while text is invalid */
 .text-panel textarea.text-panel--error {
-  box-shadow: inset 0 0 0 1px rgba(255, 77, 109, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(0, 255, 0, 0.45);
   color: var(--pn-danger);
 }
 
@@ -1302,7 +1589,7 @@ body {
   flex-shrink: 0;
   background: var(--pn-bg-deep);
   border-top: 1px solid var(--pn-border);
-  box-shadow: 0 -1px 18px rgba(106, 255, 145, 0.14);
+  box-shadow: 0 -1px 18px rgba(0, 255, 0, 0.42);
   display: flex;
   align-items: center;
   padding: 0 12px;
@@ -1310,14 +1597,14 @@ body {
   font-family: "Vulf Mono", var(--pn-font-mono);
   font-size: var(--pn-type-micro);
   color: var(--pn-muted);
-  text-shadow: 0 0 5px rgba(106, 255, 145, 0.30);
+  text-shadow: 0 0 5px rgba(0, 255, 0, 0.52);
 }
 
 .status-bar .status-mode {
   color: var(--pn-accent);
   text-shadow:
     0 0 8px var(--pn-accent),
-    0 0 20px rgba(106, 255, 145, 0.45);
+    0 0 20px rgba(0, 255, 0, 0.45);
 }
 
 /* Audio status — clickable to enable audio context */
@@ -1522,6 +1809,15 @@ body {
   z-index: 3;
 }
 
+/* Side outlet nubs — right edge, one per row.
+   top is set per-instance as a percentage of the object height so the nubs
+   track row centers through resize. */
+.patch-port-side-right {
+  width: 6px;
+  height: 6px;
+  z-index: 3;
+}
+
 /* Object border tint to distinguish from generic UI objects */
 .patch-object--attribute {
   border-color: color-mix(in srgb, var(--pn-accent) 28%, var(--pn-border));
@@ -1531,7 +1827,7 @@ body {
   box-shadow:
     var(--pn-shadow-soft),
     var(--pn-shadow-inset),
-    0 0 14px rgba(106, 255, 145, 0.12);
+    0 0 14px rgba(0, 255, 0, 0.40);
 }
 
 /* ── end attribute panel ─────────────────────────────────────────────────── */
@@ -1541,7 +1837,7 @@ body {
 .pn-imgfx-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(2, 4, 2, 0.85);
+  background: rgba(0, 0, 0, 0.85);
   z-index: 500;
   display: flex;
   align-items: center;
@@ -1553,7 +1849,7 @@ body {
   border: 1px solid var(--pn-border-accent);
   border-radius: var(--pn-radius-sm);
   box-shadow:
-    0 0 40px rgba(106, 255, 145, 0.18),
+    0 0 40px rgba(0, 255, 0, 0.45),
     0 0 80px rgba(0, 0, 0, 0.80);
   display: flex;
   flex-direction: column;
@@ -1619,12 +1915,12 @@ body {
   border: 1px solid var(--pn-border);
   border-radius: 2px;
   overflow: hidden;
-  background-color: #111;
+  background-color: #000;
   background-image:
-    linear-gradient(45deg, #1a1a1a 25%, transparent 25%),
-    linear-gradient(-45deg, #1a1a1a 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #1a1a1a 75%),
-    linear-gradient(-45deg, transparent 75%, #1a1a1a 75%);
+    linear-gradient(45deg, rgba(0, 255, 0, 0.35) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(0, 255, 0, 0.35) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(0, 255, 0, 0.35) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(0, 255, 0, 0.35) 75%);
   background-size: 10px 10px;
   background-position: 0 0, 0 5px, 5px -5px, -5px 0;
   display: flex;
@@ -1657,7 +1953,7 @@ body {
   flex-direction: column;
   gap: 14px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(106, 255, 145, 0.2) transparent;
+  scrollbar-color: rgba(0, 255, 0, 0.48) transparent;
 }
 
 .pn-imgfx-section-title {
@@ -1669,7 +1965,7 @@ body {
   color: var(--pn-accent);
   margin-bottom: 6px;
   padding-bottom: 3px;
-  border-bottom: 1px solid rgba(106, 255, 145, 0.2);
+  border-bottom: 1px solid rgba(0, 255, 0, 0.48);
 }
 
 .pn-imgfx-row {
@@ -1798,23 +2094,23 @@ body {
 .pn-imgfx-btn--accent {
   border-color: var(--pn-border-accent);
   color: var(--pn-accent);
-  box-shadow: 0 0 8px rgba(106, 255, 145, 0.20);
+  box-shadow: 0 0 8px rgba(0, 255, 0, 0.48);
 }
 
 .pn-imgfx-btn--active {
   border-color: var(--pn-accent);
   color: var(--pn-accent);
-  box-shadow: 0 0 6px rgba(106, 255, 145, 0.35);
+  box-shadow: 0 0 6px rgba(0, 255, 0, 0.35);
 }
 
 /* imageFX canvas object — teal/cyan tint to distinguish from pure image sources */
 .patch-object[data-node-type="imageFX"] {
-  border-color: color-mix(in srgb, #6affee 45%, var(--pn-border));
+  border-color: var(--pn-border-accent);
   box-shadow:
     var(--pn-shadow-soft),
     var(--pn-shadow-inset),
-    0 0 18px rgba(106, 255, 238, 0.14),
-    0 0 2px rgba(106, 255, 238, 0.45);
+    0 0 18px rgba(0, 255, 0, 0.42),
+    0 0 2px rgba(0, 255, 0, 0.45);
 }
 
 /* ── end imageFX panel ──────────────────────────────────────────────────── */
@@ -2026,7 +2322,7 @@ body {
   left: 6px;
   font-family: var(--pn-font-mono);
   font-size: 9px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(0, 255, 0, 0.5);
   pointer-events: none;
   user-select: none;
 }
@@ -2047,11 +2343,11 @@ body {
   display: flex;
   flex-direction: column;
   padding: 7px 7px 0;
-  border: 1.5px solid rgba(106, 255, 145, 0.55);
+  border: 1.5px solid rgba(0, 255, 0, 0.55);
   border-radius: 2px;
   box-shadow:
-    inset 0 0 0 1px rgba(106, 255, 145, 0.07),
-    0 0 10px rgba(106, 255, 145, 0.12);
+    inset 0 0 0 1px rgba(0, 255, 0, 0.35),
+    0 0 10px rgba(0, 255, 0, 0.40);
   position: relative;
 }
 
@@ -2069,15 +2365,15 @@ body {
 .pn-polaroid::before {
   top: 3px;
   left: 3px;
-  border-top: 1px solid rgba(106, 255, 145, 0.35);
-  border-left: 1px solid rgba(106, 255, 145, 0.35);
+  border-top: 1px solid rgba(0, 255, 0, 0.35);
+  border-left: 1px solid rgba(0, 255, 0, 0.35);
 }
 /* Top-right corner tick */
 .pn-polaroid::after {
   top: 3px;
   right: 3px;
-  border-top: 1px solid rgba(106, 255, 145, 0.35);
-  border-right: 1px solid rgba(106, 255, 145, 0.35);
+  border-top: 1px solid rgba(0, 255, 0, 0.35);
+  border-right: 1px solid rgba(0, 255, 0, 0.35);
 }
 
 /* Photo area — inset rectangle where the image lives */
@@ -2085,7 +2381,7 @@ body {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  border: 1px solid rgba(106, 255, 145, 0.30);
+  border: 1px solid rgba(0, 255, 0, 0.52);
   position: relative;
 }
 
@@ -2101,13 +2397,13 @@ body {
 }
 .pn-polaroid__photo::before {
   left: -1px;
-  border-bottom: 1px solid rgba(106, 255, 145, 0.35);
-  border-left:   1px solid rgba(106, 255, 145, 0.35);
+  border-bottom: 1px solid rgba(0, 255, 0, 0.35);
+  border-left:   1px solid rgba(0, 255, 0, 0.35);
 }
 .pn-polaroid__photo::after {
   right: -1px;
-  border-bottom: 1px solid rgba(106, 255, 145, 0.35);
-  border-right:  1px solid rgba(106, 255, 145, 0.35);
+  border-bottom: 1px solid rgba(0, 255, 0, 0.35);
+  border-right:  1px solid rgba(0, 255, 0, 0.35);
 }
 
 .pn-polaroid__img {
@@ -2127,15 +2423,15 @@ body {
     linear-gradient(
       to bottom right,
       transparent calc(50% - 0.5px),
-      rgba(106, 255, 145, 0.12) calc(50% - 0.5px),
-      rgba(106, 255, 145, 0.12) calc(50% + 0.5px),
+      rgba(0, 255, 0, 0.40) calc(50% - 0.5px),
+      rgba(0, 255, 0, 0.40) calc(50% + 0.5px),
       transparent calc(50% + 0.5px)
     ),
     linear-gradient(
       to bottom left,
       transparent calc(50% - 0.5px),
-      rgba(106, 255, 145, 0.12) calc(50% - 0.5px),
-      rgba(106, 255, 145, 0.12) calc(50% + 0.5px),
+      rgba(0, 255, 0, 0.40) calc(50% - 0.5px),
+      rgba(0, 255, 0, 0.40) calc(50% + 0.5px),
       transparent calc(50% + 0.5px)
     );
 }
@@ -2148,7 +2444,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 0 6px;
-  border-top: 1px solid rgba(106, 255, 145, 0.20);
+  border-top: 1px solid rgba(0, 255, 0, 0.48);
   position: relative;
 }
 
@@ -2164,19 +2460,19 @@ body {
 }
 .pn-polaroid__base::before {
   left: 3px;
-  border-bottom: 1px solid rgba(106, 255, 145, 0.30);
-  border-left:   1px solid rgba(106, 255, 145, 0.30);
+  border-bottom: 1px solid rgba(0, 255, 0, 0.52);
+  border-left:   1px solid rgba(0, 255, 0, 0.52);
 }
 .pn-polaroid__base::after {
   right: 3px;
-  border-bottom: 1px solid rgba(106, 255, 145, 0.30);
-  border-right:  1px solid rgba(106, 255, 145, 0.30);
+  border-bottom: 1px solid rgba(0, 255, 0, 0.52);
+  border-right:  1px solid rgba(0, 255, 0, 0.52);
 }
 
 .pn-polaroid__label {
   font-family: var(--pn-font-mono);
   font-size: 8px;
-  color: rgba(106, 255, 145, 0.35);
+  color: rgba(0, 255, 0, 0.35);
   letter-spacing: 0.05em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2185,7 +2481,7 @@ body {
 }
 
 .patch-object:hover .pn-polaroid__label {
-  color: rgba(106, 255, 145, 0.65);
+  color: rgba(0, 255, 0, 0.65);
 }
 
 /* ── end mediaImage polaroid ─────────────────────────────────────────────── */
@@ -2206,7 +2502,8 @@ body {
     inset 0 0 12px color-mix(in srgb, var(--pn-text) 6%, transparent);
 }
 
-/* Slow parallax phosphor tint — drifts slightly vs scan layer */
+/* Static phosphor tint — covers the full viewport; no parallax because a
+   non-repeating linear gradient cannot tile seamlessly under scroll. */
 .crt-overlay::before {
   content: "";
   position: absolute;
@@ -2220,15 +2517,10 @@ body {
     transparent 38%,
     color-mix(in srgb, var(--pn-accent) 8%, transparent) 100%
   );
-  transform: translate3d(
-    calc(-0.13 * 1px * var(--crt-sx)),
-    calc(-0.13 * 1px * var(--crt-sy)),
-    0
-  );
-  will-change: transform;
 }
 
-/* Scanlines + grille locked 1:1 to canvas scroll (main "glass" motion) */
+/* Scanlines + grille locked 1:1 to canvas scroll — background-position shifts
+   the repeating pattern, which tiles infinitely, so there's no exposed edge. */
 .crt-overlay::after {
   content: "";
   position: absolute;
@@ -2251,18 +2543,15 @@ body {
       color-mix(in srgb, var(--pn-bg-deep) 35%, transparent) 2px,
       color-mix(in srgb, var(--pn-bg-deep) 35%, transparent) 3px
     );
-  transform: translate3d(
-    calc(-1 * 1px * var(--crt-sx)),
-    calc(-1 * 1px * var(--crt-sy)),
-    0
-  );
-  will-change: transform;
+  background-position:
+    calc(-1px * var(--crt-sx)) calc(-1px * var(--crt-sy)),
+    calc(-1px * var(--crt-sx)) calc(-1px * var(--crt-sy));
+  will-change: background-position;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .crt-overlay::before,
   .crt-overlay::after {
-    transform: none !important;
+    background-position: 0 0, 0 0 !important;
     will-change: auto;
   }
 
@@ -2273,4 +2562,262 @@ body {
   .crt-overlay::after {
     opacity: 0.32;
   }
+}
+
+/* ── Tab bar ──────────────────────────────────────────────────────────── */
+#pn-tab-bar {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  height: 28px;
+  background: var(--pn-surface);
+  border-bottom: 1px solid var(--pn-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-shrink: 0;
+  scrollbar-width: none;
+}
+#pn-tab-bar::-webkit-scrollbar { display: none; }
+
+.pn-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  background: none;
+  border: none;
+  border-right: 1px solid var(--pn-border);
+  color: var(--pn-muted);
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-chip);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.pn-tab:hover { color: var(--pn-text); background: var(--pn-hover-accent); }
+.pn-tab--active {
+  color: var(--pn-accent);
+  background: var(--pn-surface-raised);
+  border-bottom: 2px solid var(--pn-accent);
+}
+
+.pn-tab-close {
+  opacity: 0.5;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+.pn-tab-close:hover { opacity: 1; background: var(--pn-border); }
+
+/* ── SubPatch presentation panel ──────────────────────────────────────── */
+
+/* Remove body padding so the panel fills the entire subPatch box */
+.patch-object-subpatch .patch-object-body {
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Mount div: fills body, clips content to the box bounds */
+.pn-subpatch-panel-mount {
+  flex: 1 1 0;
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+}
+
+/* The live presentation element itself: absolute, fills the mount */
+.pn-subpatch-panel {
+  position: absolute;
+  inset: 0;
+  background: var(--pn-object-bg);
+}
+
+/* Nested .patch-object inside a subpatch presentation panel: strip the
+   outer green halos (0 0 18px / 0 0 2px) that normally hug each object on
+   the main canvas. When nested, those halos stack with the parent
+   subpatch's own halo and make the inner object read as significantly
+   brighter than the same object placed on the main canvas. Keep only the
+   dark drop shadow + subtle inset so the box still reads as 3D. */
+.pn-subpatch-panel .patch-object {
+  box-shadow:
+    var(--pn-shadow-soft),
+    var(--pn-shadow-inset) !important;
+}
+
+/* Toggle zeroes its outer shadow with !important, so the toggle-specific
+   plate glows are what you actually see. Suppress them too when nested. */
+.pn-subpatch-panel .patch-object-toggle-plate {
+  box-shadow: none !important;
+}
+
+/* Hint shown inside the panel when the subpatch has no GUI objects */
+.pn-subpatch-panel-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.pn-subpatch-hint-name {
+  font-family: var(--pn-font-mono);
+  font-size: 11px;
+  color: var(--pn-text);
+}
+
+.pn-subpatch-hint-sub {
+  font-family: var(--pn-font-mono);
+  font-size: 9px;
+  color: var(--pn-secondary);
+}
+
+/* Objects inside the presentation panel: locked = interact (hand),
+   unlocked = move (grab). Must cover descendants too so the universal
+   `.patch-object-body *` rule doesn't leak through. */
+.pn-subpatch-panel[data-locked="0"] .patch-object-body,
+.pn-subpatch-panel[data-locked="0"] .patch-object-body * {
+  cursor: var(--pn-cursor-grab) !important;
+}
+
+/* ── SubPatch lock toggle button ──────────────────────────────────────────── */
+.pn-subpatch-lock {
+  position: absolute;
+  bottom: 5px;
+  left: 5px;
+  z-index: 20;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--pn-border);
+  border-radius: 4px;
+  background: var(--pn-object-bg);
+  color: var(--pn-secondary);
+  cursor: var(--pn-cursor-pointer) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.1s, background 0.1s, border-color 0.1s;
+}
+.pn-subpatch-lock:hover {
+  color: var(--pn-text);
+  background: var(--pn-hover-accent);
+  border-color: var(--pn-accent);
+}
+
+/* Unlocked state: accent colour so it's obvious edit mode is active */
+.pn-subpatch-lock[data-locked="0"] {
+  color: var(--pn-accent);
+  border-color: var(--pn-accent);
+}
+
+/* Show/hide the correct SVG icon */
+.pn-lock-open   { display: none; }
+.pn-lock-closed { display: block; }
+.pn-subpatch-lock[data-locked="0"] .pn-lock-open   { display: block; }
+.pn-subpatch-lock[data-locked="0"] .pn-lock-closed { display: none; }
+
+/* Dashed accent border on the panel itself when in edit mode */
+.pn-subpatch-panel[data-locked="0"] {
+  outline: 1px dashed color-mix(in srgb, var(--pn-accent) 50%, transparent);
+  outline-offset: -1px;
+}
+
+/* ── Sequencer ─────────────────────────────────────────────────────────── */
+.patch-object-sequencer-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  box-sizing: border-box;
+}
+
+.pn-seq-grid {
+  flex: 1;
+  display: grid;
+  gap: 1px;
+  padding: 1px;
+  background: var(--pn-border);
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  min-height: 0;
+}
+
+.pn-seq-cell {
+  background: var(--pn-object-bg);
+  color: var(--pn-text);
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-chip);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 2px 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
+  min-height: 0;
+  outline: none;
+  user-select: none;
+  transition: background 0.05s linear;
+}
+
+.pn-seq-cell--active {
+  background: color-mix(in srgb, var(--pn-accent) 28%, var(--pn-object-bg));
+  box-shadow: inset 0 0 0 1px var(--pn-accent);
+}
+
+/* Locked: grab cursor on the whole grid so dragging moves the object.
+ * caret-color: transparent hides the native text caret that some browsers
+ * still paint on contenteditable="false" elements after focus. */
+.pn-seq-grid[data-locked="1"] .pn-seq-cell {
+  cursor: var(--pn-cursor-grab) !important;
+  caret-color: transparent;
+}
+
+.pn-seq-grid[data-locked="0"] .pn-seq-cell {
+  cursor: var(--pn-cursor-text) !important;
+  user-select: text;
+}
+
+.pn-seq-grid[data-locked="0"] .pn-seq-cell:hover {
+  background: var(--pn-hover-accent);
+}
+
+.pn-seq-grid[data-locked="0"] .pn-seq-cell:focus {
+  background: var(--pn-object-bg);
+  box-shadow: inset 0 0 0 1px var(--pn-accent);
+  color: var(--pn-accent);
+}
+
+.pn-seq-grid[data-locked="0"] .pn-seq-cell--active:focus {
+  background: color-mix(in srgb, var(--pn-accent) 18%, var(--pn-object-bg));
+}
+
+/* Lock button lives on the sequencer body's top-right so it doesn't overlap
+ * the bottom-right resize handle. */
+.pn-sequencer-lock {
+  top: 4px;
+  left: auto;
+  right: 4px;
+  bottom: auto;
+}
+
+/* ── Inlet / Outlet labels ─────────────────────────────────────────────── */
+.pn-iolet-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-chip);
+  color: var(--pn-muted);
+  letter-spacing: 0.06em;
 }

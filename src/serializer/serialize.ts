@@ -32,6 +32,11 @@ export function serializePatch(graph: PatchGraph): string {
     if (node.width !== undefined && node.height !== undefined) {
       lines.push(`#X size ${index} ${node.width} ${node.height};`);
     }
+    if (node.panelX !== undefined && node.panelY !== undefined) {
+      const pw = node.panelW !== undefined ? ` ${Math.round(node.panelW)}` : "";
+      const ph = node.panelH !== undefined ? ` ${Math.round(node.panelH)}` : "";
+      lines.push(`#X panel ${index} ${Math.round(node.panelX)} ${Math.round(node.panelY)}${pw}${ph};`);
+    }
   });
 
   for (const edge of graph.getEdges()) {

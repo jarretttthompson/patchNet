@@ -113,19 +113,19 @@ export class LayerNode {
     for (let y = 0; y < h; y += tile) {
       for (let x = 0; x < w; x += tile) {
         const isDark = ((x / tile) + (y / tile)) % 2 === 0;
-        ctx.fillStyle = isDark ? "rgba(16, 12, 22, 0.92)" : "rgba(34, 26, 42, 0.92)";
+        ctx.fillStyle = isDark ? "rgba(0, 0, 0, 0.92)" : "rgba(0, 20, 0, 0.92)";
         ctx.fillRect(x, y, tile, tile);
       }
     }
 
-    ctx.fillStyle = "rgba(57, 255, 20, 0.08)";
+    ctx.fillStyle = "rgba(0, 255, 0, 0.35)";
     ctx.fillRect(0, 0, w, h);
 
-    ctx.strokeStyle = "rgba(57, 255, 20, 0.28)";
+    ctx.strokeStyle = "rgba(0, 255, 0, 0.55)";
     ctx.lineWidth = 2;
     ctx.strokeRect(10, 10, Math.max(0, w - 20), Math.max(0, h - 20));
 
-    ctx.fillStyle = "rgba(235, 230, 242, 0.9)";
+    ctx.fillStyle = "rgba(0, 255, 0, 0.9)";
     ctx.font = '14px "Vulf Mono", monospace';
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
