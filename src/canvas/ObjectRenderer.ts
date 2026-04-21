@@ -282,6 +282,21 @@ function buildBody(node: PatchNode): HTMLDivElement {
     label.textContent = `${node.args[0] ?? "world1"} · ${enabled ? "on" : "off"}`;
     body.appendChild(label);
 
+  } else if (node.type === "shaderToy") {
+    const title = document.createElement("div");
+    title.className = "patch-object-visual-label";
+    title.textContent = "shaderToy";
+    body.appendChild(title);
+
+    const preset = node.args[0] ?? "default";
+    const hasCode = (node.args[1] ?? "") !== "";
+    const w = node.args[2] ?? "512";
+    const h = node.args[3] ?? "512";
+    const sub = document.createElement("div");
+    sub.className = "patch-object-visual-sub";
+    sub.textContent = `${hasCode ? "custom" : preset} · ${w}×${h}`;
+    body.appendChild(sub);
+
   } else if (node.type === "visualizer" || node.type === "mediaVideo" || node.type === "layer") {
     const title = document.createElement("div");
     title.className = "patch-object-visual-label";

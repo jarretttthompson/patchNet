@@ -46,6 +46,7 @@ Legend for columns:
 | `imageFX`     | visual    | ✓ | ✓ | OR:190                           | VisualizerGraph:343 (ImageFXNode)| OIC:847 | ✗ | — |
 | `vfxCRT`      | visual    | ✓ | ✓ | default text label (no branch)   | VisualizerGraph:359 (VfxCrtNode) | generic message (VG:598) | ✗ | — |
 | `vfxBlur`     | visual    | ✓ | ✓ | default text label (no branch)   | VisualizerGraph:365 (VfxBlurNode)| generic message (VG:609) | ✗ | — |
+| `shaderToy`   | visual    | ✓ | ✓ | OR visual-label + sub            | VisualizerGraph (ShaderToyNode)  | OIC shaderToy branch     | ✓ | — |
 
 Abbreviations: **OR** = `src/canvas/ObjectRenderer.ts`, **OIC** = `src/canvas/ObjectInteractionController.ts`, **VG** = `src/runtime/VisualizerGraph.ts`.
 

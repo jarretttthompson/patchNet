@@ -45,6 +45,15 @@ export class VisualizerNode implements IRenderContext, IRenderer {
   private _floating = false;
   private _focusHandler: (() => void) | null = null;
 
+  /**
+   * Pre-fullscreen geometry, captured when `fullscreen(true)` is called. Non-null
+   * while the popup is in message-driven "fake fullscreen" (moved to 0,0 and
+   * resized to `screen.availWidth × availHeight`). Cleared on `fullscreen(false)`.
+   * While set, `onMove`/`onResize` skip notifying the patch so the full-screen
+   * geometry doesn't overwrite the user's intended window size/position.
+   */
+  private _preFullscreen: { x: number; y: number; w: number; h: number } | null = null;
+
   constructor(
     public readonly name: string,
     private width = 640,
@@ -164,11 +173,13 @@ export class VisualizerNode implements IRenderContext, IRenderer {
       if (!this.popup || !this.canvas) return;
       // Keep the canvas at its configured resolution whenever the popup covers
       // (most of) the screen — fullscreen via ANY mechanism: Fullscreen API,
-      // macOS green-button window fullscreen, or OS-level window maximize.
-      // Rendering at screen resolution (e.g. 3840×2160) stalls video playback;
-      // CSS `width:100%;height:100%` on the canvas scales visually with zero cost.
+      // macOS green-button window fullscreen, OS-level window maximize, or
+      // our message-driven fake fullscreen. Rendering at screen resolution
+      // (e.g. 3840×2160) stalls video playback; CSS `width:100%;height:100%`
+      // on the canvas scales visually with zero cost.
       const scr = this.popup.screen;
       const screenFullsize =
+        !!this._preFullscreen ||
         (this.popup.innerWidth  >= scr.width  * 0.95 &&
          this.popup.innerHeight >= scr.height * 0.85) ||
         !!this.popup.document.fullscreenElement;
@@ -237,25 +248,65 @@ export class VisualizerNode implements IRenderContext, IRenderer {
   moveTo(x: number, y: number): void { this.popup?.moveTo(x, y); }
 
   /**
-   * Enter or exit fullscreen on the popup's canvas element.
-   * Must be called from within a user gesture handler — works when triggered
-   * by a button or message click, but NOT through metro/timer.
+   * Enter or exit "fullscreen" on the popup.
+   *
+   * Cross-window `requestFullscreen()` is gesture-restricted and blocked by
+   * all modern browsers, so `enable=true` primarily uses **fake fullscreen**:
+   * moves the popup to the screen origin and resizes it to fill
+   * `screen.availWidth × availHeight`. A real `requestFullscreen()` is
+   * attempted alongside as a best effort; failure is silent.
+   *
+   * `enable=false` exits real fullscreen if active and restores the popup to
+   * the size/position it had before `fullscreen(true)` was called.
+   *
+   * For truly borderless fullscreen, double-click the popup canvas or press
+   * `F` inside the popup — those paths use a local user gesture and aren't
+   * blocked.
    */
   fullscreen(enable: boolean): void {
     if (!this.popup || this.popup.closed || !this.canvas) return;
-    const doc = this.popup.document;
+    const popup = this.popup;
+    const doc   = popup.document;
+
     if (enable) {
-      // Cross-window requestFullscreen is gesture-restricted and often blocked
-      // even when called from a direct click. Reliable paths live inside the
-      // popup: double-click the canvas, or press `f`.
-      this.canvas.requestFullscreen().catch(err => {
-        console.warn(
-          `[VisualizerNode] fullscreen message blocked (${err.name ?? err}). ` +
-          `Double-click the popup or press F to go fullscreen.`
-        );
-      });
-    } else if (doc.fullscreenElement) {
-      doc.exitFullscreen().catch(() => {});
+      if (this._preFullscreen) return; // already in fake fullscreen
+
+      // Capture current geometry for restoration on `fullscreen 0`.
+      this._preFullscreen = {
+        x: popup.screenX,
+        y: popup.screenY,
+        w: popup.innerWidth,
+        h: popup.innerHeight,
+      };
+
+      // Fake fullscreen: fill the usable screen area. `availLeft/availTop` pin
+      // to the top-left of the primary display (Windows taskbar offset, etc.).
+      // Cross-window `requestFullscreen()` is gesture-restricted and almost
+      // always blocked, so we don't rely on it — but we still call it as a
+      // best effort in case the browser/config allows it.
+      const scr = popup.screen as Screen & { availLeft?: number; availTop?: number };
+      const x = scr.availLeft ?? 0;
+      const y = scr.availTop  ?? 0;
+      popup.moveTo(x, y);
+      popup.resizeTo(scr.availWidth, scr.availHeight);
+
+      this.canvas.requestFullscreen().catch(() => {});
+    } else {
+      if (doc.fullscreenElement) {
+        doc.exitFullscreen().catch(() => {});
+      }
+      const prev = this._preFullscreen;
+      this._preFullscreen = null;
+      if (prev) {
+        popup.resizeTo(prev.w, prev.h);
+        popup.moveTo(prev.x, prev.y);
+        this.width  = prev.w;
+        this.height = prev.h;
+        if (this.canvas) {
+          this.canvas.width  = prev.w;
+          this.canvas.height = prev.h;
+        }
+      }
     }
   }
 
@@ -366,6 +417,12 @@ export class VisualizerNode implements IRenderContext, IRenderer {
     const popup = this.popup;
     const poll = () => {
       if (!this.popup || this.popup.closed) { this.positionPollId = null; return; }
+      // Skip position reporting while in message-driven fake fullscreen so the
+      // (0,0) geometry doesn't overwrite the saved pre-fullscreen position.
+      if (this._preFullscreen) {
+        this.positionPollId = popup.requestAnimationFrame(poll);
+        return;
+      }
       const x = this.popup.screenX;
       const y = this.popup.screenY;
       if (x !== this._lastScreenX || y !== this._lastScreenY) {

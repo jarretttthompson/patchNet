@@ -10,6 +10,7 @@ import { MediaImageNode } from "./MediaImageNode";
 import { ImageFXNode } from "./ImageFXNode";
 import { VfxCrtNode } from "./VfxCrtNode";
 import { VfxBlurNode } from "./VfxBlurNode";
+import { ShaderToyNode, SHADERTOY_PRESETS } from "./ShaderToyNode";
 import { VideoStore } from "./VideoStore";
 import { ImageStore } from "./ImageStore";
 import { PatchVizNode } from "./PatchVizNode";
@@ -42,6 +43,7 @@ export class VisualizerGraph {
   private imageFXNodes    = new Map<string, ImageFXNode>();       // patchNodeId → ImageFXNode
   private vfxCrtNodes     = new Map<string, VfxCrtNode>();        // patchNodeId → VfxCrtNode
   private vfxBlurNodes    = new Map<string, VfxBlurNode>();       // patchNodeId → VfxBlurNode
+  private shaderToyNodes  = new Map<string, ShaderToyNode>();     // patchNodeId → ShaderToyNode
   private patchVizNodes   = new Map<string, PatchVizNode>();      // patchNodeId → PatchVizNode
   private videoIdbKeys    = new Map<string, string>();            // patchNodeId → idb key
   private imageIdbKeys    = new Map<string, string>();            // patchNodeId → idb key
@@ -262,6 +264,9 @@ export class VisualizerGraph {
     for (const [id, vfx] of this.vfxBlurNodes) {
       if (!activeIds.has(id)) { vfx.destroy(); this.vfxBlurNodes.delete(id); }
     }
+    for (const [id, stn] of this.shaderToyNodes) {
+      if (!activeIds.has(id)) { stn.destroy(); this.shaderToyNodes.delete(id); }
+    }
     for (const [id, pvn] of this.patchVizNodes) {
       if (!activeIds.has(id)) {
         this.runtime.unregister(pvn.contextName);
@@ -431,6 +436,22 @@ export class VisualizerGraph {
         this.vfxBlurNodes.set(node.id, vfx);
       }
 
+      if (node.type === "shaderToy" && !this.shaderToyNodes.has(node.id)) {
+        try {
+          const w = parseInt(node.args[2] ?? "512", 10);
+          const h = parseInt(node.args[3] ?? "512", 10);
+          const stn = new ShaderToyNode(
+            isNaN(w) ? 512 : w,
+            isNaN(h) ? 512 : h,
+          );
+          this.applyShaderToySource(stn, node);
+          this.applyShaderToyMouseFromArgs(stn, node);
+          this.shaderToyNodes.set(node.id, stn);
+        } catch (e) {
+          console.warn("[VisualizerGraph] ShaderToyNode init failed:", e);
+        }
+      }
+
       if (node.type === "patchViz" && !this.patchVizNodes.has(node.id)) {
         const contextName = node.args[0] ?? "world1";
         const pvn = new PatchVizNode(contextName);
@@ -471,6 +492,20 @@ export class VisualizerGraph {
     for (const [id, vfx] of this.vfxBlurNodes) {
       const pn = this.graph.nodes.get(id);
       if (pn) this.syncVfxBlurParams(vfx, pn);
+    }
+    for (const [id, stn] of this.shaderToyNodes) {
+      const pn = this.graph.nodes.get(id);
+      if (!pn) continue;
+      const w = parseInt(pn.args[2] ?? "512", 10);
+      const h = parseInt(pn.args[3] ?? "512", 10);
+      if (!isNaN(w) && !isNaN(h)) stn.setResolution(w, h);
+      this.applyShaderToyMouseFromArgs(stn, pn);
+      // Source re-sync only if preset changed (code arg is authoritative on first create).
+      const preset = pn.args[0] ?? "default";
+      const code   = pn.args[1] ?? "";
+      if (!code && SHADERTOY_PRESETS[preset] && stn.getSource() !== SHADERTOY_PRESETS[preset]) {
+        stn.setPreset(preset);
+      }
     }
 
     // Sync visualizer float arg in case it changed
@@ -591,6 +626,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "imageFX") {
           const fxn = this.imageFXNodes.get(edge.fromNodeId);
           if (fxn) layer.setMediaFX(fxn);
+        } else if (fromNode.type === "shaderToy") {
+          const stn = this.shaderToyNodes.get(edge.fromNodeId);
+          if (stn) layer.setVideoFX(stn);
         } else if (fromNode.type === "mediaImage") {
           const min = this.mediaImageNodes.get(edge.fromNodeId);
           if (min) layer.setMediaImage(min);
@@ -749,6 +787,99 @@ export class VisualizerGraph {
         default: return;
       }
     }
+  }
+
+  deliverShaderToyMessage(nodeId: string, selector: string, args: string[]): void {
+    const stn = this.shaderToyNodes.get(nodeId);
+    const pn  = this.graph.nodes.get(nodeId);
+    if (!stn || !pn) return;
+
+    switch (selector) {
+      case "preset": {
+        const name = args[0] ?? "default";
+        if (!SHADERTOY_PRESETS[name]) {
+          console.warn(`[shaderToy] unknown preset "${name}"; available: ${Object.keys(SHADERTOY_PRESETS).join(", ")}`);
+          return;
+        }
+        stn.setPreset(name);
+        pn.args[0] = name;
+        pn.args[1] = "";           // clear inline code — preset takes over
+        this.graph.emit("change");
+        break;
+      }
+      case "code": {
+        const b64 = args[0] ?? "";
+        let src = "";
+        try { src = b64 ? atob(b64) : ""; }
+        catch { console.warn("[shaderToy] code: invalid base64"); return; }
+        if (!stn.setShaderCode(src)) {
+          console.warn("[shaderToy] compile failed:", stn.getError());
+          return;
+        }
+        pn.args[1] = b64;
+        this.graph.emit("change");
+        break;
+      }
+      case "glsl": {
+        // Rest-of-line GLSL. Convenient for hand-typed patches; persisted as
+        // base64 in args[1] so the text panel stays single-line per node.
+        const src = args.join(" ");
+        if (!stn.setShaderCode(src)) {
+          console.warn("[shaderToy] compile failed:", stn.getError());
+          return;
+        }
+        pn.args[1] = btoa(unescape(encodeURIComponent(src)));
+        this.graph.emit("change");
+        break;
+      }
+      case "mouse": {
+        const x = parseFloat(args[0] ?? "0.5");
+        const y = parseFloat(args[1] ?? "0.5");
+        if (isNaN(x) || isNaN(y)) return;
+        stn.setMouse(x, y);
+        pn.args[4] = String(x);
+        pn.args[5] = String(y);
+        // mouse changes at animation rate — don't flood text panel
+        this.graph.emit("display");
+        break;
+      }
+      case "size": {
+        const w = parseInt(args[0] ?? "512", 10);
+        const h = parseInt(args[1] ?? "512", 10);
+        if (isNaN(w) || isNaN(h)) return;
+        stn.setResolution(w, h);
+        pn.args[2] = String(w);
+        pn.args[3] = String(h);
+        this.graph.emit("change");
+        break;
+      }
+      case "reset": {
+        stn.resetTime();
+        break;
+      }
+      default:
+        return;
+    }
+  }
+
+  /** Restore shader source onto a newly-created runtime node from patch args. */
+  private applyShaderToySource(stn: ShaderToyNode, pn: { args: string[] }): void {
+    const preset = pn.args[0] ?? "default";
+    const b64    = pn.args[1] ?? "";
+    if (b64) {
+      try {
+        const src = decodeURIComponent(escape(atob(b64)));
+        if (stn.setShaderCode(src)) return;
+        console.warn("[shaderToy] persisted code failed to compile; falling back to preset.");
+      } catch { console.warn("[shaderToy] persisted code: invalid base64; falling back to preset."); }
+    }
+    if (SHADERTOY_PRESETS[preset]) stn.setPreset(preset);
+  }
+
+  private applyShaderToyMouseFromArgs(stn: ShaderToyNode, pn: { args: string[] }): void {
+    const x = parseFloat(pn.args[4] ?? "0.5");
+    const y = parseFloat(pn.args[5] ?? "0.5");
+    stn.setMouse(isNaN(x) ? 0.5 : x, isNaN(y) ? 0.5 : y);
   }
 
   // ── Helpers ────────────────────────────────────────────────────────
@@ -932,6 +1063,7 @@ export class VisualizerGraph {
     for (const fx  of this.imageFXNodes.values())    fx.destroy();
     for (const vfx of this.vfxCrtNodes.values())     vfx.destroy();
     for (const vfx of this.vfxBlurNodes.values())    vfx.destroy();
+    for (const stn of this.shaderToyNodes.values()) stn.destroy();
 
     for (const vn of this.vizNodes.values()) {
       this.runtime.unregister(vn.name);
@@ -945,6 +1077,7 @@ export class VisualizerGraph {
     this.imageFXNodes.clear();
     this.vfxCrtNodes.clear();
     this.vfxBlurNodes.clear();
+    this.shaderToyNodes.clear();
     this.videoIdbKeys.clear();
     this.imageFXBgKeys.clear();
   }

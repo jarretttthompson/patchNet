@@ -76,6 +76,59 @@ Agents: append here when making a decision that affects the whole project.
 ## Changelog
 
 ---
+## [2026-04-21] COMPLETED | shaderToy object
+**Agent:** Claude Code
+**Phase:** Out-of-band user request — new visual-category fragment-shader source
+**Done:**
+- Added `shaderToy` to `OBJECT_DEFS` (`src/graph/objectDefs.ts`). Visual-category. Args: `preset` (symbol default "default"), `code` (symbol, hidden — base64-encoded GLSL), `width`/`height` (int, default 512×512), `mouseX`/`mouseY` (hidden floats, default 0.5). Single `any` inlet; one `media` outlet → `layer`.
+- New runtime node: `src/runtime/ShaderToyNode.ts`. WebGL2 renderer wrapping an offscreen `<canvas>`; implements the existing `VideoFXSource` interface (same SPI as `VfxCrtNode`/`VfxBlurNode`) so `LayerNode.setVideoFX(...)` picks it up with zero changes to LayerNode. Exposes the ShaderToy-compatible uniform subset: `iResolution` (vec3), `iTime`, `iTimeDelta`, `iFrame`, `iMouse` (vec4), `iDate` (vec4). User source is expected to define `void mainImage(out vec4 fragColor, in vec2 fragCoord)`; the prelude + a trivial `main()` are added automatically.
+- Four built-in presets live in `SHADERTOY_PRESETS` (default rainbow gradient, plasma, warp, grid) so the object shows visible output immediately on placement.
+- Messages (hot inlet 0): `preset <name>` (switches built-in, clears inline code), `code <base64>` (sets fragment source from base64), `glsl <rest-of-line>` (convenience path for hand-typed GLSL — re-encoded to base64 for persistence), `mouse <x> <y>` (normalized 0–1), `size <w> <h>` (resize render surface), `reset` / `bang` (reset `iTime`).
+- `VisualizerGraph` wiring:
+  - New `shaderToyNodes: Map<string, ShaderToyNode>` alongside the existing runtime-node maps; created in `sync()`, torn down when the patch node is removed, cleared in `destroy()`.
+  - `rewireMedia()` gains a `fromNode.type === "shaderToy"` branch that calls `layer.setVideoFX(stn)` — same slot the vFX chain uses, so a layer holds either a shader OR a video/image (not both), matching the existing "swap by re-cabling" UX.
+  - Mutable-state sync pass reads `width`/`height` into `setResolution()` every graph change and pushes `mouseX`/`mouseY` into the shader uniform. Preset changes propagate automatically: `syncAttributeNode`-style param edits go through the generic `trySetArgByName` path, but a preset change via attribute panel also triggers a re-compile because the sync pass detects `stn.getSource() !== SHADERTOY_PRESETS[preset]`.
+  - `deliverShaderToyMessage(nodeId, selector, args)`: preset/code/glsl/mouse/size/reset handlers; mouse emits `"display"` (no text-panel flood), structural edits emit `"change"`.
+  - Helpers: `applyShaderToySource()` restores shader on create (base64 code wins over preset; falls back to preset if code fails to compile) and `applyShaderToyMouseFromArgs()` seeds iMouse.
+- `ObjectInteractionController`:
+  - `deliverBang` branch for `shaderToy` → `deliverShaderToyMessage(..., "reset")`.
+  - `deliverMessageValue` branch parses the incoming string; `glsl <rest-of-line>` is handled specially (preserves spaces/symbols inside the GLSL body by not splitting further); all other selectors go through the standard token-split path.
+- `ObjectRenderer` adds a `shaderToy` branch with a `patch-object-visual-label` title + sub (preset-or-"custom" and resolution). No new CSS; re-uses the classes already used by visualizer/mediaVideo/layer.
+- Reference docs: `docs/objects/shaderToy.md` written from `_TEMPLATE.md`; `docs/objects/INVENTORY.md` row added.
+- `tsc --noEmit` passes. `npm run build` clean (586 KB bundle, up ~12 KB for the shader runtime + presets + docs).
+
+**Changed files:**
+- src/runtime/ShaderToyNode.ts — new
+- src/graph/objectDefs.ts — shaderToy ObjectSpec
+- src/runtime/VisualizerGraph.ts — create/destroy, rewireMedia branch, deliverShaderToyMessage, helpers
+- src/canvas/ObjectInteractionController.ts — deliverBang + deliverMessageValue branches (incl. glsl rest-of-line carve-out)
+- src/canvas/ObjectRenderer.ts — shaderToy body branch (visual-label + sub)
+- docs/objects/shaderToy.md — new reference page
+- docs/objects/INVENTORY.md — new row
+- AGENTS.md — this entry
+
+**Notes / decisions made:**
+- Chose to implement shaderToy as a *media source* that produces a canvas, rather than as a layer itself, so it composes with the existing `shaderToy → layer → (visualizer | patchViz)` graph shape the user already knows. That also means the existing layer arg surface (scaleX/scaleY/posX/posY/priority/context) applies to shader output for free.
+- Reused `VideoFXSource` (`LayerNode.setVideoFX`) rather than inventing a new slot. Trade-off: a layer can hold shader **or** video/image but not both — acceptable in v1 and matches the existing vFX-chain behavior.
+- WebGL2 (not WebGL1). Broadly supported in modern browsers and gives us `out` fragment color + `precision highp int` for ShaderToy compatibility without polyfill gymnastics.
+- Base64 code storage in `args[1]` for the same reason codebox does it: raw GLSL has newlines, braces, and quotes that would break the PD-style space-delimited line format. `glsl <rest-of-line>` exists as the "type it by hand" convenience, but persists as base64 — round-trip safe.
+- **ShaderToy URL/ID fetching is intentionally NOT implemented.** The official ShaderToy API requires a per-user API key (`https://www.shadertoy.com/api/v1/shaders/<id>?key=<key>`), and CORS support on arbitrary proxy endpoints is not universal. Adding a best-effort fetch would make patches non-deterministic and bind them to network state. Instead, users paste fragment source directly via `glsl` or `code` — documented in the reference page's Notes section.
+- Multi-pass / `iChannel*` texture inputs are out of scope for v1; noted in the reference page.
+- Compile failures don't unbind the previous good shader — user sees the console warning and keeps rendering. Matches the fault-tolerance expectations of codebox.
+- No new CSS. Reused `patch-object-visual-label` / `patch-object-visual-sub` from the existing visualizer/mediaVideo/layer branches — consistent with the rest of the visual-category objects.
+- Registration is the single `OBJECT_DEFS` entry per the codified feedback memory ("one registration point only"): autocomplete and context menu derive from `Object.keys(OBJECT_DEFS)`.
+
+**Next needed:**
+- Browser smoke test:
+  - Place `shaderToy → layer → patchViz`, confirm the default rainbow renders inside the patch canvas.
+  - Swap `patchViz` for `visualizer` (popup), bang to open, confirm the same shader renders in the popup.
+  - `message preset plasma` → shaderToy: preset switches live.
+  - `message glsl void mainImage(out vec4 c,in vec2 p){c=vec4(fract(p/iResolution.xy),0,1);}` → shaderToy: compiles and runs.
+  - Two sliders → `message mouse $1 $2` → shaderToy: iMouse moves (visible in any preset that uses it — e.g., feed `iMouse.x/iResolution.x` into a shader as the warp amount).
+  - Round-trip: clear text panel → paste contents → shader restores with same preset/code.
+- Follow-up candidates (out of scope here): add `iChannel0` input slot (shader-as-post-processor over a mediaVideo); expose compile-error state in the node DOM; add more presets; consider a small live thumbnail of the shader on the patch-object body.
+
+---
 ## [2026-04-20] COMPLETED | sequencer object
 **Agent:** Claude Code
 **Phase:** Out-of-band user request — new control-category step sequencer

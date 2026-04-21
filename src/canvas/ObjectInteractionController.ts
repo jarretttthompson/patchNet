@@ -73,7 +73,6 @@ export class ObjectInteractionController {
   private visualizerGraph?: VisualizerGraph;
   private outletCallback?: (outletIndex: number, value: string | null) => void;
   private subPatchManager?: SubPatchManager;
-  private attrDragging = false;
   /** Presentation panel elements (in the main canvas) that this OIC also handles. */
   private readonly externalPanels: HTMLElement[] = [];
   /** Node ids currently mid-flash — re-applied after render() rebuilds the DOM. */
@@ -321,7 +320,7 @@ export class ObjectInteractionController {
   deliverBang(node: PatchNode, inlet: number): void {
     switch (node.type) {
       case "toggle":
-        this.toggleNode(node);
+        this.toggleNodeFromCable(node);
         break;
 
       case "button":
@@ -397,6 +396,10 @@ export class ObjectInteractionController {
       case "vfxCRT":
       case "vfxBlur":
         break; // bang has no effect on vFX nodes
+
+      case "shaderToy":
+        if (inlet === 0) this.visualizerGraph?.deliverShaderToyMessage(node.id, "reset", []);
+        break;
 
       case "layer":
         break;
@@ -483,7 +486,7 @@ export class ObjectInteractionController {
           const clamped = Math.round(Math.max(min, Math.min(max, parsed)));
           node.args[0] = String(clamped);
           this.syncSliderThumb(node.id, clamped, node);
-          this.graph.emit(this.attrDragging ? "display" : "change");
+          this.graph.emit("display");
           this.dispatchValue(node.id, 0, String(clamped));
         }
         break;
@@ -508,7 +511,7 @@ export class ObjectInteractionController {
           const ms = parseFloat(metroTokens[1] ?? "500");
           if (!isNaN(ms)) {
             node.args[0] = String(Math.max(1, ms));
-            this.graph.emit(this.attrDragging ? "display" : "change");
+            this.graph.emit("display");
             if (this.isMetroRunning(node.id)) this.startMetro(node);
           }
         } else {
@@ -523,7 +526,7 @@ export class ObjectInteractionController {
           const hz = parseFloat(oscTokens[1] ?? "1");
           if (!isNaN(hz)) {
             node.args[0] = String(Math.max(0.01, hz));
-            this.graph.emit(this.attrDragging ? "display" : "change");
+            this.graph.emit("display");
             if (this.isOscRunning(node.id)) this.startOsc(node);
           }
         } else {
@@ -585,7 +588,7 @@ export class ObjectInteractionController {
             if (!isNaN(parsed)) {
               node.args[0] = String(Math.trunc(parsed));
               this.syncNumboxDisplay(node);
-              this.graph.emit(this.attrDragging ? "display" : "change");
+              this.graph.emit("display");
             }
           } else {
             const parsed = parseFloat(trimmed);
@@ -593,7 +596,7 @@ export class ObjectInteractionController {
               const intVal = Math.trunc(parsed);
               node.args[0] = String(intVal);
               this.syncNumboxDisplay(node);
-              this.graph.emit(this.attrDragging ? "display" : "change");
+              this.graph.emit("display");
               this.dispatchValue(node.id, 0, String(intVal));
             }
           }
@@ -602,7 +605,7 @@ export class ObjectInteractionController {
           if (!isNaN(parsed)) {
             node.args[0] = String(Math.trunc(parsed));
             this.syncNumboxDisplay(node);
-            this.graph.emit(this.attrDragging ? "display" : "change");
+            this.graph.emit("display");
           }
         }
         break;
@@ -619,14 +622,14 @@ export class ObjectInteractionController {
             if (!isNaN(parsed)) {
               node.args[0] = String(parsed);
               this.syncNumboxDisplay(node);
-              this.graph.emit(this.attrDragging ? "display" : "change");
+              this.graph.emit("display");
             }
           } else {
             const parsed = parseFloat(trimmed);
             if (!isNaN(parsed)) {
               node.args[0] = String(parsed);
               this.syncNumboxDisplay(node);
-              this.graph.emit(this.attrDragging ? "display" : "change");
+              this.graph.emit("display");
               this.dispatchValue(node.id, 0, String(parsed));
             }
           }
@@ -635,7 +638,7 @@ export class ObjectInteractionController {
           if (!isNaN(parsed)) {
             node.args[0] = String(parsed);
             this.syncNumboxDisplay(node);
-            this.graph.emit(this.attrDragging ? "display" : "change");
+            this.graph.emit("display");
           }
         }
         break;
@@ -680,7 +683,7 @@ export class ObjectInteractionController {
           }
         } else if (inlet >= 1 && inlet <= 4) {
           const v = parseFloat(value);
-          if (!isNaN(v)) { node.args[inlet - 1] = String(v); this.graph.emit("change"); }
+          if (!isNaN(v)) { node.args[inlet - 1] = String(v); this.graph.emit("display"); }
         }
         break;
       }
@@ -749,8 +752,7 @@ export class ObjectInteractionController {
           const selector = tokens[0] ?? "";
           const args     = tokens.slice(1);
           this.visualizerGraph?.deliverImageFXMessage(node.id, selector, args);
-          if (!this.attrDragging) this.graph.emit("change");
-          else this.graph.emit("display");
+          this.graph.emit("display");
         }
         break;
 
@@ -760,8 +762,7 @@ export class ObjectInteractionController {
           const selector = tokens[0] ?? "";
           const args     = tokens.slice(1);
           this.visualizerGraph?.deliverVfxMessage(node.id, "vfxCRT", selector, args);
-          if (!this.attrDragging) this.graph.emit("change");
-          else this.graph.emit("display");
+          this.graph.emit("display");
         }
         break;
 
@@ -771,8 +772,22 @@ export class ObjectInteractionController {
           const selector = tokens[0] ?? "";
           const args     = tokens.slice(1);
           this.visualizerGraph?.deliverVfxMessage(node.id, "vfxBlur", selector, args);
-          if (!this.attrDragging) this.graph.emit("change");
-          else this.graph.emit("display");
+          this.graph.emit("display");
+        }
+        break;
+
+      case "shaderToy":
+        if (inlet === 0) {
+          const raw      = value.trim();
+          // `glsl <rest of line>` keeps spaces and symbols in the GLSL body intact.
+          if (raw.startsWith("glsl ") || raw === "glsl") {
+            this.visualizerGraph?.deliverShaderToyMessage(node.id, "glsl", [raw.slice(4).trimStart()]);
+            break;
+          }
+          const tokens   = raw.split(/\s+/);
+          const selector = tokens[0] ?? "";
+          const args     = tokens.slice(1);
+          this.visualizerGraph?.deliverShaderToyMessage(node.id, selector, args);
         }
         break;
 
@@ -785,13 +800,11 @@ export class ObjectInteractionController {
             const p = parseInt(args[0] ?? "0", 10);
             if (!isNaN(p)) {
               node.args[1] = String(Math.max(0, p));
-              if (!this.attrDragging) this.graph.emit("change");
-              else this.graph.emit("display");
+              this.graph.emit("display");
             }
           } else if (selector === "context" && args[0]) {
             node.args[0] = args[0];
-            if (!this.attrDragging) this.graph.emit("change");
-            else this.graph.emit("display");
+            this.graph.emit("display");
           } else {
             this.visualizerGraph?.deliverLayerMessage(node.id, selector, args);
           }
@@ -897,9 +910,7 @@ export class ObjectInteractionController {
 
     // Dispatch to the connected target object
     const msg = buildArgMessage(targetType, argIndex, val);
-    this.attrDragging = true;
     this.dispatchValue(node.id, 0, msg);
-    this.attrDragging = false;
 
     this.graph.emit("display");
   }
@@ -991,7 +1002,7 @@ export class ObjectInteractionController {
     // including the currently-focused input, which loses focus and lets
     // subsequent keystrokes fall through to canvas shortcuts (Delete, letters).
     // handleAttrChange emits "change" on commit, so a full render always follows.
-    this.graph.emit(this.attrDragging ? "display" : "change");
+    this.graph.emit("display");
   }
 
   // ── Attribute slider delegation ─────────────────────────────────────
@@ -1026,12 +1037,10 @@ export class ObjectInteractionController {
         : parseFloat(val).toFixed(3);
     }
 
-    // Dispatch live — guard flag prevents any graph.emit("change") from
-    // cascading through deliverMessageValue and destroying the slider mid-drag
-    this.attrDragging = true;
+    // Dispatch live — cable-driven emits below are "display" only, so the full
+    // render() isn't triggered and the slider DOM survives the drag.
     const msg = buildArgMessage(targetType, argIndex, val);
     this.dispatchValue(node.id, 0, msg);
-    this.attrDragging = false;
 
     // Update the text panel without a full re-render
     this.graph.emit("display");
@@ -1069,12 +1078,38 @@ export class ObjectInteractionController {
     this.dispatchValue(node.id, 0, isOn ? "1.0" : "0.0");
   }
 
+  /**
+   * Cable-driven toggle flip. Patches the rocker state in the DOM directly and
+   * emits "display" instead of "change" so a fast upstream source (metro, fft
+   * chain) doesn't cause a 60 Hz render storm. User-click path still goes
+   * through `toggleNode` → "change" → render() so undo / persistence fire.
+   */
+  private toggleNodeFromCable(node: PatchNode): void {
+    const isOn = node.args[0] !== "1";
+    node.args[0] = isOn ? "1" : "0";
+    this.syncToggleDisplay(node);
+    this.graph.emit("display");
+    this.dispatchValue(node.id, 0, isOn ? "1.0" : "0.0");
+  }
+
   private setToggleFromValue(node: PatchNode, value: string): void {
     const parsed = Number.parseFloat(value);
     const isOn = Number.isNaN(parsed) ? value !== "0" : parsed !== 0;
     node.args[0] = isOn ? "1" : "0";
-    this.graph.emit(this.attrDragging ? "display" : "change");
+    this.syncToggleDisplay(node);
+    this.graph.emit("display");
     this.dispatchValue(node.id, 0, isOn ? "1.0" : "0.0");
+  }
+
+  /** In-place DOM update for a toggle's on/off rocker without rebuilding the node. */
+  private syncToggleDisplay(node: PatchNode): void {
+    const nodeEl = this.findNodeEl(node.id);
+    if (!nodeEl) return;
+    const isOn = node.args[0] === "1";
+    const halfOn  = nodeEl.querySelector<HTMLElement>(".patch-object-toggle-half-on");
+    const halfOff = nodeEl.querySelector<HTMLElement>(".patch-object-toggle-half-off");
+    halfOn?.classList.toggle("patch-object-toggle-half--active", isOn);
+    halfOff?.classList.toggle("patch-object-toggle-half--active", !isOn);
   }
 
   /** Searches panGroup then each external panel for an element by nodeId. */
@@ -1532,7 +1567,7 @@ export class ObjectInteractionController {
   private setStoredMessage(node: PatchNode, content: string): void {
     node.args = content ? [content] : [];
     this.updateMessageDom(node.id, content);
-    this.graph.emit(this.attrDragging ? "display" : "change");
+    this.graph.emit("display");
   }
 
   private joinSegments(left: string, right: string): string {
@@ -1587,7 +1622,7 @@ export class ObjectInteractionController {
       const parsed = Number.parseFloat(value);
       if (Number.isNaN(parsed)) return;
       node.args[0] = `${Math.max(1, parsed)}`;
-      this.graph.emit("change");
+      this.graph.emit("display");
       if (this.isMetroRunning(node.id)) {
         this.startMetro(node);
       }
@@ -1652,7 +1687,7 @@ export class ObjectInteractionController {
       const parsed = Number.parseFloat(value);
       if (Number.isNaN(parsed)) return;
       node.args[0] = `${Math.max(0.01, parsed)}`;
-      this.graph.emit("change");
+      this.graph.emit("display");
       if (this.isOscRunning(node.id)) this.startOsc(node);
     }
   }
