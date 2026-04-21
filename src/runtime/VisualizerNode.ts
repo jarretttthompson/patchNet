@@ -168,53 +168,6 @@ export class VisualizerNode implements IRenderContext, IRenderer {
     this.canvas.style.cssText = "display:block;width:100%;height:100%;";
     doc.body.appendChild(this.canvas);
 
-    // Click-gate overlay — shown when `fullscreen 1` is received from the main
-    // window. Cross-window requestFullscreen() is blocked by browsers (no user
-    // gesture in the popup's context), so we show a transparent full-cover div.
-    // The user's first click on it IS a popup-context gesture; that click handler
-    // calls requestFullscreen() and removes the overlay.
-    const gate = doc.createElement("div");
-    gate.style.cssText = [
-      "position:fixed;inset:0;z-index:9999",
-      "display:none",
-      "align-items:center;justify-content:center",
-      "background:transparent",
-      "cursor:none",
-    ].join(";");
-    const gateHint = doc.createElement("div");
-    gateHint.style.cssText = [
-      "color:rgba(255,255,255,0.65)",
-      "font:bold 20px/1 monospace",
-      "letter-spacing:0.12em",
-      "text-transform:uppercase",
-      "pointer-events:none",
-      "transition:opacity 1.5s ease",
-    ].join(";");
-    gateHint.textContent = "click to enter fullscreen";
-    gate.appendChild(gateHint);
-    doc.body.appendChild(gate);
-    gate.addEventListener("click", () => {
-      gate.style.display = "none";
-      this.canvas!.requestFullscreen().catch(err => {
-        console.warn("[VisualizerNode] Fullscreen gate click failed:", err);
-      });
-    });
-
-    // Receive fullscreen commands from the main window via postMessage.
-    this.popup.addEventListener("message", (e: MessageEvent) => {
-      if (!e.data || typeof e.data !== "object") return;
-      if (e.data.type === "patchnet:fullscreen") {
-        if (e.data.enable) {
-          gate.style.display = "flex";
-          // Fade the hint text out after one frame so the transition fires.
-          this.popup!.requestAnimationFrame(() => { gateHint.style.opacity = "0"; });
-        } else {
-          gate.style.display = "none";
-          gateHint.style.opacity = "1";
-        }
-      }
-    });
-
     this.ctx = this.canvas.getContext("2d");
 
     this.popup.addEventListener("resize", () => {
@@ -297,20 +250,15 @@ export class VisualizerNode implements IRenderContext, IRenderer {
   moveTo(x: number, y: number): void { this.popup?.moveTo(x, y); }
 
   /**
-   * Enter or exit "fullscreen" on the popup.
+   * Enter or exit fullscreen on the popup.
    *
-   * Cross-window `requestFullscreen()` is gesture-restricted and blocked by
-   * all modern browsers, so `enable=true` primarily uses **fake fullscreen**:
-   * moves the popup to the screen origin and resizes it to fill
-   * `screen.availWidth × availHeight`. A real `requestFullscreen()` is
-   * attempted alongside as a best effort; failure is silent.
+   * `enable=true` moves the popup to the screen origin and resizes it to fill
+   * `screen.availWidth × availHeight` immediately — no user gesture required.
+   * For true native fullscreen (no title bar), double-click the popup canvas
+   * or press `F` inside the popup.
    *
-   * `enable=false` exits real fullscreen if active and restores the popup to
+   * `enable=false` exits native fullscreen if active and restores the popup to
    * the size/position it had before `fullscreen(true)` was called.
-   *
-   * For truly borderless fullscreen, double-click the popup canvas or press
-   * `F` inside the popup — those paths use a local user gesture and aren't
-   * blocked.
    */
   fullscreen(enable: boolean): void {
     if (!this.popup || this.popup.closed || !this.canvas) return;
@@ -342,16 +290,10 @@ export class VisualizerNode implements IRenderContext, IRenderer {
       this.height = scr.availHeight;
       this.canvas.width  = this.width;
       this.canvas.height = this.height;
-
-      // Signal the popup to show its click-gate. The popup's own click handler
-      // calls requestFullscreen() — a real gesture in the popup's context.
-      // Cross-window requestFullscreen() is blocked by all modern browsers.
-      popup.postMessage({ type: "patchnet:fullscreen", enable: true }, "*");
     } else {
       if (doc.fullscreenElement) {
         doc.exitFullscreen().catch(() => {});
       }
-      popup.postMessage({ type: "patchnet:fullscreen", enable: false }, "*");
       const prev = this._preFullscreen;
       this._preFullscreen = null;
       if (prev) {
