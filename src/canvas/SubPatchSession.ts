@@ -8,6 +8,7 @@ import { ResizeController } from "./ResizeController";
 import { UndoManager } from "../graph/UndoManager";
 import { renderObject } from "./ObjectRenderer";
 import { getObjectDef } from "../graph/objectDefs";
+import { VisualizerGraph } from "../runtime/VisualizerGraph";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvasSpace";
 
 const PANEL_GUI_TYPES = new Set(["button", "toggle", "slider", "message", "integer", "float", "attribute"]);
@@ -18,6 +19,7 @@ export class SubPatchSession {
   readonly panGroup: HTMLElement;
   readonly canvasController: CanvasController;
   readonly interaction: ObjectInteractionController;
+  readonly vizGraph: VisualizerGraph;
   /** Live GUI panel — mounted into the subPatch box body on the main canvas. */
   readonly presentationEl: HTMLDivElement;
   /** true = interact mode (GUI works, drag blocked); false = edit mode (drag works, GUI blocked). */
@@ -85,6 +87,14 @@ export class SubPatchSession {
       try { this.graph.deserialize(initialContent); } catch {}
     }
 
+    // Per-session VisualizerGraph so a visualizer/layer/media* placed inside
+    // the subpatch gets real runtime nodes and routes messages back through
+    // this session's OIC. VisualizerRuntime is a singleton, so named contexts
+    // remain visible across parent and nested sessions.
+    this.vizGraph = new VisualizerGraph(this.graph);
+    this.interaction.setVisualizerGraph(this.vizGraph);
+    this.vizGraph.setObjectInteraction(this.interaction);
+
     this.graph.on("change", () => {
       this.render();
       this.syncPorts();
@@ -127,7 +137,9 @@ export class SubPatchSession {
       el.style.height = `${ph}px`;
       // Always strip ports — not patchable from the panel.
       // Resize handle is kept only in edit (unlocked) mode.
-      el.querySelectorAll(".patch-ports").forEach(e => e.remove());
+      // Covers top/bottom port containers AND side nubs, which live as direct
+      // children of .patch-object outside any port container.
+      el.querySelectorAll(".patch-object-ports, .patch-port-side-left, .patch-port-side-right").forEach(e => e.remove());
       if (this.locked) el.querySelector(".pn-resize-handle")?.remove();
       this.presentationEl.appendChild(el);
     }
@@ -298,6 +310,7 @@ export class SubPatchSession {
   }
 
   destroy(): void {
+    this.vizGraph.destroy();
     this.interaction.destroy();
     this.canvasController.destroy();
     this.panGroup.remove();

@@ -1,6 +1,6 @@
 import type { PatchGraph } from "../graph/PatchGraph";
 import type { PatchNode } from "../graph/PatchNode";
-import { getObjectDef } from "../graph/objectDefs";
+import { ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H, getObjectDef } from "../graph/objectDefs";
 import { getZoom } from "./zoomState";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -16,9 +16,12 @@ export interface PortPos {
 /**
  * Compute canvas-coordinate center of a port nub.
  *
- * For top/bottom ports: mirrors the layout formula in PortRenderer.
- * For left-side ports (attribute side inlets): reads the actual DOM position
- * so the cable endpoint tracks the rendered nub exactly.
+ * Side ports (attribute inlets on the left, sequencer outlets on the right)
+ * prefer a live DOM read so the cable tracks the rendered nub exactly, then
+ * fall back to a side-edge formula when the panGroup is inside a display:none
+ * subtree or the element hasn't been laid out yet — in either case
+ * getBoundingClientRect returns a zero-sized rect that would anchor the
+ * cable to screen origin.
  */
 export function getPortPos(
   node: PatchNode,
@@ -26,56 +29,64 @@ export function getPortPos(
   portIndex: number,
   panGroupEl?: HTMLElement,
 ): PortPos {
-  // Left-side inlet ports: use DOM query for exact position
-  if (direction === "inlet" && panGroupEl) {
-    const port = node.inlets.find(p => p.index === portIndex);
-    if (port?.side === "left") {
-      const nub = panGroupEl.querySelector<HTMLElement>(
-        `[data-node-id="${node.id}"] .patch-port-side-left[data-port-index="${portIndex}"]`,
-      );
-      if (nub) {
-        const nubRect = nub.getBoundingClientRect();
-        const panRect = panGroupEl.getBoundingClientRect();
-        const z = getZoom();
-        return {
-          x: (nubRect.left - panRect.left + nubRect.width  / 2) / z,
-          y: (nubRect.top  - panRect.top  + nubRect.height / 2) / z,
-        };
-      }
-    }
-  }
-
-  // Right-side outlet ports: mirror the left-side inlet path.
-  if (direction === "outlet" && panGroupEl) {
-    const port = node.outlets.find(p => p.index === portIndex);
-    if (port?.side === "right") {
-      const nub = panGroupEl.querySelector<HTMLElement>(
-        `[data-node-id="${node.id}"] .patch-port-side-right[data-port-index="${portIndex}"]`,
-      );
-      if (nub) {
-        const nubRect = nub.getBoundingClientRect();
-        const panRect = panGroupEl.getBoundingClientRect();
-        const z = getZoom();
-        return {
-          x: (nubRect.left - panRect.left + nubRect.width  / 2) / z,
-          y: (nubRect.top  - panRect.top  + nubRect.height / 2) / z,
-        };
-      }
-    }
-  }
-
-  // Default: formula-based calculation from node position + size
   const def = getObjectDef(node.type);
   const ports = direction === "inlet" ? node.inlets : node.outlets;
+  const port = ports.find(p => p.index === portIndex);
+  const w = node.width ?? def.defaultWidth;
+  const h = node.height ?? def.defaultHeight;
+
+  if (direction === "inlet" && port?.side === "left") {
+    const domPos = readNubPos(panGroupEl, node.id, "patch-port-side-left", portIndex);
+    if (domPos) return domPos;
+    // Formula fallback mirrors the layout in ObjectRenderer.ts for side inlets.
+    return {
+      x: node.x,
+      y: node.y + ATTR_SIDE_INLET_HEADER_H + portIndex * ATTR_SIDE_INLET_ROW_H + ATTR_SIDE_INLET_ROW_H / 2,
+    };
+  }
+
+  if (direction === "outlet" && port?.side === "right") {
+    const domPos = readNubPos(panGroupEl, node.id, "patch-port-side-right", portIndex);
+    if (domPos) return domPos;
+    const sideCount = Math.max(1, ports.filter(p => p.side === "right").length);
+    return {
+      x: node.x + w,
+      y: node.y + ((portIndex + 0.5) / sideCount) * h,
+    };
+  }
+
+  // Top/bottom port formula
   const topPorts = ports.filter(p => !p.side || p.side === "top");
   const posInTop = topPorts.findIndex(p => p.index === portIndex);
   const total = topPorts.length;
   const pct = total === 0 ? 0.5 : (posInTop + 1) / (total + 1);
-  const w = node.width ?? def.defaultWidth;
-  const h = node.height ?? def.defaultHeight;
   return {
     x: node.x + pct * w,
     y: direction === "inlet" ? node.y : node.y + h,
+  };
+}
+
+function readNubPos(
+  panGroupEl: HTMLElement | undefined,
+  nodeId: string,
+  sideClass: "patch-port-side-left" | "patch-port-side-right",
+  portIndex: number,
+): PortPos | null {
+  if (!panGroupEl) return null;
+  const nub = panGroupEl.querySelector<HTMLElement>(
+    `[data-node-id="${nodeId}"] .${sideClass}[data-port-index="${portIndex}"]`,
+  );
+  if (!nub) return null;
+  const nubRect = nub.getBoundingClientRect();
+  // Zero-sized rects mean the element is inside a display:none subtree or
+  // hasn't been laid out yet — the formula fallback is more accurate than
+  // pinning the cable endpoint to screen origin.
+  if (nubRect.width === 0 && nubRect.height === 0) return null;
+  const panRect = panGroupEl.getBoundingClientRect();
+  const z = getZoom();
+  return {
+    x: (nubRect.left - panRect.left + nubRect.width  / 2) / z,
+    y: (nubRect.top  - panRect.top  + nubRect.height / 2) / z,
   };
 }
 

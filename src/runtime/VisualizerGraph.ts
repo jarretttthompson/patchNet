@@ -1,6 +1,7 @@
 import type { PatchGraph } from "../graph/PatchGraph";
 import type { PatchNode } from "../graph/PatchNode";
 import type { ObjectInteractionController } from "../canvas/ObjectInteractionController";
+import type { IRenderContext } from "./IRenderContext";
 import { OBJECT_DEFS, getVisibleArgs } from "../graph/objectDefs";
 import { VisualizerRuntime } from "./VisualizerRuntime";
 import { VisualizerNode } from "./VisualizerNode";
@@ -54,11 +55,24 @@ export class VisualizerGraph {
 
   private objectInteraction: ObjectInteractionController | null = null;
   private unsubscribe: () => void;
+  private unsubscribeRuntime: () => void;
 
   constructor(private readonly graph: PatchGraph) {
     this.runtime     = VisualizerRuntime.getInstance();
     this.director    = new RenderDirector(graph, this.bus);
     this.unsubscribe = this.graph.on("change", () => this.sync());
+    // Cross-VG bridge: when a sibling VG registers a new render context, re-wire
+    // if any of our layers target that name. Covers the initial-load gap where
+    // the main VG wires layers before the subpatch VG has created its visualizer.
+    this.unsubscribeRuntime = this.runtime.onRegister((name) => {
+      for (const patchId of this.layerNodes.keys()) {
+        const pn = this.graph.nodes.get(patchId);
+        if (pn && (pn.args[0] ?? "world1") === name) {
+          this.rewireMedia();
+          return;
+        }
+      }
+    });
     this.sync();
   }
 
@@ -221,7 +235,7 @@ export class VisualizerGraph {
     // ── Teardown removed nodes ──────────────────────────────────────
     for (const [id, vn] of this.vizNodes) {
       if (!activeIds.has(id)) {
-        this.runtime.unregister(vn.name);
+        this.runtime.unregister(vn.name, vn);
         this.director.detach(id);
         vn.destroy();
         this.vizNodes.delete(id);
@@ -269,7 +283,7 @@ export class VisualizerGraph {
     }
     for (const [id, pvn] of this.patchVizNodes) {
       if (!activeIds.has(id)) {
-        this.runtime.unregister(pvn.contextName);
+        this.runtime.unregister(pvn.contextName, pvn);
         this.director.detach(id);
         pvn.destroy();
         this.patchVizNodes.delete(id);
@@ -281,10 +295,23 @@ export class VisualizerGraph {
       if (node.type === "visualizer" && !this.vizNodes.has(node.id)) {
         const contextName = node.args[0] ?? "world1";
         const vn = new VisualizerNode(contextName);
-        vn.onOpen  = () => this.fireOutlet(node.id, 0);
+        vn.onOpen  = () => {
+          this.fireOutlet(node.id, 0);
+          this._throttlePatchVizForContext(vn.name, true);
+        };
         vn.onClose = () => {
           this.fireOutlet(node.id, 1);
-          const pn = this.graph.nodes.get(node.id);
+          this._throttlePatchVizForContext(vn.name, false);
+          // Primary lookup by stable node id. Falls back to context-name search
+          // when a text-panel edit causes a structural re-match that assigns the
+          // visualizer a new id — without the fallback, args[2] stays "1" on the
+          // replacement node and the popup auto-reopens on the next sync().
+          let pn = this.graph.nodes.get(node.id);
+          if (!pn) {
+            for (const n of this.graph.getNodes()) {
+              if (n.type === "visualizer" && (n.args[0] ?? "world1") === vn.name) { pn = n; break; }
+            }
+          }
           if (pn) { pn.args[2] = "0"; this.graph.emit("change"); }
         };
         vn.onResize = (w, h) => {
@@ -371,6 +398,9 @@ export class VisualizerGraph {
 
       if (node.type === "mediaImage" && !this.mediaImageNodes.has(node.id)) {
         const min = new MediaImageNode();
+        // onReady fires from image.onload — guaranteed to run with isReady===true,
+        // regardless of the async path (IDB, URL, or file picker).
+        min.onReady = () => this.rewireMedia();
         this.mediaImageNodes.set(node.id, min);
         const ref = node.args[0] ?? "";
         if (ref.startsWith("idb:")) {
@@ -382,7 +412,6 @@ export class VisualizerGraph {
               const pn = this.graph.nodes.get(node.id);
               if (pn) pn.displayUrl = min.url ?? "";
               this.graph.emit("change");
-              this.rewireMedia();
             });
           }).catch(console.warn);
         } else if (ref.startsWith("data:")) {
@@ -468,7 +497,7 @@ export class VisualizerGraph {
       if (!pn) continue;
       const newName = pn.args[0] ?? "world1";
       if (pvn.contextName !== newName) {
-        this.runtime.unregister(pvn.contextName);
+        this.runtime.unregister(pvn.contextName, pvn);
         pvn.contextName = newName;
         this.runtime.register(newName, pvn);
       }
@@ -482,7 +511,7 @@ export class VisualizerGraph {
     // Sync imageFX params from args (attribute panel / message may have changed them)
     for (const [id, fx] of this.imageFXNodes) {
       const pn = this.graph.nodes.get(id);
-      if (pn) { this.syncFXParams(fx, pn); fx.process(); }
+      if (pn) { this.syncFXParams(fx, pn); }
     }
     // Sync vfxCRT/vfxBlur params from args
     for (const [id, vfx] of this.vfxCrtNodes) {
@@ -543,9 +572,19 @@ export class VisualizerGraph {
   }
 
   private rewireMedia(): void {
-    // Detach every layer from every render context (popup and inline)
-    for (const vn of this.vizNodes.values()) vn.clearLayers();
-    for (const pvn of this.patchVizNodes.values()) pvn.clearLayers();
+    // Determine which context names this VG will actually contribute layers to.
+    // We must NOT clear owned contexts that have no layers from this VG — doing so
+    // would wipe layers populated by a sibling VG (e.g. the main patch's VG adds
+    // layers to a visualizer owned by a subpatch VG; the subpatch VG has no layers
+    // of its own, so clearing would leave the popup black).
+    const contextNamesWithLayers = new Set<string>();
+    for (const patchId of this.layerNodes.keys()) {
+      const pn = this.graph.nodes.get(patchId);
+      if (pn) contextNamesWithLayers.add(pn.args[0] ?? "world1");
+    }
+
+    for (const vn  of this.vizNodes.values())     { if (contextNamesWithLayers.has(vn.name))          vn.clearLayers();  }
+    for (const pvn of this.patchVizNodes.values()) { if (contextNamesWithLayers.has(pvn.contextName)) pvn.clearLayers(); }
 
     // ── Wire imageFX inputs from upstream mediaImage ────────────────
     for (const [patchId, fx] of this.imageFXNodes) {
@@ -635,19 +674,15 @@ export class VisualizerGraph {
         }
       }
 
-      // Register layer with every render context sharing this name
+      // Register layer with every render context sharing this name. Using
+      // getAll() so both the inline patchViz and the popup visualizer receive
+      // the same layers when they share a context name.
       const contextName = patchNode.args[0] ?? "world1";
-      let layerAdded = false;
-      for (const vn of this.vizNodes.values()) {
-        if (vn.name === contextName) { vn.addLayer(layer); layerAdded = true; }
-      }
-      for (const pvn of this.patchVizNodes.values()) {
-        if (pvn.contextName === contextName) { pvn.addLayer(layer); layerAdded = true; }
-      }
-      if (!layerAdded) {
-        const fallback = this.runtime.getFirst();
-        if (fallback) fallback.addLayer(layer);
-      }
+      const ctxList = this.runtime.getAll(contextName);
+      const targets: IRenderContext[] = ctxList.length > 0
+        ? ctxList
+        : (this.runtime.getFirst() ? [this.runtime.getFirst()!] : []);
+      for (const ctx of targets) ctx.addLayer(layer);
     }
   }
 
@@ -1002,6 +1037,15 @@ export class VisualizerGraph {
     }
   }
 
+  // ── Throttle helpers ─────────────────────────────────────────────
+
+  /** Throttle (or restore) all patchViz nodes sharing `contextName`. */
+  private _throttlePatchVizForContext(contextName: string, throttle: boolean): void {
+    for (const pvn of this.patchVizNodes.values()) {
+      if (pvn.contextName === contextName) pvn.setThrottled(throttle);
+    }
+  }
+
   // ── Open helpers ─────────────────────────────────────────────────
 
   private openAndRestore(nodeId: string, vn: VisualizerNode): void {
@@ -1053,6 +1097,7 @@ export class VisualizerGraph {
 
   destroy(): void {
     this.unsubscribe();
+    this.unsubscribeRuntime();
     this.director.destroy();
     this.bus.destroy();
 
@@ -1066,7 +1111,7 @@ export class VisualizerGraph {
     for (const stn of this.shaderToyNodes.values()) stn.destroy();
 
     for (const vn of this.vizNodes.values()) {
-      this.runtime.unregister(vn.name);
+      this.runtime.unregister(vn.name, vn);
       vn.destroy();
     }
 

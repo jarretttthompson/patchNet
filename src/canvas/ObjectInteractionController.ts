@@ -66,6 +66,7 @@ export class ObjectInteractionController {
   private readonly onAttrChange: (e: Event) => void;
   private readonly onCellFocusOut: (e: FocusEvent) => void;
   private readonly onCellKeyDown: (e: KeyboardEvent) => void;
+  private readonly timerStamps = new Map<string, number>();
   private readonly metroTimers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly oscTimers = new Map<string, { rafId: number; startT: number }>();
   private readonly mathLeftOps = new Map<string, number>();
@@ -98,6 +99,9 @@ export class ObjectInteractionController {
       this.pruneOscTimers();
       this.restoreOscTimers();
       this.syncAttributeNodes();
+      for (const id of this.timerStamps.keys()) {
+        if (!this.graph.nodes.has(id)) this.timerStamps.delete(id);
+      }
     });
 
     this.panGroup.addEventListener("click", this.onPanGroupClick);
@@ -462,6 +466,15 @@ export class ObjectInteractionController {
       case "subPatch":
         if (inlet >= 0) this.subPatchManager?.deliver(node.id, inlet, null);
         break;
+
+      case "timer": {
+        const now = performance.now();
+        const last = this.timerStamps.get(node.id);
+        const elapsed = last !== undefined ? now - last : 0;
+        this.timerStamps.set(node.id, now);
+        this.dispatchValue(node.id, 0, elapsed.toFixed(3));
+        break;
+      }
 
       default:
         break;
@@ -1103,13 +1116,13 @@ export class ObjectInteractionController {
 
   /** In-place DOM update for a toggle's on/off rocker without rebuilding the node. */
   private syncToggleDisplay(node: PatchNode): void {
-    const nodeEl = this.findNodeEl(node.id);
-    if (!nodeEl) return;
     const isOn = node.args[0] === "1";
-    const halfOn  = nodeEl.querySelector<HTMLElement>(".patch-object-toggle-half-on");
-    const halfOff = nodeEl.querySelector<HTMLElement>(".patch-object-toggle-half-off");
-    halfOn?.classList.toggle("patch-object-toggle-half--active", isOn);
-    halfOff?.classList.toggle("patch-object-toggle-half--active", !isOn);
+    for (const nodeEl of this.flashElements(node.id)) {
+      const halfOn  = nodeEl.querySelector<HTMLElement>(".patch-object-toggle-half-on");
+      const halfOff = nodeEl.querySelector<HTMLElement>(".patch-object-toggle-half-off");
+      halfOn?.classList.toggle("patch-object-toggle-half--active", isOn);
+      halfOff?.classList.toggle("patch-object-toggle-half--active", !isOn);
+    }
   }
 
   /** Searches panGroup then each external panel for an element by nodeId. */

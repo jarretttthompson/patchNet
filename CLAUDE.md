@@ -14,15 +14,6 @@ Users place objects on a canvas, connect them with straight patch cables, and se
 
 ---
 
-## Every Session: Start Here
-
-1. Read `AGENTS.md` — check current phase and last completion entry
-2. Read `patchNet-Vault/wiki/index.md` — orient to vault state
-3. Read `PLAN.md` — confirm active phase and pending tasks
-4. Give the user the next action (agent prompt to paste, or decision needed)
-
----
-
 ## Agent Team
 
 | Agent | Role |
@@ -56,25 +47,9 @@ Users place objects on a canvas, connect them with straight patch cables, and se
 
 ---
 
-## Current Phase State
+## Current Phase
 
-Check `AGENTS.md` for the most current state. At bootstrap (2026-04-16):
-- Phase 0 (Scaffold): **COMPLETE** — Cursor finished 2026-04-16
-- Phase 1 (Patch Graph): **PENDING** — ready to start
-
----
-
-## Phase 1 Summary (next up)
-
-Owner: Codex (graph/serializer) + Claude Code (architecture review)
-
-Deliverables:
-- `src/graph/PatchNode.ts`, `PatchEdge.ts`, `PatchGraph.ts`
-- `src/serializer/serialize.ts` + `parse.ts`
-- `src/canvas/ObjectRenderer.ts` + `PortRenderer.ts`
-- Text panel updates when graph changes (no interaction yet — just rendering)
-
-See `PLAN.md` Phase 1 for full task list.
+Check `AGENTS.md` — the Project State header has the current phase and active tasks.
 
 ---
 

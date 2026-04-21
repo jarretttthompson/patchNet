@@ -27,8 +27,16 @@ export class ImageFXNode {
   blur       = 0;    // 0 to 20 px (Gaussian)
   invert     = 0;    // 0 to 1
 
-  // ── Background removal (panel-baked ImageData, not serialised) ────
-  private _bgImageData: ImageData | null = null;
+  // ── Background removal ────────────────────────────────────────────
+  // _bgImageData:  serialisation-only PNG round-trip source
+  // _bgMaskCanvas: offscreen canvas whose alpha encodes the BG mask.
+  //                Used with destination-in composite in process() to avoid
+  //                getImageData GPU readbacks in the slider hot path.
+  private _bgImageData:  ImageData | null = null;
+  private _bgMaskCanvas: HTMLCanvasElement | null = null;
+
+  // rAF throttle — coalesces rapid process() requests to one per frame
+  private _rafPending = false;
 
   constructor() {
     this.canvas = document.createElement("canvas");
@@ -50,15 +58,14 @@ export class ImageFXNode {
     return this.inputNode?.isReady ? this.inputNode.image : null;
   }
 
-  get hasBgRemoved(): boolean { return this._bgImageData !== null; }
+  get hasBgRemoved(): boolean { return this._bgMaskCanvas !== null; }
 
   // ── Processing ────────────────────────────────────────────────────
 
   /**
    * Re-render the offscreen canvas from the current input + parameters.
-   * If a pre-baked bgImageData exists (set by ImageFXPanel after flood-fill
-   * BG removal), it is used directly via putImageData — skipping the filter
-   * draw pass, since the ImageData already has filters applied.
+   * Always draws with the current CSS filters, then composites the BG mask
+   * via destination-in (no getImageData readback — stays on the GPU).
    */
   process(): void {
     if (!this.inputNode?.isReady) return;
@@ -67,19 +74,38 @@ export class ImageFXNode {
     const h   = img.naturalHeight;
     if (w === 0 || h === 0) return;
 
-    this.canvas.width  = w;
-    this.canvas.height = h;
-
-    if (this._bgImageData && this._bgImageData.width === w && this._bgImageData.height === h) {
-      // Panel has already baked filters + BG removal into the ImageData
-      this.ctx.clearRect(0, 0, w, h);
-      this.ctx.putImageData(this._bgImageData, 0, 0);
-    } else {
-      this.ctx.clearRect(0, 0, w, h);
-      this.ctx.filter = buildFilter(this);
-      this.ctx.drawImage(img, 0, 0);
-      this.ctx.filter = "none";
+    // Only reallocate GPU memory when dimensions change.
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width  = w;
+      this.canvas.height = h;
     }
+
+    this.ctx.clearRect(0, 0, w, h);
+    this.ctx.filter = buildFilter(this);
+    this.ctx.drawImage(img, 0, 0);
+    this.ctx.filter = "none";
+
+    // Apply BG mask using destination-in: keeps destination pixels where the
+    // mask is opaque, removes them where the mask is transparent — no GPU
+    // readback needed, unlike the getImageData approach.
+    if (this._bgMaskCanvas) {
+      this.ctx.globalCompositeOperation = "destination-in";
+      this.ctx.drawImage(this._bgMaskCanvas, 0, 0);
+      this.ctx.globalCompositeOperation = "source-over";
+    }
+  }
+
+  /**
+   * Schedule a process() call for the next animation frame, coalescing
+   * multiple rapid requests (e.g. attribute slider drags) into one per frame.
+   */
+  scheduleProcess(): void {
+    if (this._rafPending) return;
+    this._rafPending = true;
+    requestAnimationFrame(() => {
+      this._rafPending = false;
+      this.process();
+    });
   }
 
   /**
@@ -88,12 +114,14 @@ export class ImageFXNode {
    */
   setBgImageData(data: ImageData | null): void {
     this._bgImageData = data;
+    this._bgMaskCanvas = data ? ImageFXNode.buildMaskCanvas(data) : null;
     this.process();
   }
 
   /** Clear background removal and reprocess with CSS filters only. */
   clearBg(): void {
-    this._bgImageData = null;
+    this._bgImageData  = null;
+    this._bgMaskCanvas = null;
     this.process();
   }
 
@@ -115,8 +143,10 @@ export class ImageFXNode {
         const w = img.naturalWidth, h = img.naturalHeight;
         const tmp = document.createElement("canvas");
         tmp.width = w; tmp.height = h;
-        tmp.getContext("2d")!.drawImage(img, 0, 0);
-        this._bgImageData = tmp.getContext("2d")!.getImageData(0, 0, w, h);
+        const tmpCtx = tmp.getContext("2d")!;
+        tmpCtx.drawImage(img, 0, 0);
+        this._bgImageData  = tmpCtx.getImageData(0, 0, w, h);
+        this._bgMaskCanvas = ImageFXNode.buildMaskCanvas(this._bgImageData);
         this.process();
         resolve();
       };
@@ -126,8 +156,17 @@ export class ImageFXNode {
   }
 
   destroy(): void {
-    this.inputNode = null;
-    this._bgImageData = null;
+    this.inputNode     = null;
+    this._bgImageData  = null;
+    this._bgMaskCanvas = null;
+  }
+
+  private static buildMaskCanvas(data: ImageData): HTMLCanvasElement {
+    const c = document.createElement("canvas");
+    c.width = data.width;
+    c.height = data.height;
+    c.getContext("2d")!.putImageData(data, 0, 0);
+    return c;
   }
 }
 
@@ -145,9 +184,9 @@ export function buildFilter(p: {
   if (p.blur       > 0  ) parts.push(`blur(${p.blur}px)`);
   if (p.brightness !== 1) parts.push(`brightness(${p.brightness})`);
   if (p.contrast   !== 1) parts.push(`contrast(${p.contrast})`);
-  if (p.hue        !== 0) parts.push(`hue-rotate(${p.hue}deg)`);
   if (p.saturation !== 1) parts.push(`saturate(${p.saturation})`);
   if (p.invert     > 0  ) parts.push(`invert(${p.invert})`);
+  if (p.hue        !== 0) parts.push(`hue-rotate(${p.hue}deg)`);
   return parts.length ? parts.join(" ") : "none";
 }
 

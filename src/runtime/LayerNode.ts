@@ -84,9 +84,9 @@ export class LayerNode {
     }
 
     const source =
-      this.mediaVideo?.isReady ? this.mediaVideo.video  :
-      this.mediaFX?.isReady   ? this.mediaFX.canvas    :
-      this.mediaImage?.isReady ? this.mediaImage.image  :
+      this.mediaVideo?.isReady ? this.mediaVideo.video           :
+      this.mediaFX?.isReady   ? this.mediaFX.canvas             :
+      this.mediaImage?.isReady ? this.mediaImage.displaySource   :
       null;
 
     if (!source) return;

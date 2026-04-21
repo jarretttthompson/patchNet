@@ -305,14 +305,31 @@ masterVolSlider?.addEventListener("input", () => {
 const tabBarEl = document.getElementById("pn-tab-bar") as HTMLDivElement;
 const tabManager = new TabManager(tabBarEl, panGroup, canvas);
 
-const subPatchManager = new SubPatchManager(
-  graph,
-  objectInteraction,
-  canvasArea,
-  (nodeId, label, session) => {
-    tabManager.openSubPatch(nodeId, label, session);
-  },
-);
+const subPatchManager = new SubPatchManager(graph, objectInteraction, canvasArea);
+
+subPatchManager.onTabOpen = (nodeId, label, session) => {
+  tabManager.openSubPatch(nodeId, label, session);
+};
+subPatchManager.onTabRegister = (nodeId, label, session) => {
+  tabManager.registerSubPatch(nodeId, label, session);
+};
+subPatchManager.onTabClose = (nodeId) => {
+  tabManager.closeTab(nodeId);
+};
+tabManager.onLabelChange = (nodeId, label) => {
+  subPatchManager.setLabel(nodeId, label);
+};
+tabManager.onMainActivate = () => {
+  // Flush any render that was skipped while the main panGroup was hidden.
+  // Also runs when no change was missed — render() is cheap and idempotent.
+  if (deferredByHidden) {
+    deferredByHidden = false;
+    render();
+  } else {
+    cables.render();
+  }
+};
+
 objectInteraction.setSubPatchManager(subPatchManager);
 
 // ── Render ───────────────────────────────────────────────────────────────────
@@ -338,8 +355,19 @@ function syncTextPanel(): void {
 
 let isRendering = false;
 let needsRender = false;
+let deferredByHidden = false;
 
 function render(): void {
+  // Skip while the main panGroup is hidden (a subPatch tab is active).
+  // getBoundingClientRect returns zeros inside a display:none subtree, which
+  // corrupts cable endpoints that read live DOM positions. Sync the text
+  // panel so users still see graph edits in the side panel, then defer the
+  // visual render until the main tab becomes active again.
+  if (panGroup.style.display === "none") {
+    deferredByHidden = true;
+    syncTextPanel();
+    return;
+  }
   if (isRendering) { needsRender = true; return; }
   isRendering = true;
 
@@ -402,6 +430,7 @@ function render(): void {
 
 graph.on("change", render);
 graph.on("change", () => subPatchManager.mountPresentationPanels(panGroup));
+graph.on("change", () => subPatchManager.syncTabs());
 graph.on("change", () => objectInteraction.reapplyTransientState());
 graph.on("display", syncTextPanel);
 
@@ -546,4 +575,5 @@ window.addEventListener("beforeunload", () => {
 });
 
 // Block cursor appearance is handled natively via caret-shape: block + caret-color
+
 // on all input/textarea elements in shell.css — no JS cursor div needed.

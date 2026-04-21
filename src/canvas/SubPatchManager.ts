@@ -6,11 +6,17 @@ import { SubPatchSession } from "./SubPatchSession";
 export class SubPatchManager {
   private sessions = new Map<string, SubPatchSession>();
 
+  /** Called to add/sync a tab without switching to it (patch load, graph change). */
+  onTabRegister?: (nodeId: string, label: string, session: SubPatchSession) => void;
+  /** Called when user double-clicks a subPatch object to open and switch to its tab. */
+  onTabOpen?: (nodeId: string, label: string, session: SubPatchSession) => void;
+  /** Called when a subPatch node is removed so its tab can be closed. */
+  onTabClose?: (nodeId: string) => void;
+
   constructor(
     private readonly parentGraph: PatchGraph,
     private readonly parentInteraction: ObjectInteractionController,
     private readonly canvasArea: HTMLElement,
-    private readonly onTabOpen: (nodeId: string, label: string, session: SubPatchSession) => void,
   ) {
     // Clean up sessions for removed nodes
     this.parentGraph.on("change", () => {
@@ -21,16 +27,35 @@ export class SubPatchManager {
         if (!activeIds.has(id)) {
           this.sessions.get(id)!.destroy();
           this.sessions.delete(id);
+          this.onTabClose?.(id);
         }
       }
     });
   }
 
+  /** Ensure a tab exists for every subPatch node in the graph (no tab switching). */
+  syncTabs(): void {
+    for (const node of this.parentGraph.getNodes()) {
+      if (node.type !== "subPatch") continue;
+      const session = this.getOrCreate(node.id);
+      const label = this.getTabLabel(node.id);
+      this.onTabRegister?.(node.id, label, session);
+    }
+  }
+
+  /** Open and switch to a subPatch tab (double-click from canvas). */
   open(nodeId: string): void {
     const session = this.getOrCreate(nodeId);
-    const pn = this.parentGraph.nodes.get(nodeId);
-    const label = `p ${pn?.args[0] || nodeId.slice(0, 6)}`;
-    this.onTabOpen(nodeId, label, session);
+    const label = this.getTabLabel(nodeId);
+    this.onTabOpen?.(nodeId, label, session);
+  }
+
+  /** Persist a user-assigned label in args[4] and save the patch. */
+  setLabel(nodeId: string, label: string): void {
+    const node = this.parentGraph.nodes.get(nodeId);
+    if (!node) return;
+    node.args[4] = label;
+    this.parentGraph.emit("change");
   }
 
   deliver(nodeId: string, inletIndex: number, value: string | null): void {
@@ -53,6 +78,11 @@ export class SubPatchManager {
       session.setLocked((node.args[3] ?? "1") !== "0");
       session.renderPresentation();
     }
+  }
+
+  private getTabLabel(nodeId: string): string {
+    const pn = this.parentGraph.nodes.get(nodeId);
+    return pn?.args[4] || "sub";
   }
 
   private getOrCreate(nodeId: string): SubPatchSession {

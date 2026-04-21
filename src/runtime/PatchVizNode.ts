@@ -25,6 +25,8 @@ export class PatchVizNode implements IRenderContext, IRenderer {
   private layers: LayerNode[] = [];
   private _contextName: string;
   private _enabled = true;
+  private _throttled = false;
+  private _frameCount = 0;
 
   constructor(contextName: string) {
     this._contextName = contextName;
@@ -78,6 +80,12 @@ export class PatchVizNode implements IRenderContext, IRenderer {
   toggle(): void  { this._enabled = !this._enabled; }
   get enabled(): boolean { return this._enabled; }
 
+  /** Throttle to ~10 fps when a popup visualizer has rendering priority. */
+  setThrottled(throttled: boolean): void {
+    this._throttled = throttled;
+    this._frameCount = 0;
+  }
+
   // ── IRenderContext ────────────────────────────────────────────────
 
   addLayer(layer: LayerNode): void {
@@ -113,6 +121,11 @@ export class PatchVizNode implements IRenderContext, IRenderer {
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       return;
+    }
+    // When the popup has priority, render at ~10 fps (every 6th frame).
+    if (this._throttled) {
+      this._frameCount = (this._frameCount + 1) % 6;
+      if (this._frameCount !== 0) return;
     }
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const sorted = [...this.layers].sort((a, b) => a.priority - b.priority);

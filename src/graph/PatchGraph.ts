@@ -114,13 +114,12 @@ export class PatchGraph {
 
   setNodePosition(id: string, x: number, y: number): void {
     const node = this.requireNode(id);
-
-    if (node.x === x && node.y === y) {
-      return;
-    }
-
     node.x = x;
     node.y = y;
+    // No equality guard: DragController pre-writes node.x/y during mousemove so
+    // cables can track the drag, which would make this look like a no-op at
+    // commit time. Skipping the emit leaves subPatch panels stale because
+    // main.ts's mountPresentationPanels hook only re-mounts on "change".
     this.emit("change");
   }
 

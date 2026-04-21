@@ -94,8 +94,8 @@ export class VfxCrtNode implements VideoFXSource {
     // 2. Chromatic aberration (RGB shift)
     if (this.rgbShift > 0.5) {
       const shift = Math.round(this.rgbShift);
-      // Alpha scales with shift strength so moving the slider is visibly impactful
-      const caAlpha = Math.min(0.12 + (this.rgbShift / 50) * 0.65, 0.77);
+      // Alpha scales with shift strength; base of 0.30 keeps default 1.5px clearly visible
+      const caAlpha = Math.min(0.30 + (this.rgbShift / 40) * 0.55, 0.88);
       this.ensureSize(this.tmpR, w, h);
       this.ensureSize(this.tmpB, w, h);
 
@@ -136,9 +136,9 @@ export class VfxCrtNode implements VideoFXSource {
 
     // 4. Screen curvature — darken corners to simulate curved CRT glass
     if (this.curvature > 0) {
-      // Radius always covers 50–100% of the shorter dimension so even low values are visible
-      const r = Math.min(w, h) * (0.5 + this.curvature * 0.5);
-      const intensity = Math.min(this.curvature * 1.4, 0.95);
+      // Smaller radius concentrates darkening at corners; higher intensity makes it legible
+      const r = Math.min(w, h) * (0.3 + this.curvature * 0.3);
+      const intensity = Math.min(this.curvature * 3.5, 0.95);
       const corners = [[0, 0], [w, 0], [0, h], [w, h]] as const;
       for (const [cx, cy] of corners) {
         const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);

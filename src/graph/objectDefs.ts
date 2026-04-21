@@ -268,6 +268,19 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
+  timer: {
+    description: "Measures elapsed milliseconds between successive bangs. First bang stores the clock; each subsequent bang outputs the delta and resets.",
+    category: "control",
+    args: [],
+    messages: [
+      { inlet: 0, selector: "bang",  description: "output ms since last bang (0 on first bang), then reset clock" },
+    ],
+    inlets:  [{ index: 0, type: "bang", label: "bang: output elapsed ms and reset" }],
+    outlets: [{ index: 0, type: "float", label: "elapsed ms" }],
+    defaultWidth: 80,
+    defaultHeight: 40,
+  },
+
   // ── Arithmetic operators ────────────────────────────────────────────────────
   "+":  mathOpDef("Add two numbers.",      "sum"),
   "-":  mathOpDef("Subtract two numbers.", "difference"),

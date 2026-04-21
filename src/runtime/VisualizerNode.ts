@@ -215,15 +215,19 @@ export class VisualizerNode implements IRenderContext, IRenderer {
     });
 
     this.popup.addEventListener("beforeunload", () => {
+      // If close() already ran (programmatic close), this.popup is already null —
+      // skip the duplicate callbacks to avoid firing onClose twice.
+      const alreadyClosed = !this.popup;
       this.stopPositionPoll();
-      // Capture final position before the popup reference goes stale
-      if (this.popup) this.onMove?.(this.popup.screenX, this.popup.screenY);
+      // Skip onMove while in fake fullscreen — the current (0,0, availW, availH)
+      // geometry would overwrite the saved pre-fullscreen size/position.
+      if (this.popup && !this._preFullscreen) this.onMove?.(this.popup.screenX, this.popup.screenY);
       this.stopLoop();
+      this._preFullscreen = null;
       this.popup   = null;
       this.canvas  = null;
       this.ctx     = null;
-
-      this.onClose?.();
+      if (!alreadyClosed) this.onClose?.();
     });
 
     this.startLoop();
@@ -235,14 +239,25 @@ export class VisualizerNode implements IRenderContext, IRenderer {
 
   /** Hide (close) the popup window. */
   close(): void {
+    // Guard against reentrant calls (e.g. onClose → graph.emit → sync → vn.destroy → close).
+    if (!this.popup || this.popup.closed) return;
     this.stopPositionPoll();
-    if (this.popup && !this.popup.closed) this.onMove?.(this.popup.screenX, this.popup.screenY);
-    this.onClose?.();
     this.stopLoop();
-    this.popup?.close();
+    // Skip onMove while in fake fullscreen — the current (0,0, availW, availH)
+    // geometry would overwrite the saved pre-fullscreen size/position.
+    if (!this._preFullscreen) this.onMove?.(this.popup.screenX, this.popup.screenY);
+    // Clear fullscreen state so the next open() starts clean — otherwise a later
+    // `fullscreen 1` message early-returns because `_preFullscreen` is still set.
+    this._preFullscreen = null;
+    // Null popup references BEFORE firing onClose so that any reentrant close()
+    // call hits the guard above, and the beforeunload handler skips its duplicate
+    // onClose (it checks this.popup to detect that we already handled it).
+    const popupRef = this.popup;
     this.popup  = null;
     this.canvas = null;
     this.ctx    = null;
+    this.onClose?.();
+    popupRef.close();
     // Keep float setting intact so re-opening re-applies it,
     // but the focus handler stays registered — no popup to focus is harmless.
   }

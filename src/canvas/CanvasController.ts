@@ -494,6 +494,12 @@ export class CanvasController {
   }
 
   private handleWheel(e: WheelEvent): void {
+    // Every CanvasController (main + each subpatch session) listens on the
+    // same shared canvasEl, so without this guard a single Cmd+wheel would
+    // zoom N+1 times and compound the global _zoom singleton out of sync
+    // with each tab's actual transform — the root of the drift that forces
+    // a page reload to recover.
+    if (!this._active) return;
     // Cmd/Ctrl + wheel → zoom around cursor. Otherwise let the browser scroll.
     if (!(e.metaKey || e.ctrlKey)) return;
     e.preventDefault();

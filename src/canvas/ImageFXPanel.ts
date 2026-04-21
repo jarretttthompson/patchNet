@@ -33,10 +33,18 @@ export class ImageFXPanel {
   private workingBgData: ImageData | null = null; // current flood-fill result
   private clickRemoveMode = false;                // toggle for click-to-remove mode
 
+  // Zoom / pan state for the preview canvas
+  private zoom = 1;    // 1 | 2 | 4 | 8 | 16
+  private panX = 0;    // viewport top-left in image pixels
+  private panY = 0;
+  private _panDrag: { active: boolean; sx: number; sy: number; px: number; py: number } =
+    { active: false, sx: 0, sy: 0, px: 0, py: 0 };
+
   // UI refs
-  private tolReadout!:  HTMLSpanElement;
-  private bgStatusEl!:  HTMLDivElement;
+  private tolReadout!:   HTMLSpanElement;
+  private bgStatusEl!:   HTMLDivElement;
   private clickModeBtn!: HTMLButtonElement;
+  private zoomReadout!:  HTMLSpanElement;
 
   constructor(
     private readonly fxNode:     ImageFXNode,
@@ -121,19 +129,50 @@ export class ImageFXPanel {
 
     const label = document.createElement("div");
     label.className = "pn-imgfx-preview-label";
-    label.textContent = "preview  ·  click image to flood-fill remove BG";
+    label.textContent = "preview  ·  click to flood-fill  ·  scroll or middle-drag to pan";
 
     const wrap = document.createElement("div");
     wrap.className = "pn-imgfx-preview-wrap";
     wrap.appendChild(this.previewCanvas);
 
+    // ── Zoom controls ──────────────────────────────────────────────
+    const zoomRow = document.createElement("div");
+    zoomRow.className = "pn-imgfx-zoom-row";
+
+    const zoomOut = document.createElement("button");
+    zoomOut.className = "pn-imgfx-btn pn-imgfx-zoom-btn";
+    zoomOut.textContent = "−";
+    zoomOut.title = "Zoom out";
+    zoomOut.addEventListener("click", () => this.stepZoom(-1));
+
+    this.zoomReadout = document.createElement("span");
+    this.zoomReadout.className = "pn-imgfx-zoom-readout";
+    this.zoomReadout.textContent = "1×";
+
+    const zoomIn = document.createElement("button");
+    zoomIn.className = "pn-imgfx-btn pn-imgfx-zoom-btn";
+    zoomIn.textContent = "+";
+    zoomIn.title = "Zoom in";
+    zoomIn.addEventListener("click", () => this.stepZoom(1));
+
+    const fitBtn = document.createElement("button");
+    fitBtn.className = "pn-imgfx-btn pn-imgfx-zoom-btn";
+    fitBtn.textContent = "fit";
+    fitBtn.title = "Reset zoom to 1×";
+    fitBtn.addEventListener("click", () => { this.zoom = 1; this.panX = 0; this.panY = 0; this.updateZoomReadout(); this.renderPreview(); });
+
+    zoomRow.append(zoomOut, this.zoomReadout, zoomIn, fitBtn);
+
     this.bgStatusEl = document.createElement("div");
     this.bgStatusEl.className = "pn-imgfx-bg-status";
     this.updateBgStatus();
 
-    this.previewCanvas.addEventListener("click", (e) => this.handlePreviewClick(e));
+    // ── Canvas events ──────────────────────────────────────────────
+    this.previewCanvas.addEventListener("click",     (e) => this.handlePreviewClick(e));
+    this.previewCanvas.addEventListener("wheel",     (e) => this.handleWheel(e), { passive: false });
+    this.previewCanvas.addEventListener("mousedown", (e) => this.handleMouseDown(e));
 
-    col.append(label, wrap, this.bgStatusEl);
+    col.append(label, wrap, zoomRow, this.bgStatusEl);
     return col;
   }
 
@@ -333,15 +372,36 @@ export class ImageFXPanel {
 
     this.previewCtx.clearRect(0, 0, w, h);
 
-    if (this.workingBgData && this.workingBgData.width === w && this.workingBgData.height === h) {
-      // Already have BG-removed data — display it directly
-      this.previewCtx.putImageData(this.workingBgData, 0, 0);
+    if (this.zoom === 1) {
+      if (this.workingBgData && this.workingBgData.width === w && this.workingBgData.height === h) {
+        this.previewCtx.putImageData(this.workingBgData, 0, 0);
+      } else {
+        this.previewCtx.filter = buildFilter(this.work);
+        this.previewCtx.drawImage(img, 0, 0);
+        this.previewCtx.filter = "none";
+      }
     } else {
-      // Apply CSS filters via drawImage
-      this.previewCtx.filter = buildFilter(this.work);
-      this.previewCtx.drawImage(img, 0, 0);
-      this.previewCtx.filter = "none";
+      // Zoomed: draw sub-region (panX,panY → panX+subW, panY+subH) scaled to fill canvas
+      const subW = Math.max(1, Math.floor(w / this.zoom));
+      const subH = Math.max(1, Math.floor(h / this.zoom));
+      this.panX  = Math.max(0, Math.min(w - subW, Math.floor(this.panX)));
+      this.panY  = Math.max(0, Math.min(h - subH, Math.floor(this.panY)));
+
+      if (this.workingBgData && this.workingBgData.width === w && this.workingBgData.height === h) {
+        // Extract sub-region of the BG-removed ImageData using a tmp canvas
+        const tmp = document.createElement("canvas");
+        tmp.width  = subW;
+        tmp.height = subH;
+        tmp.getContext("2d")!.putImageData(this.workingBgData, -this.panX, -this.panY);
+        this.previewCtx.drawImage(tmp, 0, 0, subW, subH, 0, 0, w, h);
+      } else {
+        this.previewCtx.filter = buildFilter(this.work);
+        this.previewCtx.drawImage(img, this.panX, this.panY, subW, subH, 0, 0, w, h);
+        this.previewCtx.filter = "none";
+      }
     }
+
+    this.updatePreviewCursor();
   }
 
   // ── BG removal helpers ────────────────────────────────────────────
@@ -398,13 +458,95 @@ export class ImageFXPanel {
   private handlePreviewClick(e: MouseEvent): void {
     if (!this.clickRemoveMode) return;
 
+    const { cx, cy } = this.canvasToImageCoords(e);
+    this.floodFromClick(cx, cy);
+  }
+
+  private handleWheel(e: WheelEvent): void {
+    if (this.zoom === 1) return; // nothing to pan at 1×
+    e.preventDefault();
+    const img = this.fxNode.inputImage;
+    if (!img) return;
+    const subW = Math.floor(img.naturalWidth  / this.zoom);
+    const subH = Math.floor(img.naturalHeight / this.zoom);
+    this.panX = Math.max(0, Math.min(img.naturalWidth  - subW, this.panX + e.deltaX / this.zoom));
+    this.panY = Math.max(0, Math.min(img.naturalHeight - subH, this.panY + e.deltaY / this.zoom));
+    this.renderPreview();
+  }
+
+  private handleMouseDown(e: MouseEvent): void {
+    if (e.button !== 1) return; // middle button only
+    e.preventDefault();
     const rect   = this.previewCanvas.getBoundingClientRect();
     const scaleX = this.previewCanvas.width  / rect.width;
     const scaleY = this.previewCanvas.height / rect.height;
-    const cx     = Math.floor((e.clientX - rect.left) * scaleX);
-    const cy     = Math.floor((e.clientY - rect.top)  * scaleY);
 
-    this.floodFromClick(cx, cy);
+    this._panDrag = { active: true, sx: e.clientX, sy: e.clientY, px: this.panX, py: this.panY };
+    this.previewCanvas.style.cursor = "grabbing";
+
+    const onMove = (me: MouseEvent) => {
+      if (!this._panDrag.active) return;
+      const dx = (me.clientX - this._panDrag.sx) * scaleX;
+      const dy = (me.clientY - this._panDrag.sy) * scaleY;
+      this.panX = this._panDrag.px - dx / this.zoom;
+      this.panY = this._panDrag.py - dy / this.zoom;
+      this.renderPreview();
+    };
+
+    const onUp = () => {
+      this._panDrag.active = false;
+      this.updatePreviewCursor();
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup",   onUp);
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup",   onUp);
+  }
+
+  /** Map a mouse event on the preview canvas to full-resolution image pixel coords. */
+  private canvasToImageCoords(e: MouseEvent): { cx: number; cy: number } {
+    const rect   = this.previewCanvas.getBoundingClientRect();
+    const scaleX = this.previewCanvas.width  / rect.width;
+    const scaleY = this.previewCanvas.height / rect.height;
+    const canvasX = (e.clientX - rect.left) * scaleX;
+    const canvasY = (e.clientY - rect.top)  * scaleY;
+    return {
+      cx: Math.floor(this.panX + canvasX / this.zoom),
+      cy: Math.floor(this.panY + canvasY / this.zoom),
+    };
+  }
+
+  private stepZoom(dir: 1 | -1): void {
+    const img = this.fxNode.inputImage;
+    const levels = [1, 2, 4, 8, 16];
+    const idx    = levels.indexOf(this.zoom);
+    const newIdx = Math.max(0, Math.min(levels.length - 1, idx + dir));
+    this.zoom = levels[newIdx];
+    if (this.zoom === 1) { this.panX = 0; this.panY = 0; }
+    else if (img) {
+      // Center pan when zooming in from fit
+      const subW = img.naturalWidth  / this.zoom;
+      const subH = img.naturalHeight / this.zoom;
+      this.panX = (img.naturalWidth  - subW) / 2;
+      this.panY = (img.naturalHeight - subH) / 2;
+    }
+    this.updateZoomReadout();
+    this.renderPreview();
+  }
+
+  private updateZoomReadout(): void {
+    if (this.zoomReadout) this.zoomReadout.textContent = `${this.zoom}×`;
+  }
+
+  private updatePreviewCursor(): void {
+    if (this.clickRemoveMode) {
+      this.previewCanvas.style.cursor = "crosshair";
+    } else if (this.zoom > 1) {
+      this.previewCanvas.style.cursor = "grab";
+    } else {
+      this.previewCanvas.style.cursor = "";
+    }
   }
 
   private handleApply(): void {
@@ -462,6 +604,7 @@ export class ImageFXPanel {
     if (this.clickModeBtn) {
       this.clickModeBtn.classList.toggle("pn-imgfx-btn--active", this.clickRemoveMode);
     }
+    this.updatePreviewCursor();
   }
 
   private fmt(v: number, step: number): string {
