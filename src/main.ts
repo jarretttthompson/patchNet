@@ -222,15 +222,15 @@ function startMeterLoop(): void {
           if (edge.toInlet === 0) {
             objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
           }
-        } else if (targetNode.type === "s") {
-          // args[0] is the channel name — must not be overwritten by the float value.
-          // deliverMessageValue's "s" case broadcasts correctly without mutating args.
-          objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
-        } else {
+        } else if (targetNode.type === "message") {
           targetNode.args[0] = formatted;
           const contentEl = targetEl?.querySelector(".patch-object-message-content");
           if (contentEl) contentEl.textContent = formatted;
           objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+        } else {
+          // Processor targets (scale, math ops, s/send, …) must run their own
+          // inlet handler so the value is transformed before being forwarded.
+          objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
         }
       }
     }
