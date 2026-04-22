@@ -4,6 +4,7 @@ import { DacNode } from "./DacNode";
 import { AdcNode } from "./AdcNode";
 import { FftAnalyzerNode } from "./FftAnalyzerNode";
 import type { PatchGraph } from "../graph/PatchGraph";
+import type { SubPatchManager } from "../canvas/SubPatchManager";
 
 export interface MeterInfo {
   level: number;
@@ -14,6 +15,7 @@ export interface MeterInfo {
 export class AudioGraph {
   private readonly runtime: AudioRuntime;
   private readonly graph: PatchGraph;
+  private subPatchManager: SubPatchManager | null = null;
 
   private clickNodes        = new Map<string, ClickNode>();
   private dacNodes          = new Map<string, DacNode>();
@@ -23,11 +25,16 @@ export class AudioGraph {
 
   private unsubscribe: () => void;
 
-  constructor(runtime: AudioRuntime, graph: PatchGraph) {
+  constructor(runtime: AudioRuntime, graph: PatchGraph, subPatchManager?: SubPatchManager) {
     this.runtime = runtime;
     this.graph   = graph;
+    this.subPatchManager = subPatchManager ?? null;
     this.unsubscribe = this.graph.on("change", () => this.sync());
     this.sync();
+  }
+
+  private allGraphs(): PatchGraph[] {
+    return [this.graph, ...(this.subPatchManager?.getSubPatchGraphs() ?? [])];
   }
 
   triggerClick(nodeId: string): void {
@@ -113,7 +120,8 @@ export class AudioGraph {
   // ── Internal ────────────────────────────────────────────────────────
 
   private sync(): void {
-    const activeNodeIds = new Set(this.graph.getNodes().map(n => n.id));
+    const graphs = this.allGraphs();
+    const activeNodeIds = new Set(graphs.flatMap(g => g.getNodes().map(n => n.id)));
 
     for (const id of this.clickNodes.keys()) {
       if (!activeNodeIds.has(id)) this.clickNodes.delete(id);
@@ -130,22 +138,24 @@ export class AudioGraph {
 
     if (!this.runtime.isStarted) return;
 
-    for (const node of this.graph.getNodes()) {
-      if (node.type === "click~" && !this.clickNodes.has(node.id)) {
-        this.clickNodes.set(node.id, new ClickNode(this.runtime));
-      }
-      if (node.type === "dac~" && !this.dacNodes.has(node.id)) {
-        this.dacNodes.set(node.id, new DacNode(this.runtime));
-      }
-      if (node.type === "adc~" && !this.adcNodes.has(node.id)) {
-        const adc = new AdcNode(this.runtime);
-        this.adcNodes.set(node.id, adc);
-        adc.start(this.runtime.inputDeviceId || undefined)
-          .then(() => this.rewireConnections())
-          .catch(() => {});
-      }
-      if (node.type === "fft~" && !this.fftNodes.has(node.id)) {
-        this.fftNodes.set(node.id, new FftAnalyzerNode(this.runtime));
+    for (const g of graphs) {
+      for (const node of g.getNodes()) {
+        if (node.type === "click~" && !this.clickNodes.has(node.id)) {
+          this.clickNodes.set(node.id, new ClickNode(this.runtime));
+        }
+        if (node.type === "dac~" && !this.dacNodes.has(node.id)) {
+          this.dacNodes.set(node.id, new DacNode(this.runtime));
+        }
+        if (node.type === "adc~" && !this.adcNodes.has(node.id)) {
+          const adc = new AdcNode(this.runtime);
+          this.adcNodes.set(node.id, adc);
+          adc.start(this.runtime.inputDeviceId || undefined)
+            .then(() => this.rewireConnections())
+            .catch(() => {});
+        }
+        if (node.type === "fft~" && !this.fftNodes.has(node.id)) {
+          this.fftNodes.set(node.id, new FftAnalyzerNode(this.runtime));
+        }
       }
     }
 
@@ -156,9 +166,10 @@ export class AudioGraph {
     for (const click of this.clickNodes.values()) click.disconnect();
     for (const adc of this.adcNodes.values()) adc.disconnect();
 
-    for (const edge of this.graph.getEdges()) {
-      const fromNode = this.graph.nodes.get(edge.fromNodeId);
-      const toNode   = this.graph.nodes.get(edge.toNodeId);
+    for (const g of this.allGraphs()) {
+    for (const edge of g.getEdges()) {
+      const fromNode = g.nodes.get(edge.fromNodeId);
+      const toNode   = g.nodes.get(edge.toNodeId);
       if (!fromNode || !toNode) continue;
 
       // Resolve destination input node (dac~ or fft~ both expose inputNode)
@@ -176,6 +187,7 @@ export class AudioGraph {
       } else if (fromNode.type === "adc~") {
         this.adcNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, edge.toInlet);
       }
+    }
     }
   }
 }

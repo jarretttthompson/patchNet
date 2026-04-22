@@ -118,7 +118,13 @@ function buildBody(node: PatchNode): HTMLDivElement {
   const body = document.createElement("div");
   body.className = "patch-object-body";
 
-  if (node.type === "button") {
+  if (node.type === "comment") {
+    const text = document.createElement("div");
+    text.className = "patch-object-comment-text";
+    text.textContent = node.args[0] ?? "";
+    body.appendChild(text);
+
+  } else if (node.type === "button") {
     // PD-style bang: just the circle, no label
     const face = document.createElement("div");
     face.className = "patch-object-face patch-object-face-button";
@@ -177,11 +183,8 @@ function buildBody(node: PatchNode): HTMLDivElement {
     const thumb = document.createElement("div");
     thumb.className = "patch-object-slider-thumb";
     const sliderVal = parseFloat(node.args[0] ?? "0");
-    const sliderMin = parseFloat(node.args[1] ?? "0");
-    const sliderMax = parseFloat(node.args[2] ?? "127");
-    const sliderRange = sliderMax - sliderMin || 1;
-    const pct = ((sliderVal - sliderMin) / sliderRange) * 100;
-    thumb.style.left = `${Math.max(0, Math.min(100, pct))}%`;
+    const pct = Math.max(0, Math.min(1, isNaN(sliderVal) ? 0 : sliderVal)) * 100;
+    thumb.style.left = `${pct}%`;
     track.appendChild(thumb);
 
     body.appendChild(track);
@@ -330,6 +333,25 @@ function buildBody(node: PatchNode): HTMLDivElement {
       sub.textContent = subText;
       body.appendChild(sub);
     }
+
+  } else if (node.type === "dmx") {
+    // Inline panel host — DmxPanelController mounts the live GUI here after
+    // render(). Empty on initial paint; the controller fills it in the same
+    // frame via main.ts's render() → mountDmxPanels() hook.
+    body.classList.add("patch-object-dmx-body");
+    const locked = (node.args[8] ?? "0") === "1";
+    body.dataset.locked = locked ? "1" : "0";
+    const host = document.createElement("div");
+    host.className = "pn-dmx-panel-host";
+    host.dataset.dmxPanelHost = node.id;
+    body.appendChild(host);
+
+    const lockBtn = document.createElement("button");
+    lockBtn.className = "pn-subpatch-lock";
+    lockBtn.dataset.locked = locked ? "1" : "0";
+    lockBtn.setAttribute("aria-label", locked ? "Unlock to use panel" : "Lock to move object");
+    lockBtn.innerHTML = LOCK_ICON_SVG;
+    body.appendChild(lockBtn);
 
   } else if (node.type === "s" || node.type === "r") {
     const row = document.createElement("div");
@@ -600,6 +622,7 @@ export function renderObject(node: PatchNode): HTMLDivElement {
   const slug = node.type.replace(/[^a-z0-9]+/gi, "-");
   el.className = `patch-object patch-object-${slug}`;
   if (def.category === "ui") el.classList.add("patch-object--ui");
+  if (node.type === "comment") el.classList.add("patch-object--comment");
   if (node.type === "message") el.classList.add("patch-object--message");
   if (node.type === "attribute") el.classList.add("patch-object--attribute");
   if (def.category === "scripting") el.classList.add("patch-object--scripting");

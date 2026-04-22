@@ -3,6 +3,7 @@ import type { PatchNode, PortType } from "../graph/PatchNode";
 import type { AudioGraph } from "../runtime/AudioGraph";
 import type { CodeboxController } from "./CodeboxController";
 import type { VisualizerGraph } from "../runtime/VisualizerGraph";
+import type { DmxGraph } from "../runtime/DmxGraph";
 import type { SubPatchManager } from "./SubPatchManager";
 import {
   OBJECT_DEFS,
@@ -28,6 +29,13 @@ function applyDollarArgs(template: string, values: string[]): string {
 
 function splitOnComma(content: string): string[] {
   return content.split(",").map((segment) => segment.trim()).filter(Boolean);
+}
+
+/** UTF-8 safe base64 JSON encode for dmx profile/patch persistence. */
+function encodeDmxBase64Json(value: unknown): string {
+  const json = JSON.stringify(value);
+  if (!json || json === "[]") return "";
+  return btoa(unescape(encodeURIComponent(json)));
 }
 
 /**
@@ -72,6 +80,7 @@ export class ObjectInteractionController {
   private readonly mathLeftOps = new Map<string, number>();
   private codeboxController?: CodeboxController;
   private visualizerGraph?: VisualizerGraph;
+  private dmxGraph?: DmxGraph;
   private outletCallback?: (outletIndex: number, value: string | null) => void;
   private subPatchManager?: SubPatchManager;
   /** Presentation panel elements (in the main canvas) that this OIC also handles. */
@@ -123,6 +132,10 @@ export class ObjectInteractionController {
 
   setVisualizerGraph(vg: VisualizerGraph): void {
     this.visualizerGraph = vg;
+  }
+
+  setDmxGraph(dg: DmxGraph): void {
+    this.dmxGraph = dg;
   }
 
   setOutletCallback(cb: (outletIndex: number, value: string | null) => void): void {
@@ -268,6 +281,13 @@ export class ObjectInteractionController {
         e.stopPropagation();
         return;
       }
+      if (node?.type === "dmx") {
+        const nowLocked = (node.args[8] ?? "0") === "1";
+        node.args[8] = nowLocked ? "0" : "1";
+        this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
     }
 
     const objectEl = this.getObjectEl(e.target);
@@ -408,6 +428,10 @@ export class ObjectInteractionController {
       case "layer":
         break;
 
+      case "dmx":
+        if (inlet === 0) this.deliverDmxMessage(node, "status", []);
+        break;
+
       case "integer":
       case "float":
         if (inlet === 0) this.dispatchValue(node.id, 0, node.args[0] ?? "0");
@@ -495,12 +519,11 @@ export class ObjectInteractionController {
           const sliderRaw = value.startsWith("value ") ? value.slice(6).trim() : value;
           const parsed = Number.parseFloat(sliderRaw);
           if (Number.isNaN(parsed)) break;
-          const { min, max } = this.getSliderRange(node);
-          const clamped = Math.round(Math.max(min, Math.min(max, parsed)));
+          const clamped = Math.max(0, Math.min(1, parsed));
           node.args[0] = String(clamped);
           this.syncSliderThumb(node.id, clamped, node);
           this.graph.emit("display");
-          this.dispatchValue(node.id, 0, String(clamped));
+          this.dispatchValue(node.id, 0, clamped.toFixed(6));
         }
         break;
 
@@ -801,6 +824,15 @@ export class ObjectInteractionController {
           const selector = tokens[0] ?? "";
           const args     = tokens.slice(1);
           this.visualizerGraph?.deliverShaderToyMessage(node.id, selector, args);
+        }
+        break;
+
+      case "dmx":
+        if (inlet === 0) {
+          const tokens   = value.trim().split(/\s+/);
+          const selector = tokens[0] ?? "";
+          const args     = tokens.slice(1);
+          this.deliverDmxMessage(node, selector, args);
         }
         break;
 
@@ -1173,16 +1205,15 @@ export class ObjectInteractionController {
 
     const rect = trackEl.getBoundingClientRect();
     const t = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const { min, max, range } = this.getSliderRange(node);
-    const clamped = Math.round(Math.max(min, Math.min(max, min + t * range)));
 
-    node.args[0] = String(clamped);
-    thumbEl.style.left = `${((clamped - min) / range) * 100}%`;
+    node.args[0] = String(t);
+    thumbEl.style.left = `${t * 100}%`;
   }
 
   private handleSliderMove(e: MouseEvent): void {
     if (this.sliderDrag) {
       this.updateSliderFromEvent(e);
+      this.dispatchValue(this.sliderDrag.node.id, 0, this.getSliderValue(this.sliderDrag.node));
     } else if (this.numboxDrag) {
       this.updateNumboxFromEvent(e);
     }
@@ -1234,8 +1265,20 @@ export class ObjectInteractionController {
   private handleDblClick(e: MouseEvent): void {
     if (e.button !== 0) return;
 
-    const objectEl = this.getObjectEl(e.target);
+    let objectEl = this.getObjectEl(e.target);
     if (!objectEl) return;
+
+    // If a render fired during the click sequence the event target may be
+    // detached. Look up the live element by node ID so edits always attach
+    // to real DOM.
+    if (!objectEl.isConnected) {
+      const nodeId = objectEl.dataset.nodeId;
+      if (!nodeId) return;
+      const liveEl = this.findNodeEl(nodeId);
+      if (!liveEl) return;
+      objectEl = liveEl;
+    }
+
     const node = this.getNode(objectEl);
     if (!node) return;
 
@@ -1252,6 +1295,13 @@ export class ObjectInteractionController {
       e.preventDefault();
       e.stopPropagation();
       this.subPatchManager?.open(node.id);
+      return;
+    }
+
+    if (node.type === "comment") {
+      e.preventDefault();
+      e.stopPropagation();
+      this.beginCommentEdit(objectEl, node);
       return;
     }
 
@@ -1415,9 +1465,60 @@ export class ObjectInteractionController {
     input.addEventListener("blur", commit);
   }
 
+  private beginCommentEdit(objectEl: HTMLElement, node: PatchNode): void {
+    const textEl = objectEl.querySelector<HTMLElement>(".patch-object-comment-text");
+    if (!textEl) return;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "patch-object-comment-input";
+    input.value = node.args[0] ?? "";
+    textEl.textContent = "";
+    textEl.appendChild(input);
+    // Make pointer events work while editing
+    textEl.style.pointerEvents = "auto";
+    input.focus();
+    input.select();
+
+    let settled = false;
+
+    const commit = () => {
+      if (settled) return;
+      settled = true;
+      node.args[0] = input.value || "comment";
+      textEl.style.pointerEvents = "";
+      this.graph.emit("change");
+    };
+
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      textEl.style.pointerEvents = "";
+      this.graph.emit("change");
+    };
+
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+      else if (ev.key === "Escape") { cancel(); }
+      ev.stopPropagation();
+    });
+    input.addEventListener("blur", commit);
+  }
+
   private beginMessageEdit(objectEl: HTMLElement, node: PatchNode): void {
     const contentEl = objectEl.querySelector<HTMLElement>(".patch-object-message-content");
     if (!contentEl) return;
+
+    // If an edit is already in progress (e.g. rapid double-click), re-focus
+    // the existing input rather than re-creating it. Creating a new input would
+    // fire blur on the live input synchronously, which calls commit() and then
+    // render(), detaching contentEl before the new input can be appended.
+    const existing = contentEl.querySelector<HTMLInputElement>(".patch-object-message-input");
+    if (existing) {
+      existing.focus();
+      existing.select();
+      return;
+    }
 
     const input = document.createElement("input");
     input.type = "text";
@@ -1574,7 +1675,7 @@ export class ObjectInteractionController {
   }
 
   private getStoredMessage(node: PatchNode): string {
-    return node.args[0] ?? "";
+    return node.args.join(" ");
   }
 
   private setStoredMessage(node: PatchNode, content: string): void {
@@ -1591,16 +1692,8 @@ export class ObjectInteractionController {
 
   private getSliderValue(node: PatchNode): string {
     const val = Number.parseFloat(node.args[0] ?? "0");
-    const min = Number.parseFloat(node.args[1] ?? "0");
-    const max = Number.parseFloat(node.args[2] ?? "127");
-    const clamped = Math.round(isNaN(val) ? min : Math.max(min, Math.min(max, val)));
-    return String(clamped);
-  }
-
-  private getSliderRange(node: PatchNode): { min: number; max: number; range: number } {
-    const min = Number.parseFloat(node.args[1] ?? "0");
-    const max = Number.parseFloat(node.args[2] ?? "127");
-    return { min: isNaN(min) ? 0 : min, max: isNaN(max) ? 127 : max, range: (isNaN(max) ? 127 : max) - (isNaN(min) ? 0 : min) || 1 };
+    const clamped = Math.max(0, Math.min(1, isNaN(val) ? 0 : val));
+    return clamped.toFixed(6);
   }
 
   private syncNumboxDisplay(node: PatchNode): void {
@@ -1611,12 +1704,11 @@ export class ObjectInteractionController {
     }
   }
 
-  private syncSliderThumb(nodeId: string, value: number, node: PatchNode): void {
+  private syncSliderThumb(nodeId: string, value: number, _node: PatchNode): void {
     const nodeEl = this.findNodeEl(nodeId);
     const thumbEl = nodeEl?.querySelector<HTMLElement>(".patch-object-slider-thumb");
     if (thumbEl) {
-      const { min, range } = this.getSliderRange(node);
-      thumbEl.style.left = `${Math.max(0, Math.min(100, ((value - min) / range) * 100))}%`;
+      thumbEl.style.left = `${Math.max(0, Math.min(100, value * 100))}%`;
     }
   }
 
@@ -1640,6 +1732,224 @@ export class ObjectInteractionController {
         this.startMetro(node);
       }
     }
+  }
+
+  private deliverDmxMessage(node: PatchNode, selector: string, args: string[]): void {
+    const dmx = this.dmxGraph?.getNode(node.id);
+    if (!dmx) return;
+
+    switch (selector) {
+      case "connect": {
+        const vid = parseInt(node.args[3] ?? "0", 10) || null;
+        const pid = parseInt(node.args[4] ?? "0", 10) || null;
+        void (async () => {
+          if (!dmx.getInfo()) {
+            const info = await dmx.reacquire(vid, pid);
+            if (!info) {
+              this.dispatchValue(node.id, 1, "error no-device-selected");
+              return;
+            }
+            node.args[3] = String(info.usbVendorId ?? 0);
+            node.args[4] = String(info.usbProductId ?? 0);
+            node.args[5] = info.label;
+            this.graph.emit("change");
+          }
+          await dmx.connect();
+          if (dmx.getState() === "connected") {
+            node.args[2] = "1";
+            this.graph.emit("display");
+            this.dispatchBang(node.id, 0);
+            this.dispatchValue(node.id, 1, "connected");
+          } else {
+            this.dispatchValue(node.id, 1, "error connect-failed");
+          }
+        })();
+        break;
+      }
+
+      case "disconnect": {
+        void (async () => {
+          await dmx.disconnect();
+          node.args[2] = "0";
+          this.graph.emit("display");
+          this.dispatchBang(node.id, 0);
+          this.dispatchValue(node.id, 1, "idle");
+        })();
+        break;
+      }
+
+      case "dmx": {
+        if (args.length < 2) return;
+        const addr = parseInt(args[0], 10);
+        const values = args.slice(1).map((v) => parseFloat(v)).filter((v) => !isNaN(v));
+        if (!isFinite(addr) || values.length === 0) return;
+        if (values.length === 1) {
+          dmx.writeChannel(addr, values[0]);
+        } else {
+          dmx.writeRange(addr, values);
+        }
+        break;
+      }
+
+      case "blackout": {
+        if (args.length === 0) {
+          dmx.blackout();
+        } else {
+          const err = dmx.blackoutFixture(args[0]);
+          if (err) this.dispatchValue(node.id, 1, `error ${args[0]}-unknown`);
+        }
+        break;
+      }
+
+      case "defaults": {
+        if (args.length === 0) {
+          const n = dmx.allFixturesDefaults();
+          this.dispatchValue(node.id, 1, `defaults ${n}`);
+        } else {
+          const err = dmx.fixtureDefaults(args[0]);
+          if (err) this.dispatchValue(node.id, 1, `error ${args[0]}-unknown`);
+        }
+        break;
+      }
+
+      case "setall": {
+        if (args.length < 2) {
+          this.dispatchValue(node.id, 1, "error setall-usage: setall <attr> <value>");
+          break;
+        }
+        const attr = args[0];
+        const value = parseFloat(args[1]);
+        if (isNaN(value)) {
+          this.dispatchValue(node.id, 1, `error bad-value ${args[1]}`);
+          break;
+        }
+        const n = dmx.writeAllFixtures(attr, value);
+        this.dispatchValue(node.id, 1, `setall ${attr} ${n}`);
+        break;
+      }
+
+      case "rate": {
+        const hz = parseFloat(args[0] ?? "");
+        if (!isNaN(hz)) {
+          dmx.setRateHz(hz);
+          node.args[0] = String(dmx.getRateHz());
+          this.graph.emit("display");
+        }
+        break;
+      }
+
+      case "status": {
+        const info = dmx.getInfo();
+        const device = info?.label ?? "no-device";
+        this.dispatchValue(node.id, 1, `${dmx.getState()} ${device} ${dmx.getRateHz()}hz`);
+        break;
+      }
+
+      case "patch": {
+        if (args.length < 3) {
+          this.dispatchValue(node.id, 1, "error patch-usage: patch <name> <profileId> <addr>");
+          break;
+        }
+        const addr = parseInt(args[2], 10);
+        const err = dmx.patchFixture(args[0], args[1], addr);
+        if (!err) this.persistDmxState(node, dmx);
+        break;
+      }
+
+      case "unpatch": {
+        if (args.length < 1) break;
+        const err = dmx.unpatchFixture(args[0]);
+        if (!err) this.persistDmxState(node, dmx);
+        break;
+      }
+
+      case "rename": {
+        if (args.length < 2) break;
+        const err = dmx.renameFixture(args[0], args[1]);
+        if (!err) this.persistDmxState(node, dmx);
+        break;
+      }
+
+      case "repoint": {
+        if (args.length < 2) break;
+        const err = dmx.repointFixture(args[0], args[1]);
+        if (!err) this.persistDmxState(node, dmx);
+        break;
+      }
+
+      case "mute": {
+        if (args.length < 2) break;
+        const muted = args[1] !== "0";
+        const err = dmx.setFixtureMuted(args[0], muted);
+        if (!err) this.persistDmxState(node, dmx);
+        break;
+      }
+
+      case "set": {
+        // set <name> <attr> <value> [<attr> <value> ...]
+        if (args.length < 3 || (args.length - 1) % 2 !== 0) {
+          this.dispatchValue(node.id, 1, "error set-usage: set <name> <attr> <value> [<attr> <value> ...]");
+          break;
+        }
+        const fixtureName = args[0];
+        for (let i = 1; i < args.length; i += 2) {
+          const attr = args[i];
+          const value = parseFloat(args[i + 1]);
+          if (isNaN(value)) {
+            this.dispatchValue(node.id, 1, `error bad-value ${args[i + 1]}`);
+            continue;
+          }
+          const err = dmx.writeFixtureAttr(fixtureName, attr, value);
+          if (err) this.dispatchValue(node.id, 1, `error ${fixtureName}.${attr}`);
+        }
+        break;
+      }
+
+      case "profile": {
+        if (args.length < 1) break;
+        const sub = args[0];
+        if (sub === "import" && args.length >= 2) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(decodeURIComponent(escape(atob(args[1]))));
+          } catch {
+            this.dispatchValue(node.id, 1, "error profile-import bad-base64-or-json");
+            break;
+          }
+          const err = dmx.importProfile(parsed);
+          if (err) this.dispatchValue(node.id, 1, `error profile-import ${err}`);
+          else this.persistDmxState(node, dmx);
+        } else if (sub === "remove" && args.length >= 2) {
+          if (dmx.removeProfile(args[1])) this.persistDmxState(node, dmx);
+        } else if (sub === "list") {
+          for (const p of dmx.listProfiles()) {
+            this.dispatchValue(node.id, 1, `profile ${p.id} ${p.channelCount}ch`);
+          }
+        } else {
+          this.dispatchValue(node.id, 1, "error profile-subcommand: import|remove|list");
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  /**
+   * Serialize the dmx node's profiles + instances back into the PatchNode
+   * args as base64 JSON. Called after any patch/profile mutation so the
+   * state round-trips through the text panel and .patchnet files.
+   */
+  private persistDmxState(node: PatchNode, dmx: { exportUserProfiles: () => unknown; exportInstances: () => unknown }): void {
+    const profiles = dmx.exportUserProfiles();
+    const instances = dmx.exportInstances();
+    node.args[6] = encodeDmxBase64Json(profiles);
+    node.args[7] = encodeDmxBase64Json(instances);
+    // "change" so the autosave (graph.on("change", savePatch) in main.ts)
+    // flushes the new profiles/instances to localStorage. "display" would
+    // only sync the text panel — patches would not survive a reload.
+    this.graph.emit("change");
   }
 
   private startMetro(node: PatchNode): void {

@@ -81,6 +81,9 @@ export class DragController {
     // must never start a move.
     const target = e.target as Element;
     if (target.tagName === "INPUT") return;
+    if (target.tagName === "SELECT") return;
+    if (target.tagName === "TEXTAREA") return;
+    if (target.tagName === "BUTTON") return;
     if (target.closest(".pn-subpatch-lock")) return;
     if (target.closest(".pn-odo-col")) return;   // digit column — OIC handles drag
     if (target.closest(".patch-port")) return;
@@ -88,6 +91,10 @@ export class DragController {
     if (target.closest(".pn-cable-svg")) return;
     if (target.closest(".patch-object-codebox-host")) return;
     if (target.closest(".cm-editor")) return;
+    // Inline dmx panel: its tabs, forms, and scroll regions should never
+    // initiate an object drag. The object can still be dragged by grabbing
+    // its border or any area outside the panel host.
+    if (target.closest(".pn-dmx-panel-host")) return;
     if (target.closest(".patch-object-slider-track")) return;
     if (target.closest(".patch-object-face-button")) return;
     if (target.closest(".patch-object-toggle-rocker")) return;

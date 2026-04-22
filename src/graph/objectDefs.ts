@@ -58,6 +58,17 @@ function mathOpDef(description: string, outLabel: string): ObjectSpec {
 }
 
 export const OBJECT_DEFS: Record<string, ObjectSpec> = {
+  comment: {
+    description: "Non-functional annotation text. Double-click to edit.",
+    category: "ui",
+    args: [{ name: "text", type: "symbol", default: "comment", description: "Annotation text." }],
+    messages: [],
+    inlets: [],
+    outlets: [],
+    defaultWidth: 160,
+    defaultHeight: 28,
+  },
+
   button: {
     description: "Momentary trigger that flashes and sends a bang.",
     category: "ui",
@@ -88,13 +99,11 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
   },
 
   slider: {
-    description: "Horizontal slider that stores and outputs a value in the configured range.",
+    description: "Horizontal slider that outputs a float in [0.0, 1.0].",
     category: "ui",
     args: [
-      { name: "value", type: "float", default: "0",   min: 0, max: 127, step: 1,
-        description: "Current value." },
-      { name: "min",   type: "float", default: "0",   description: "Output minimum." },
-      { name: "max",   type: "float", default: "127", description: "Output maximum." },
+      { name: "value", type: "float", default: "0", min: 0, max: 1, step: 0.001,
+        description: "Current value (0.0–1.0)." },
     ],
     messages: [
       { inlet: 0, selector: "float", description: "set value, update thumb, and output" },
@@ -729,6 +738,55 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [], // derived from rows
     defaultWidth:  240,
     defaultHeight: 120,
+  },
+
+  dmx: {
+    description: "DMX512 output via an ENTTEC DMXUSB PRO (Web Serial). Maintains a 512-channel universe and streams frames continuously while connected.",
+    category: "control",
+    args: [
+      { name: "rate",  type: "float",  default: "40", min: 10, max: 44, step: 1,
+        description: "Frame refresh rate in Hz (10–44)." },
+      { name: "baud",  type: "int",    default: "250000", min: 9600, max: 250000, step: 1,
+        description: "Serial baud rate passed to the ENTTEC widget. 250000 matches the widget's internal DMX clock; 57600/115200 are fallbacks for older firmware." },
+      { name: "open",  type: "int",    default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "1 = connected at last save; attempts silent reacquire on load." },
+      { name: "vid",   type: "int",    default: "0", hidden: true,
+        description: "Persisted USB vendor id of the last-used port (decimal, 0 if unknown)." },
+      { name: "pid",   type: "int",    default: "0", hidden: true,
+        description: "Persisted USB product id of the last-used port (decimal, 0 if unknown)." },
+      { name: "label", type: "symbol", default: "", hidden: true,
+        description: "Human-readable label of the last-used port." },
+      { name: "userProfiles", type: "symbol", default: "", hidden: true,
+        description: "Base64-encoded JSON array of user-imported fixture profiles." },
+      { name: "patches", type: "symbol", default: "", hidden: true,
+        description: "Base64-encoded JSON array of patched fixture instances." },
+      { name: "locked", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "0 = panel interactive (default); 1 = locked so the object can be dragged." },
+    ],
+    messages: [
+      { inlet: 0, selector: "connect",    description: "open or reacquire the serial port and begin streaming" },
+      { inlet: 0, selector: "disconnect", description: "stop streaming and close the serial port" },
+      { inlet: 0, selector: "dmx",        description: "set channels starting at address: dmx <addr> <v1> [<v2> ...]" },
+      { inlet: 0, selector: "blackout",   description: "zero the entire universe, or one fixture: blackout [<name>]" },
+      { inlet: 0, selector: "defaults",   description: "restore profile defaults on one fixture: defaults <name>" },
+      { inlet: 0, selector: "rate",       description: "set refresh rate (Hz): rate <10..44>" },
+      { inlet: 0, selector: "status",     description: "emit current connection state through outlet 1" },
+      { inlet: 0, selector: "patch",      description: "create fixture instance: patch <name> <profileId> <startAddress>" },
+      { inlet: 0, selector: "unpatch",    description: "remove fixture instance: unpatch <name>" },
+      { inlet: 0, selector: "rename",     description: "rename fixture: rename <oldName> <newName>" },
+      { inlet: 0, selector: "repoint",    description: "change fixture's profile: repoint <name> <newProfileId>" },
+      { inlet: 0, selector: "mute",       description: "mute/unmute a fixture: mute <name> 0|1" },
+      { inlet: 0, selector: "set",        description: "set fixture attribute(s): set <name> <attr> <value> [<attr> <value> ...]" },
+      { inlet: 0, selector: "setall",     description: "set <attr> on every fixture that has it: setall <attr> <value>" },
+      { inlet: 0, selector: "profile",    description: "profile import <base64-json> | profile remove <id> | profile list" },
+    ],
+    inlets:  [{ index: 0, type: "any", label: "connect | disconnect | dmx <addr> <v...> | blackout | rate <hz> | status | set <name> <attr> <v> | setall <attr> <v> | patch | unpatch | profile …", temperature: "hot" }],
+    outlets: [
+      { index: 0, type: "bang",    label: "bang on state change" },
+      { index: 1, type: "message", label: "status / error messages" },
+    ],
+    defaultWidth:  560,
+    defaultHeight: 520,
   },
 
   subPatch: {

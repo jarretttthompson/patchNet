@@ -1,10 +1,12 @@
 import type { PatchGraph } from "../graph/PatchGraph";
 import type { ObjectInteractionController } from "./ObjectInteractionController";
+import type { AudioGraph } from "../runtime/AudioGraph";
 import type { PortType } from "../graph/PatchNode";
 import { SubPatchSession } from "./SubPatchSession";
 
 export class SubPatchManager {
   private sessions = new Map<string, SubPatchSession>();
+  private currentAudioGraph: AudioGraph | undefined;
 
   /** Called to add/sync a tab without switching to it (patch load, graph change). */
   onTabRegister?: (nodeId: string, label: string, session: SubPatchSession) => void;
@@ -130,9 +132,25 @@ export class SubPatchManager {
     // Wire the session's interaction controller to also handle events from the
     // presentation panel mounted on the main canvas.
     session.interaction.addInteractionPanel(session.presentationEl);
+    if (this.currentAudioGraph !== undefined) {
+      session.interaction.setAudioGraph(this.currentAudioGraph);
+    }
 
     this.sessions.set(nodeId, session);
     return session;
+  }
+
+  /** Return the PatchGraph for every live subpatch session. */
+  getSubPatchGraphs(): PatchGraph[] {
+    return [...this.sessions.values()].map(s => s.graph);
+  }
+
+  /** Propagate the audio graph (or undefined on stop) to all session OICs. */
+  setAudioGraph(ag: AudioGraph | undefined): void {
+    this.currentAudioGraph = ag;
+    for (const session of this.sessions.values()) {
+      session.interaction.setAudioGraph(ag);
+    }
   }
 
   destroy(): void {

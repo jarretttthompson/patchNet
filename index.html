@@ -43,11 +43,27 @@
         <div class="toolbar-separator"></div>
 
         <button
+          id="save-btn"
+          class="toolbar-icon-btn"
+          aria-label="Save patch"
+          title="Save patch (download .patchnet)"
+          >↓</button>
+        <button
+          id="load-btn"
+          class="toolbar-icon-btn"
+          aria-label="Load patch"
+          title="Load patch (upload .patchnet)"
+          >↑</button>
+
+        <div class="toolbar-separator"></div>
+
+        <button
           id="shortcuts-btn"
           class="toolbar-icon-btn"
           aria-label="Keyboard shortcuts"
           title="Keyboard shortcuts"
           >?</button>
+        <input type="file" id="load-file-input" accept=".patchnet,.txt" style="display:none" />
       </div>
       <div id="pn-tab-bar"></div>
       <div class="workspace">
@@ -55,8 +71,11 @@
           <div class="canvas-grid"></div>
         </div>
         <div class="divider"></div>
-        <div class="text-panel">
-          <div class="text-panel-header">text view</div>
+        <div class="text-panel" id="console-panel">
+          <div class="text-panel-header">
+            <span>console</span>
+            <button id="console-collapse-btn" class="console-collapse-btn" title="Collapse console" aria-label="Collapse console">‹</button>
+          </div>
           <textarea data-text-panel placeholder="#N canvas;" spellcheck="false"></textarea>
         </div>
       </div>

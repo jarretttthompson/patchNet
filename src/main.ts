@@ -23,6 +23,8 @@ import { AudioRuntime } from "./runtime/AudioRuntime";
 import { AudioGraph } from "./runtime/AudioGraph";
 import { VisualizerRuntime } from "./runtime/VisualizerRuntime";
 import { VisualizerGraph } from "./runtime/VisualizerGraph";
+import { DmxGraph } from "./runtime/DmxGraph";
+import { DmxPanelController } from "./canvas/DmxPanelController";
 import { SubPatchManager } from "./canvas/SubPatchManager";
 import { TabManager } from "./canvas/TabManager";
 
@@ -129,6 +131,12 @@ objectInteraction.setVisualizerGraph(vizGraph);
 vizGraph.setObjectInteraction(objectInteraction);
 canvas.setVisualizerGraph(vizGraph);
 new VisualizerObjectUI(panGroup, graph, vizGraph);
+
+// ── DMX runtime ───────────────────────────────────────────────────────────────
+
+const dmxGraph = new DmxGraph(graph);
+objectInteraction.setDmxGraph(dmxGraph);
+const dmxPanelController = new DmxPanelController(graph, dmxGraph);
 
 // ── Audio runtime ─────────────────────────────────────────────────────────────
 
@@ -261,8 +269,9 @@ function stopMeterLoop(): void {
 
 async function startAudio(): Promise<void> {
   await audioRuntime.start();
-  audioGraph = new AudioGraph(audioRuntime, graph);
+  audioGraph = new AudioGraph(audioRuntime, graph, subPatchManager);
   objectInteraction.setAudioGraph(audioGraph);
+  subPatchManager.setAudioGraph(audioGraph);
   await populateDevices();
   audioGraph.mountFftNodes(panGroup);
   startMeterLoop();
@@ -274,6 +283,7 @@ async function stopAudio(): Promise<void> {
   audioGraph?.destroy();
   audioGraph = null;
   objectInteraction.setAudioGraph(undefined);
+  subPatchManager.setAudioGraph(undefined);
   await audioRuntime.stop();
   setDspUi(false);
 }
@@ -325,6 +335,11 @@ tabManager.onMainActivate = () => {
   if (deferredByHidden) {
     deferredByHidden = false;
     render();
+    // render() recreates all .patch-object DOM nodes, so we must re-mount
+    // presentation panels into the fresh [data-panel-for] divs. Normally
+    // this runs via the graph.on("change") chain, but here render() is
+    // called directly (not from a change event), so we do it explicitly.
+    subPatchManager.mountPresentationPanels(panGroup);
   } else {
     cables.render();
   }
@@ -397,6 +412,10 @@ function render(): void {
   // Mount fft~ canvases into their screen slots
   audioGraph?.mountFftNodes(panGroup);
 
+  // Mount inline dmx panels into their object bodies
+  dmxPanelController.mount(panGroup);
+  dmxPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
   // Restore selection visual on re-render
   for (const id of canvas.getSelectedNodeIds()) {
     panGroup
@@ -459,6 +478,35 @@ const shortcuts = new ShortcutsPanel();
 const shortcutsBtn = document.getElementById("shortcuts-btn");
 shortcutsBtn?.addEventListener("click", () => shortcuts.toggle());
 
+// ── Console collapse ──────────────────────────────────────────────────────────
+
+const consolePanel = document.getElementById("console-panel");
+const consoleCollapseBtn = document.getElementById("console-collapse-btn");
+
+function toggleConsole(): void {
+  if (!consolePanel) return;
+  const collapsed = consolePanel.classList.toggle("text-panel--collapsed");
+  if (consoleCollapseBtn) {
+    consoleCollapseBtn.title = collapsed ? "Expand console" : "Collapse console";
+    consoleCollapseBtn.setAttribute("aria-label", collapsed ? "Expand console" : "Collapse console");
+  }
+  // Redraw cables — their endpoints depend on canvas width which just changed
+  requestAnimationFrame(() => {
+    cables.render();
+    canvas.updatePanGroupSize();
+  });
+}
+
+consoleCollapseBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleConsole();
+});
+
+// Clicking the header while collapsed re-expands
+consolePanel?.querySelector(".text-panel-header")?.addEventListener("click", () => {
+  if (consolePanel.classList.contains("text-panel--collapsed")) toggleConsole();
+});
+
 // ── Persistence ──────────────────────────────────────────────────────────────
 
 const STORAGE_KEY = "patchnet-patch";
@@ -483,6 +531,53 @@ function loadPatch(): boolean {
 }
 
 graph.on("change", savePatch);
+
+// ── File save / load ─────────────────────────────────────────────────────────
+
+function savePatchToFile(): void {
+  const text = graph.serialize();
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const filename = `patch-${stamp}.patchnet`;
+  const blob = new Blob([text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadPatchFromFile(file: File): Promise<void> {
+  const text = await file.text();
+  if (dspOn) await stopAudio();
+  try {
+    graph.deserialize(text);
+    textArea.classList.remove("text-panel--error");
+  } catch {
+    textArea.classList.add("text-panel--error");
+    statusMode.textContent = "PARSE ERR";
+  }
+}
+
+const saveBtn = document.getElementById("save-btn") as HTMLButtonElement | null;
+const loadBtn = document.getElementById("load-btn") as HTMLButtonElement | null;
+const loadFileInput = document.getElementById("load-file-input") as HTMLInputElement | null;
+
+saveBtn?.addEventListener("click", savePatchToFile);
+
+loadBtn?.addEventListener("click", () => {
+  if (loadFileInput) {
+    loadFileInput.value = "";
+    loadFileInput.click();
+  }
+});
+
+loadFileInput?.addEventListener("change", () => {
+  const file = loadFileInput?.files?.[0];
+  if (file) loadPatchFromFile(file);
+});
 
 // Restore saved patch, or seed with a starter object on first load
 if (!loadPatch()) {
@@ -571,6 +666,8 @@ window.addEventListener("beforeunload", () => {
   subPatchManager.destroy();
   codeboxController.destroy();
   vizGraph.destroy();
+  dmxPanelController.destroy();
+  dmxGraph.destroy();
   undoManager.destroy();
 });
 
