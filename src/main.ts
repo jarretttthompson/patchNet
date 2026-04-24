@@ -25,6 +25,8 @@ import { VisualizerRuntime } from "./runtime/VisualizerRuntime";
 import { VisualizerGraph } from "./runtime/VisualizerGraph";
 import { DmxGraph } from "./runtime/DmxGraph";
 import { DmxPanelController } from "./canvas/DmxPanelController";
+import { JsEffectPanelController } from "./canvas/JsEffectPanelController";
+import { BrowserPanelController } from "./canvas/BrowserPanelController";
 import { SubPatchManager } from "./canvas/SubPatchManager";
 import { TabManager } from "./canvas/TabManager";
 
@@ -137,6 +139,11 @@ new VisualizerObjectUI(panGroup, graph, vizGraph);
 const dmxGraph = new DmxGraph(graph);
 objectInteraction.setDmxGraph(dmxGraph);
 const dmxPanelController = new DmxPanelController(graph, dmxGraph);
+
+// js~ panels — audio graph is wired in after start(), so the controller
+// stores a null AudioGraph until then and resolves late via onJsEffectReady.
+const jsEffectPanelController = new JsEffectPanelController(graph);
+const browserPanelController = new BrowserPanelController(graph);
 
 // ── Audio runtime ─────────────────────────────────────────────────────────────
 
@@ -272,6 +279,13 @@ async function startAudio(): Promise<void> {
   audioGraph = new AudioGraph(audioRuntime, graph, subPatchManager);
   objectInteraction.setAudioGraph(audioGraph);
   subPatchManager.setAudioGraph(audioGraph);
+  jsEffectPanelController.setAudioGraph(audioGraph);
+  browserPanelController.setAudioGraph(audioGraph);
+  vizGraph.setBrowserNodeLookup((id) => audioGraph?.getBrowserNode(id) ?? null);
+  // Re-mount so any already-placed js~ panels can bind to their
+  // freshly-constructed JsEffectNodes.
+  jsEffectPanelController.mount(panGroup);
+  browserPanelController.mount(panGroup);
   await populateDevices();
   audioGraph.mountFftNodes(panGroup);
   startMeterLoop();
@@ -284,6 +298,9 @@ async function stopAudio(): Promise<void> {
   audioGraph = null;
   objectInteraction.setAudioGraph(undefined);
   subPatchManager.setAudioGraph(undefined);
+  jsEffectPanelController.setAudioGraph(null);
+  browserPanelController.setAudioGraph(null);
+  vizGraph.setBrowserNodeLookup(null);
   await audioRuntime.stop();
   setDspUi(false);
 }
@@ -415,6 +432,14 @@ function render(): void {
   // Mount inline dmx panels into their object bodies
   dmxPanelController.mount(panGroup);
   dmxPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
+  // Mount inline js~ panels
+  jsEffectPanelController.mount(panGroup);
+  jsEffectPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
+  // Mount inline browser~ panels
+  browserPanelController.mount(panGroup);
+  browserPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
 
   // Restore selection visual on re-render
   for (const id of canvas.getSelectedNodeIds()) {
@@ -667,6 +692,8 @@ window.addEventListener("beforeunload", () => {
   codeboxController.destroy();
   vizGraph.destroy();
   dmxPanelController.destroy();
+  jsEffectPanelController.destroy();
+  browserPanelController.destroy();
   dmxGraph.destroy();
   undoManager.destroy();
 });

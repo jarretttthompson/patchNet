@@ -95,6 +95,20 @@ export class DragController {
     // initiate an object drag. The object can still be dragged by grabbing
     // its border or any area outside the panel host.
     if (target.closest(".pn-dmx-panel-host")) return;
+    // Same treatment for the js~ inline code-pane + slider panel — BUT
+    // only when the js~ is unlocked. Locked js~ objects drag from anywhere
+    // on the body, with an explicit exception for sliders (which stay
+    // interactive in both states).
+    const jsEffectHost = target.closest<HTMLElement>(".pn-jseffect-panel-host");
+    if (jsEffectHost) {
+      // Sliders always stay interactive — never initiate drag over them.
+      if (target.closest(".pn-jseffect-slider-range")) return;
+      // Lock button itself always clicks, never drags.
+      if (target.closest(".pn-jseffect-lock")) return;
+      const lockedBody = jsEffectHost.closest<HTMLElement>('.patch-object-jseffect-body[data-locked="1"]');
+      if (!lockedBody) return;  // unlocked → panel interactive (no drag)
+      // locked → fall through to drag
+    }
     if (target.closest(".patch-object-slider-track")) return;
     if (target.closest(".patch-object-face-button")) return;
     if (target.closest(".patch-object-toggle-rocker")) return;

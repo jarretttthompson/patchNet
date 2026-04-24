@@ -1,5 +1,5 @@
 import { renderPorts } from "./PortRenderer";
-import { getObjectDef, OBJECT_DEFS, getVisibleArgs, getSequencerCells, sequencerCols, sequencerRows, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
+import { getObjectDef, OBJECT_DEFS, getVisibleArgs, getSequencerCells, sequencerCols, sequencerRows, fftBandCount, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
 import type { PatchNode } from "../graph/PatchNode";
 
 const LOCK_ICON_SVG = `
@@ -334,6 +334,23 @@ function buildBody(node: PatchNode): HTMLDivElement {
       body.appendChild(sub);
     }
 
+  } else if (node.type === "js~") {
+    // Inline panel host — JsEffectPanelController mounts the CodeMirror
+    // editor + slider GUI here after render(). Empty on initial paint.
+    body.classList.add("patch-object-jseffect-body");
+    body.dataset.locked = (node.args[2] ?? "0") === "1" ? "1" : "0";
+    const host = document.createElement("div");
+    host.className = "pn-jseffect-panel-host";
+    host.dataset.jseffectPanelHost = node.id;
+    body.appendChild(host);
+
+  } else if (node.type === "browser~") {
+    body.classList.add("patch-object-browser-body");
+    const host = document.createElement("div");
+    host.className = "pn-browser-panel-host";
+    host.dataset.browserPanelHost = node.id;
+    body.appendChild(host);
+
   } else if (node.type === "dmx") {
     // Inline panel host — DmxPanelController mounts the live GUI here after
     // render(). Empty on initial paint; the controller fills it in the same
@@ -365,19 +382,23 @@ function buildBody(node: PatchNode): HTMLDivElement {
 
   } else if (node.type === "fft~") {
     body.classList.add("pn-fft-body");
+    const n = fftBandCount(node.args);
+    const labels: string[] = n === 4
+      ? ["LO", "LM", "HM", "HI"]
+      : Array.from({ length: n }, (_, i) => String(i + 1));
+    const bandsHtml = labels
+      .map(label => `<div class="pn-fft-band"><span class="pn-fft-band-label">${label}</span><span class="pn-fft-band-val">0.00</span></div>`)
+      .join("");
     body.innerHTML = `
       <div class="pn-fft-device">
-        <div class="pn-fft-top-label">FFT·SCOPE</div>
+        <div class="pn-fft-top-label">FFT·SCOPE${n === 4 ? "" : ` · ${n}`}</div>
         <div class="pn-fft-screen-bezel">
           <div class="pn-fft-screen">
             <div class="pn-fft-mount" data-fft-node-id="${node.id}"></div>
           </div>
         </div>
-        <div class="pn-fft-bands">
-          <div class="pn-fft-band"><span class="pn-fft-band-label">LO</span><span class="pn-fft-band-val">0.00</span></div>
-          <div class="pn-fft-band"><span class="pn-fft-band-label">LM</span><span class="pn-fft-band-val">0.00</span></div>
-          <div class="pn-fft-band"><span class="pn-fft-band-label">HM</span><span class="pn-fft-band-val">0.00</span></div>
-          <div class="pn-fft-band"><span class="pn-fft-band-label">HI</span><span class="pn-fft-band-val">0.00</span></div>
+        <div class="pn-fft-bands" style="grid-template-columns: repeat(${n}, minmax(0, 1fr));" data-band-count="${n}">
+          ${bandsHtml}
         </div>
         <div class="pn-fft-controls">
           <div class="pn-fft-dpad">
@@ -688,10 +709,13 @@ export function renderObject(node: PatchNode): HTMLDivElement {
     el.appendChild(nub);
   }
 
-  // Resize handle — bottom-right corner drag target
-  const resizeHandle = document.createElement("div");
-  resizeHandle.className = "pn-resize-handle";
-  el.appendChild(resizeHandle);
+  // Resize handle — bottom-right corner drag target. Suppressed for objects
+  // whose panel UI assumes a fixed layout (browser~).
+  if (node.type !== "browser~") {
+    const resizeHandle = document.createElement("div");
+    resizeHandle.className = "pn-resize-handle";
+    el.appendChild(resizeHandle);
+  }
 
   return el;
 }

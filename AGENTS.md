@@ -53,9 +53,9 @@ Team: Cursor (canvas/UI), Codex (audio/runtime), Copilot (inline acceleration)
 
 ## Project State
 
-**Current Phase:** DMX Phase 4 landed (reconnect/backoff + auto-reconnect + orphan repoint + profile file I/O + home/blackout shortcuts); Phase 3.5 hardware-verified (inline); Control/Render Split Phase 1 landed + Evaluation Plan Parts 1, 2, 4 still in flight
-**Active tasks:** Control/Render Split Phase 1 scaffolding landed (see `docs/CONTROL_RENDER_SPLIT.md`); `deliverPatchVizMessage` migrated to bus as proof path. Phase 2 gated on test infra (resolves BLOCKER-1). Evaluation Plan: Part 1.1/1.2/1.3/1.5 landed; Part 1.4 deferred (BLOCKER-2); Part 2.1 landed; Part 4 recipe + 3 of 21 ref pages landed. Persistence refactor landed earlier.
-**Last updated:** 2026-04-19 by Claude Code
+**Current Phase:** `js~` object Phase E landed (effect library per-patch + global via localStorage; dropdown selector; lock toggle with sliders-stay-live). Phase D mem[]/@block/bitwise still current; avocado + Stillwell 1175 + waveshaper all confirmed translating. DMX Phase 4 hardware-verified; Control/Render Split Phase 1 landed.
+**Active tasks:** `js~` Phase E pending user browser test — save effects into the per-patch library, reload, switch between them via dropdown, lock toggle disables code editing while leaving sliders live. E.4 (.jsfx file import/export) deferred. On greenlight: remaining Phase D-ish gaps (user-defined `function`, multi-channel `spl2..spl63`, `@serialize`) come up on demand. Control/Render Split Phase 2 gated on test infra (BLOCKER-1). Evaluation Plan: Part 1.4 deferred (BLOCKER-2).
+**Last updated:** 2026-04-23 by Claude Code
 
 ---
 
@@ -76,6 +76,307 @@ Agents: append here when making a decision that affects the whole project.
 ## Changelog
 
 Older entries archived to `AGENTS-archive.md`.
+
+---
+## [2026-04-23] COMPLETED | js~ object — Phase E (effect library + dropdown + lock)
+**Agent:** Claude Code
+**Phase:** `js~` Phase E — per-patch + global effect library with dropdown selector; lock state toggle
+**Done:**
+- **args model extended**: `args[1]` = per-patch library (JSON array of `{name, code}`, base64 on disk), `args[2]` = lock flag ("0"/"1", default unlocked). Serializer/parser round-trip all three args; "-" used as the on-disk placeholder for empty library so the space-separated token format doesn't collapse.
+- **`src/runtime/jsfx/library.ts`** — new module with LibraryEntry type, patch-lib read/write (with graph broadcast across all js~ nodes), localStorage-backed global library, upsert/remove/rename helpers, `deriveNameFromCode` and `uniqueName` utilities.
+- **Header redesign**: static `.pn-jseffect-title` replaced with a 4-element flex row: title-as-button (caret ▾ + "js~ — desc") → dropdown; `save` button → inline save prompt; `manage` button → manage-library modal; lock toggle (🔓 / 🔒).
+- **Dropdown** (absolute-positioned popover below header): two scope sections (`saved effects (patch)` + `⌂ saved effects (global)`), alphabetical within each, inline × delete on every row. Footer actions duplicate the save/manage buttons. Closes on outside click or Escape.
+- **Save prompt**: inline popover anchored below the header. Pre-fills name from `desc:`, scope radio (patch / global), Enter = commit, Escape = cancel. Saves via `upsertEntry` so names collide idempotently (re-saving "gain" just updates the code).
+- **Manage dialog** (`src/canvas/JsEffectLibraryDialog.ts`) — new modal overlay, two-column patch/global view. Each row: rename (inline input on click, Enter commit / Escape cancel / blur commit), move between scopes (removes from source + `uniqueName` in destination to dodge collisions), delete with confirm. Re-renders after every mutation so renames reflect immediately. Backdrop click + Esc close.
+- **Lock state**:
+  - `args[2]` toggles via lock button; live update via `body.dataset.locked = "1"|"0"` so CSS reacts without waiting for a re-render.
+  - ObjectRenderer sets `data-locked` on the `.patch-object-jseffect-body` on initial paint.
+  - CSS: `[data-locked="1"] .pn-jseffect-code`, `[data-locked="1"] .pn-jseffect-title-btn`, `[data-locked="1"] .pn-jseffect-hdr-btn` → `pointer-events: none; opacity: 0.55`. `.pn-jseffect-lock` and `.pn-jseffect-slider-range` explicitly `pointer-events: auto !important`. Dashed outline on the panel when locked.
+  - **DragController override**: when the target is inside `.pn-jseffect-panel-host`, check whether the body is locked. Unlocked → panel interactive (no drag, existing behaviour). Locked → fall through to drag, EXCEPT over the lock button itself or a slider. So a locked js~ can be dragged from the code pane or anywhere non-slider on the body, while sliders and the lock button remain clickable.
+- **Cross-object broadcast**: saving/renaming/deleting in the patch library writes to every `js~` node's args[1] via `broadcastPatchLibrary()`, emitting a single graph `change`. Global library is localStorage so no broadcast needed.
+- **Verification**: tsx round-trip test — serialize a patch with one js~ (code + 2-entry library + locked=1), deserialize, verify all three args match bit-for-bit. Empty library also round-trips correctly via the `-` placeholder. tsc clean, vite build clean (715 KB, +26 KB from the new dialog + library UI).
+- **E.4 deferred**: per-entry .jsfx file export/import not implemented. Dropping from scope — can ship on demand.
+
+**Changed files:**
+- src/graph/objectDefs.ts — args[1] library + args[2] locked on js~
+- src/serializer/serialize.ts — encodes args[1] as base64 JSON, args[2] as plain int, "-" placeholder for empty library
+- src/serializer/parse.ts — mirror decode
+- src/runtime/jsfx/library.ts — new module
+- src/canvas/JsEffectPanel.ts — full header rewrite, dropdown, save prompt, lock toggle, manage-dialog integration
+- src/canvas/JsEffectLibraryDialog.ts — new modal
+- src/canvas/ObjectRenderer.ts — body.dataset.locked on js~
+- src/canvas/DragController.ts — locked-js~ drag override
+- src/shell.css — header/dropdown/save-prompt/lock/dialog styles (~280 lines)
+- docs/phase-js-E-prompt.md — execution prompt (written same session)
+- AGENTS.md — this entry
+
+**Notes / decisions made:**
+- **Library is per-js~-node storage, cross-node synchronised.** Each js~ holds its own copy of `args[1]`, but every mutation goes through `broadcastPatchLibrary()` which writes to every js~ in the graph. Simpler than storing at the PatchGraph level (which would have required a new graph-metadata concept); trivially survives node deletion + creation without orphaned library state.
+- **"-" as empty-library placeholder on disk.** The space-separated token format can't handle empty strings (they'd collapse into the next token). `-` is never a valid base64 character, so it's unambiguous as "library absent" and parse distinguishes it cleanly from an actual base64 blob.
+- **Default unlocked** per user decision. First-placement UX favours immediate code entry over drag-anywhere. State is sticky via args[2] so a patch reloads in whatever state the user saved it in.
+- **Sliders explicitly `pointer-events: auto !important`** overrides the locked-body rule. Per user spec — sliders always interactive, lock or no lock. The lock button itself gets the same treatment so users can always unlock.
+- **Dialog reuses ImageFXPanel's overlay shape.** Backdrop click + Esc close; body doesn't propagate. Two-column grid with explicit 1px gap rendered as the outer border colour for a clean "joined columns" look.
+- **Name collisions on save = silent upsert.** Re-saving the same name overwrites. On rename the UI refuses if the new name already exists (caller sees no state change and can pick a different name). On move-between-scopes we use `uniqueName` to auto-append " (2)", " (3)".
+- **Local-storage global library has no import/export UI yet.** E.4 deferred. Users can still prime the global library via DevTools in the meantime; the key is `patchnet-js-global-library`.
+
+**Next needed (user browser test):**
+1. Fresh patch. Drop a `js~`. Default state: unlocked (open-lock icon). Lock button toggles state.
+2. Paste Stillwell 1175 → click "save" → prompt shows "1175 Compressor" pre-filled → save to patch. Header dropdown now lists it.
+3. Paste avocado → save to patch → dropdown lists both alphabetically.
+4. Save one of them to global scope → reload page → open a BLANK new patch → drop a fresh js~ → dropdown shows the global entry under the ⌂ section.
+5. Open "manage" → rename an entry → dropdown reflects the new name immediately.
+6. Move an entry between scopes → verify it disappears from source and appears in destination.
+7. Lock the object → click in the code area → object drags. Click a slider → slider moves, object doesn't. Click the lock icon → unlocks. Click in the code area → cursor lands in editor.
+8. Save patch → reload → library + lock state restored.
+
+**Deferred from prompt:**
+- E.4: per-entry .jsfx download / bulk JSON export / .jsfx import.
+- Cross-tab real-time sync of global library (`storage` event listener).
+- Search/filter within the dropdown.
+- Per-effect metadata (tags, author, description) beyond name.
+---
+
+---
+## [2026-04-23] COMPLETED | js~ object — Phase D (mem[] + @block + bitwise + rand + host-globals stubs)
+**Agent:** Claude Code
+**Phase:** `js~` Phase D — full EEL2 coverage sufficient to run a buffer-recording, state-machine-heavy JSFX (avocado ducking glitch generator) verbatim
+**Done:**
+- **User-supplied test case** (Daniel Arena's avocado, remaincalm.org) — parses, translates, compiles, and executes against a scripted input. 11 sliders (including enum slider10 with 5 labels), 4 sections (`@init` / `@slider` / `@block` / `@sample`), 34 unique user vars, 5000 silent + 5000 hot samples processed without error. Array writes via `buffer[max_bufsiz*record_buffer + record_csr] = spl0` succeed; switching the arpeggiator slider writes note ratios to `mem[notedata_offset..]` correctly (`[1, 1.25993, 1.4983, 2]` for Major mode).
+- **Parser**: `@block` promoted from "ignored section" to a recognised section. `JsfxProgram.blockBody: string` added; parser joins lines into it like the other sections.
+- **Translator (`translate.ts`) — full Phase D grammar**:
+  - **Array indexing `name[expr]`** — the headline feature. Postfix-level grammar rule chains `[idx]` accesses after any primary. Emits `mem[((base | 0) + ((idx) | 0))]` with both operands cast to int32 to avoid Float64Array bounds weirdness. Assignable, so `buffer[i] = x` and `buffer[i] *= 0.85` both work as EEL2 expects.
+  - **Pointer-offset tracking**: `parsePrimary` returns `{result, pointerish}`. User vars and `mem`/`gmem` are pointerish (indexable); reserved literals (`true`, `tempo`, `srate`) are not. Indexing a non-pointerish base returns a clean translator error.
+  - **Bitwise `|` / `&` / `~`** — `|` between comparison and logical-AND; `&` above `|`; unary `~` alongside `- + !`. JS's `|` / `&` / `~` already cast to int32, matching EEL2. Enables the `x | 0` int-cast idiom used heavily in JSFX for sample-index calculations.
+  - **`rand(x)`** — special-cased as a builtin (not in the `Math.*` pass-through table). Emits `(Math.random() * (x))` = `[0, x)` per EEL2.
+  - **`true` / `false`** — resolved as literal `1` / `0`. Not assignable.
+  - **Host globals `tempo`, `beat_position`, `play_position`, `play_state`, `num_ch`, `tsnum`, `tsdenom`** — resolved to literal `0` since patchNet has no DAW transport. Effects that check `tempo > 0` or `slider11 > 0 && tempo > 0` take their free-running path, which is the safe default for a transport-less host.
+  - **`mem` / `gmem`** — resolved to literal `0` with `pointerish: true`, so `mem[i]` indexes the shared buffer directly.
+  - **Precedence refreshed** (high → low): primary → postfix (array-index) → unary → pow → multi → add → compare → bit-and → bit-or → logAnd → logOr → ternary → assign. Matches C/JS conventions.
+- **Worklet (`jsfx-worklet.js`)**:
+  - **`Float64Array(8 * 1024 * 1024)` mem buffer** allocated per code-install. 64 MB per js~ instance — expensive but matches REAPER's addressable mem[] range. Avocado uses ~6M slots at 48 kHz; comfortably under 8M.
+  - **4-fn compile**: init, slider, block, sample. All take `mem` as an additional argument.
+  - **`@block` runs once per `process()` call** — matches REAPER's per-audio-block semantics. Guarded with try/catch so a @block exception falls back to null without killing @sample for that frame.
+  - **Install runs all of @init + @slider + @block in order** so a patch-file-loaded effect is "ready to play" the moment audio starts, not after the first render quantum.
+  - **Worklet file: ~7 KB** (was ~5.5 KB) — still well under Vite's inline limit for its own module chunk.
+- **JsEffectNode** (`JsEffectNode.ts`): `JsEffectCompileInput` gains `block: string`. `setCode` threads it through. Status-error `where` type widened to include `"block"`.
+- **Panel (`JsEffectPanel.ts`)**: `compileNow` translates all four sections, unions userVars across all of them, surfaces "@block:" error prefix if that section fails alone.
+- **Offline verification** (`tsx` throwaway test, deleted post-run): confirmed avocado's 34 user vars all flow correctly, `@init` offsets are `max_bufsiz=192000 / r_offset=3072001 / notedata_offset=6144002` (all fit in 8M-slot mem), `@sample` state machine transitions into recording mode and writes into mem[], arpeggiator mode switch writes correct note ratios to `mem[notedata_offset..]`.
+- `tsc --noEmit` clean. `npm run build` clean — 689 KB bundle (+3 KB over Phase B), worklet chunk still separate.
+
+**Changed files:**
+- src/runtime/jsfx/parser.ts — @block as recognised section, JsfxProgram.blockBody
+- src/runtime/jsfx/translate.ts — Phase D grammar rewrite (see above)
+- src/runtime/jsfx/jsfx-worklet.js — 4-fn install, 8 MB mem per install, @block runs per process()
+- src/runtime/JsEffectNode.ts — JsEffectCompileInput.block, where widened
+- src/canvas/JsEffectPanel.ts — 4-section compileNow + userVar union
+- AGENTS.md — this entry + project-state header
+
+**Notes / decisions made:**
+- **8 MB mem buffer per instance.** REAPER's EEL2 mem[] is addressable up to ~8M double-precision slots, and avocado genuinely needs 6M+ at 48 kHz. Going smaller would silently fail OOB. Going larger wastes RAM. 8M is the sweet spot; if a future effect needs more we'll either increase it or expose as a per-object arg.
+- **Fresh mem buffer on every code install.** EEL2's convention is that code edits are full resets — no state (neither user vars nor mem) persists across recompiles. Avocado's @init explicitly initialises the state machine, so relying on the fresh-mem contract is safe.
+- **Host globals stubbed to 0, not left undefined.** Undefined → NaN in arithmetic → silent propagation of NaN through the whole DSP chain → hard-to-debug silence. `0` matches the "no DAW connected" semantics that DAW-aware JSFX already handle (they check `tempo > 0` etc.).
+- **`rand(x)` special-cased** (not in the BUILTINS map). `Math.random()` takes no args and returns `[0,1)`; EEL2's `rand(x)` returns `[0,x)`. Rather than add a trampoline, emit `(Math.random() * x)` inline at call site.
+- **Array indexing uses `| 0` int-cast on BOTH base and offset.** Float64Array silently returns `undefined` for non-integer or negative indices; catching that in the generated code is cheaper than a runtime bounds check. Effects that deliberately index with fractional values (e.g. for a linear-interp lookup) already handle the floor themselves.
+- **`name[b][c]` chained indexing returns a scalar, not a pointer.** EEL2's memory model is flat; chaining is meaningless. Allowing it for grammar completeness but the second access on a scalar result silently returns `mem[scalar | 0]` — weird but not incorrect.
+- **`@block` runs at install AND per process() call.** Install so an effect loaded from a patch file is ready without waiting for a render quantum. Per process() so effects that check tempo / update modulation on a per-block cadence work correctly.
+- **user-defined `function` declarations still not supported.** Avocado doesn't need them. If/when a requested JSFX does, it's a separate parser + emitter pass — probably ships as "Phase E" or similar mini-phase.
+
+**Next needed (user browser test):**
+1. Paste avocado verbatim into a fresh `js~`. Status should read `compiled · 11 sliders`.
+2. Wire `mediaVideo → js~ → dac~` (or any audio source into js~). Feed music.
+3. slider1 = 50ms buffer length default; slider2 = 90% mix default; slider8 = 8% threshold default. The effect should duck the signal and splice in glitch-repeats when the input level crosses the moving threshold.
+4. Drag slider2 (Mix) to 0 → dry only; to 100 → fully glitched. slider4 (Repeat Probability) at 99% = same buffer repeats forever; at 0% = buffer changes every cycle. slider6 (Reverse) > 0 → some buffers play backwards. slider10 (Arpeg) = 1/2/3/4 → pitch-stepping through major/minor/fifths/octaves.
+5. No runtime errors in the status line; save + reload restores code + slider state.
+
+**Still tabled:**
+- User-defined `function` declarations.
+- Multi-channel `spl2..spl63`.
+- `@serialize` (save/restore preset state with the patch — nice to have).
+- Bitwise XOR (EEL2 uses `xor` keyword or a function, unclear; not used in avocado).
+- Patch-level DAW transport (tempo / beat_position as live values instead of 0) — substantial architectural change; defer until a clear use case.
+---
+
+---
+## [2026-04-23] COMPLETED | js~ object — Phase B (comparison/logical/ternary/math/blocks/loops + enum sliders)
+**Agent:** Claude Code
+**Phase:** `js~` Phase B — real-world EEL2 coverage sufficient to run Stillwell 1175 compressor verbatim
+**Done:**
+- **Stillwell 1175 compressor** (user-supplied test case, the ur-JSFX) parses, translates, compiles, and executes against a scripted input. Confirmed: `threshv = exp(0 × db2log) = 1.0` ✓, ratio selection logic (`(rpos=slider2)>4?rpos-=5:capsc*=...`) routes correctly ✓, nested ternaries for ratio lookup ✓, multi-statement parens-blocks in ternary branches ✓, `abs` / `max` / `min` / `sqrt` / `log` / `exp` builtins ✓, dry/wet mix ✓. `@gfx` silently ignored (already handled in Phase A).
+- **Parser (`parser.ts`)**:
+  - Enum slider form: `sliderN:default<min,max[,step]{a,b,c,...}>label` — labels populate `SliderDecl.enumLabels: string[]`. Panel renders the label text as the slider readout instead of the numeric value.
+  - `IGNORED_HEADER_RE` explicitly swallows `in_pin:` / `out_pin:` / `tags:` / `author:` / `options:` / `filename:` / `import:` / `provides:` / `version:` / `about:`. Previously these fell through silently; explicit tolerance surfaces a clearer error if a real malformed line appears.
+- **Translator (`translate.ts`) — full Phase B grammar rewrite**:
+  - **New token kinds**: `question`, `colon`, `comma`; `op` now covers two-char `==`, `!=`, `<=`, `>=`, `&&`, `||` as well as the new single chars `<`, `>`, `!`.
+  - **Comparison operators** `== != < <= > >=` — emitted via JS `=== !== < <= > >=`. EEL2's value-based equality matches JS strict equality since all EEL2 values are numeric.
+  - **Logical operators** `&& ||` — short-circuit, identical emit. EEL2's numeric truthiness aligns with JS's.
+  - **Unary `!`** — emitted as `(!x ? 1 : 0)` so the return is a clean 0/1 numeric (matches EEL2's `! x` semantics and avoids leaking JS booleans into further arithmetic).
+  - **Ternary `a ? b : c`** plus the EEL2-idiomatic **no-else form** `a ? b` → emitted as `(a ? b : 0)`. The no-else form is used heavily in JSFX for conditional-side-effect patterns (`overdb - rundb > 5 ? (averatio = 4;)`).
+  - **Parens-as-blocks**: `(stmt1; stmt2; ... ; last)` now parses as a sequence of statements whose value is the last. Emitted as a JS comma expression. Empty `()` returns 0 (matches EEL2 convention). Single-statement parens still behave as pure grouping.
+  - **Math builtins**: `sin cos tan asin acos atan atan2 exp log log10 log2 sqrt abs min max floor ceil round pow sign` — translator recognises identifier-followed-by-lparen as a function call and maps known names to `Math.*`. Unknown function names return a clean translator error that lists the supported builtins + points Phase D for user-defined functions.
+  - **`loop(n, body)`** — EEL2 loop construct. Body is a comma-expression (possibly multi-statement). Emitted as `((_n) => { for (let _i = 0; _i < _n; _i++) { body; } return 0; })(n)` so it stays a valid expression.
+  - **`while (cond) body`** — the explicit-condition form. Body is any expression. Emitted as an IIFE with a real `while` loop returning 0. The last-statement-is-condition form (e.g. `while ( stmt; stmt; cond; )`) is rejected with a clean error pointing users to the explicit form — ambiguous with plain paren-blocks, too gnarly to support without a lookahead rewrite.
+  - **Precedence refreshed** (high → low): primary → unary → pow → multi → add → compare → logAnd → logOr → ternary → assignment. Matches C/JS conventions.
+- **Panel (`JsEffectPanel.ts`)**: enum-slider readout — when `enumLabels.length > 0`, the readout shows `labels[(value - min) / step]` instead of a formatted number. Falls back to numeric display if the index goes out of range (e.g. user resized the slider range).
+- **Offline verification**: wrote a throwaway `tsx` test that feeds the Stillwell 1175 source through parser + translator + `new Function` + a 10,000-sample @sample loop at 48 kHz. All three sections compile; state after @init + @slider matches expected values (`db2log`, `ratatcoef`, `relcoef`, `threshv`, `ratio`, `cratio`, etc.); @sample produces finite output at every tested amplitude. Script deleted post-verification.
+- `tsc --noEmit` clean. `npm run build` clean — 686 KB bundle (+5 KB over A.5).
+
+**Changed files:**
+- src/runtime/jsfx/parser.ts — enum slider regex + ignored-header tolerance
+- src/runtime/jsfx/translate.ts — full Phase B grammar rewrite (see above)
+- src/canvas/JsEffectPanel.ts — `formatSliderReadout(value, decl)` supports enum labels
+- AGENTS.md — this entry + project-state header
+
+**Notes / decisions made:**
+- **No `if (c) body else body` statement form.** EEL2 uses ternary for all conditionals; the `if` keyword isn't a thing in standard JSFX. Skipped entirely.
+- **Last-statement-is-condition `while` form deferred.** Too ambiguous with parens-blocks to disambiguate without lookahead. Rejected with a clear error. Real-world JSFX uses this pattern almost exclusively in @gfx (which we don't compile) — no Phase-B-audio use case lost.
+- **`loop(n, body)` emits an IIFE.** `for` is a JS statement, not an expression. Wrapping in an IIFE is ~10 extra chars per loop and keeps EEL2's statement-as-expression semantics. Perf cost is negligible compared to the body.
+- **Comparison result is returned as JS boolean, not coerced to 0/1.** JS's truthy/falsy handling in ternary + arithmetic contexts matches EEL2's 0/1 close enough that coercion would just add noise. If a real effect ever does `x = (a > b) + 1`, the boolean auto-coerces to 0 or 1 via JS's `+` — same result as EEL2.
+- **Parens-as-blocks reuses the existing `parseParenBlock` entry.** No separate "grouping" vs "block" code path — a 1-statement block is indistinguishable from grouping, which was already the case.
+- **Unknown function names are a translator error, not silent failure.** Previous behaviour (all identifiers became user vars) would have silently made `exp(...)` into `state.u_exp(...)`, throwing at runtime with a bad-looking traceback. Now the parse-time error surfaces the Phase B builtin set and points at Phase D for user-defined functions.
+- **Enum sliders assume `(value - min) / step` is an integer index**. For well-formed declarations (`0<0,9,1{...}>`) this is always true. Malformed decls fall back to the numeric display — user still sees *something*.
+- **Math builtin table is ambient in `translate.ts`**. Adding a builtin is a one-line edit. If Phase D adds a `mem[]` buffer, the indexing form (`mem[i] = x`) will need separate parser work; `pow(a,b)` as a builtin is redundant with `a^b` but matches REAPER exactly so both work.
+
+**Next needed (user browser test):**
+1. Copy the user's 1175 compressor source (full script, including `@gfx`) → paste into a fresh `js~` object.
+2. Start DSP, wire `adc~ → js~ → dac~`, play material through it.
+3. Drag slider1 from 0 dB down to −30 dB while feeding hot signal → audible compression / pumping. Drag slider3 up → makeup gain adds back. Drag slider6 down → dry signal blends in.
+4. Status line should show `compiled · 6 sliders`. No red "runtime error" popups unless you modify the code to something invalid.
+5. Save patch → reload → source + slider values restored, audio resumes.
+
+**Still tabled (Phase D, not scheduled yet):**
+- `mem[]` / `gmem[]` buffers — unlocks delays, reverbs, IIR filters. Biggest remaining feature gap.
+- User-defined `function` declarations.
+- `@block`, `@serialize`, `@gfx` sections (`@gfx` probably never — use `shaderToy` for custom visuals).
+- Last-statement-is-condition `while` form.
+- Multi-channel variants (`spl2..spl63`).
+- Bitwise operators (`| & ~` for integer masks — needed for some bitcrushers).
+---
+
+---
+## [2026-04-23] COMPLETED | js~ object — Phase A.5 (@init / @slider / persistent state / ^ pow)
+**Agent:** Claude Code
+**Phase:** `js~` Phase A.5 — unlock real-world JSFX patterns that rely on cross-section state
+**Done:**
+- **Root cause of first-smoke-test silence diagnosed**: user's dB-gain JSFX used three deferred-to-Phase-B features — `@init` + `@slider` never ran (Phase A only compiled `@sample`), user var `gain` reset to 0 every sample (my translator declared `let u_gain = 0` inside the per-sample fn), and `^` was rejected by the tokenizer (EEL2 uses `^` for pow, not XOR). Net: `spl0 *= gain` always multiplied by zero.
+- **Translator (`translate.ts`)**:
+  - `^` added to the operator set. New `parsePow()` grammar level, right-associative, precedence above `* / %`. Emitted as parenthesised JS `**` (guards against `-a ** b` ambiguity).
+  - User identifiers now emitted as `state.u_<name>` instead of bare `u_<name>`. State is a shared object the worklet owns per-install, so user vars persist across `@sample` calls AND across sections.
+  - Entry renamed from `translateJsfxSample` to `translateJsfxBody` since the same subset translates @init, @slider, and @sample bodies.
+  - Tokenizer error message updated to reflect the A.5 subset.
+- **Worklet (`jsfx-worklet.js`)** — full protocol refresh:
+  - `{type:"code"}` now carries `{init, slider, sample, userVars}`. All three bodies compile via `new Function` into separate fns sharing one `state` object.
+  - `installCode` zero-initialises every userVar slot on `state`, then runs `@init` once, then runs `@slider` once (so slider-default-driven DSP constants are live before the first sample, matching REAPER).
+  - Slider messages (`{type:"slider"}`) now also fire `@slider` if it's present — any slider drag retriggers the derived-constant recalc, which is exactly the EEL2 contract.
+  - Runtime errors include a `where: "init" | "slider" | "sample"` hint so the panel can tell the user which section blew up.
+  - File grew past Vite's 4 KB inline threshold, so Vite now emits it as a proper standalone asset (`jsfx-worklet-*.js`) instead of a base64 data URL. Cleaner, no more CSP speculation.
+- **JsEffectNode**: `setCode` signature changed to take `{init, slider, sample, userVars}` payload. New exported `JsEffectCompileInput` interface. Status message also carries the `where` runtime-error hint through.
+- **Panel (`JsEffectPanel`)** — compile pipeline + binding:
+  - `compileNow()` translates all three sections, unions user vars, surfaces "@init:" / "@slider:" / "@sample:" error prefixes so the user sees which section has the problem.
+  - Both `compileNow` and `bindJsEffectNode` push current slider values BEFORE `setCode`. Worklet's `installCode` runs `@init` + `@slider` synchronously on receipt, so if sliders arrive after, @slider would run against stale zeros.
+  - "start audio to hear" hint shown when compiled-clean but no AudioGraph — same line as before, keeps working.
+- `tsc --noEmit` clean. `npm run build` clean — 682 KB bundle, worklet now a separate ~5.5 KB asset (browser fetches it directly).
+
+**Changed files:**
+- src/runtime/jsfx/translate.ts — ^ operator, state-based user vars, body rename
+- src/runtime/jsfx/jsfx-worklet.js — 3-fn install, @init/@slider execution, shared state, where-tagged errors
+- src/runtime/JsEffectNode.ts — setCode payload shape, runtime-error where propagation, JsEffectCompileInput export
+- src/canvas/JsEffectPanel.ts — 3-section compile, userVars union, sliders-before-code ordering on install + bind
+- AGENTS.md — this entry + project-state header
+
+**Notes / decisions made:**
+- **`^` is pow, not XOR, in EEL2.** Confirmed by the ubiquitous `10^(dB/20)` pattern in the wild. Emitted as JS `**` (both right-assoc — match). Did NOT add XOR — user might need it for bitcrushers but can wait for Phase B (`a|b`, `a&b`, integer casts all needed before XOR is useful).
+- **State is a plain object, not a typed array.** User vars can collide with `.u_` prefix exactly as before; emit is trivial (`state.u_gain`); serialisation isn't needed since state is per-install. Typed-array indexing would be marginally faster per access but the perf hit of property access is fine for the per-sample loop sizes AudioWorklet gives us (128 frames × 2 channels × O(10) ops).
+- **@slider runs on install AND on every slider message.** Matches REAPER: `@slider` is "run when any slider changes, including at startup". This also means if @slider throws, we report and keep running — the last good state survives until the user fixes the code.
+- **Slider-before-code ordering is load-bearing.** If the worklet receives `code` before the first `slider` message, `@init`/`@slider` run with sliders[]=0 and any dB→linear math produces wrong constants. The panel now always flushes sliders first, on both `compileNow` (re-send) and `bindJsEffectNode` (first bind).
+- **No runtime-error throttling across sections.** If @slider throws and then @sample throws, only one gets reported (via the `runtimeErrorSent` flag). Fine for v1 — the user fixes one, the other surfaces on next reinstall. Debatable whether to unthrottle.
+- **Section bodies execute with the same EEL2 subset.** No divergence. The translator doesn't know (or care) which section it's translating. Panel wraps each in its own `new Function` on the worklet side.
+
+**Next needed:**
+- User re-tests the dB-gain utility. Should hear unity at 0 dB (default), silent at −60 dB, 2× at +6 dB, 4× at +12 dB. `^` exponent math proves out.
+- If good, user greenlights full Phase B: control flow (`if/while/loop`), built-in math fns (`sin cos tan exp log sqrt abs min max floor ceil pow sign`), a 3–5-effect test corpus pulled from REAPER's stock JS bundle.
+
+**Still tabled (Phase B+):**
+- `mem[]` / `gmem[]` buffers (enables delays, reverbs, IIR filters with history).
+- User-defined `function` declarations.
+- `@block`, `@serialize`, `@gfx` sections.
+- Multi-channel variants (`spl2..spl63`).
+- Comparison + logical operators, ternary.
+---
+
+---
+## [2026-04-23] COMPLETED | js~ object — Phase A (scaffolding + EEL2 subset + worklet)
+**Agent:** Claude Code
+**Phase:** `js~` Phase A — JSFX-in-the-browser vertical slice
+**Done:**
+- **Plan docs** authored: `docs/JS_OBJECT_PLAN.md` (4-phase roadmap, locked scope decisions — stereo-only, EEL2 subset not full, AudioWorklet runtime, CodeMirror editor, inline two-pane expanded body) + `docs/phase-js-A-prompt.md` (execution prompt with explicit out-of-scope list + smoke-test protocol).
+- **OBJECT_DEFS.`js~`** registered (audio category). Args: `code` (symbol, hidden, base64 on disk / raw in memory — same encoding as codebox). Inlets: 2× signal (L, R). Outlets: 2× signal (L, R). Default 560×280.
+- **Serializer** round-trip: `serialize.ts` base64-encodes `args[0]` for `js~`; `parse.ts` decodes. Whitespace + semicolons in EEL2 survive.
+- **JSFX parser** (`src/runtime/jsfx/parser.ts`): splits `desc:`, `sliderN:default<min,max[,step]>label`, and `@init` / `@slider` / `@sample` section bodies. Typed `JsfxProgram`; malformed slider lines surface as `{ok:false, error:{line,message}}` rather than throwing. Sliders sorted by index so declaration order in the GUI is stable.
+- **EEL2 translator** (`src/runtime/jsfx/translate.ts`): hand-written recursive-descent. In scope: numeric literals, `spl0`/`spl1`/`sliderN`/`srate`, user identifiers (auto-declared + `u_`-prefixed to dodge JS reserved-word collisions), assignment + compound (`= += -= *= /=`), additive/multiplicative/unary expressions, parenthesised grouping, `;`-separated statements, `//` + `/* */` comments. Anything else returns a typed `JsfxTranslateError` — `if/while/loop/mem[]/functions` all flagged as "Phase B". Output: JS source string to plug into a `(L,R,sliders,srate)=>[L,R]` frame.
+- **AudioWorkletProcessor** (`src/runtime/jsfx/jsfx-worklet.js`) — plain JS so Vite ships it as a loadable asset (data: URL under the 4 KB inline threshold; accepted by all modern browsers in `audioWorklet.addModule`). Message protocol: `{type:"code"}` / `{type:"slider"}` / `{type:"reset"}` in; `{type:"compiled"}` / `{type:"compile-error"}` / `{type:"runtime-error"}` out. Passthrough fallback on missing/crashing compiled fn — the audio graph never dies.
+- **`JsEffectNode`** (`src/runtime/JsEffectNode.ts`): wraps `AudioWorkletNode` in a channel-merger-in / channel-splitter-out pair so upstream nodes connect stereo inputs via `(merger, fromChannel, toChannel)` and downstream via `connectOutlet(dest, outputChannel, inputIndex)` — same pattern as adc~/dac~. Status listener surface for the panel (compile/runtime errors relayed live).
+- **`AudioGraph`** integration: new `jsEffectNodes` map + `jsEffectPending` set + `jsEffectReadyListeners` bus. Lazy worklet-module registration via `ensureJsfxWorklet()` — first `js~` encountered in `sync()` triggers `audioWorklet.addModule(JSFX_WORKLET_URL)`; construction is queued behind that promise, after which `rewireConnections()` runs and ready-listeners fire. `rewireConnections` handles `js~` as both sink (`dest = node.input`) and source (`connectOutlet`).
+- **`JsEffectPanel`** (`src/canvas/JsEffectPanel.ts`): inline expanded body. Two-pane flexbox — left is CodeMirror (no language plugin — EEL2 isn't JS), right is the slider GUI. Header = `desc:` title, status footer shows parse/translate/runtime errors. Debounced 300 ms compile path: parse → translate → post to worklet. Slider GUI rebuilt on slider-decl diff; values survive rebuild when index stays. Slider drags flush to worklet immediately (no debounce). `stopPropagation` on wheel/mousedown so code scrolling + slider drags never pan the canvas.
+- **`JsEffectPanelController`** (`src/canvas/JsEffectPanelController.ts`): lifecycle manager mirroring `DmxPanelController`. Panels survive graph re-renders via `attach`/`detach` re-parenting. `setAudioGraph()` binds late (AudioGraph isn't built until user starts audio); on bind, `mount()` re-fires so placed-while-DSP-off objects catch up.
+- **ObjectRenderer** `js~` branch: emits a `pn-jseffect-panel-host` slot div; controller fills it same-frame.
+- **DragController** allowlist: `.pn-jseffect-panel-host` added so clicks inside the code pane / sliders don't initiate object drag.
+- **`main.ts`** wiring: controller instantiated early, `setAudioGraph` toggled in `startAudio`/`stopAudio`, `mount` + `prune` in the render pass, `destroy` in `beforeunload`.
+- **CSS** (`shell.css`): `.pn-jseffect-*` block appended — panel host, header, two-pane body, CodeMirror styling (Vulf Mono, accent-colored caret, dimmed gutters), slider rows, status line with ok/error kind. All via `--pn-*` tokens; no hardcoded hex beyond a fallback on `--pn-error`.
+- **Memory footprint**: `tsc --noEmit` clean. `npm run build` clean — 685 KB bundle, +5 KB over baseline. Vite dev boots clean in 151 ms.
+
+**Changed files:**
+- src/graph/objectDefs.ts — OBJECT_DEFS.`js~` entry
+- src/serializer/serialize.ts — `js~` base64 encode
+- src/serializer/parse.ts — `js~` base64 decode
+- src/runtime/jsfx/parser.ts — new
+- src/runtime/jsfx/translate.ts — new
+- src/runtime/jsfx/jsfx-worklet.js — new (plain JS, not TS)
+- src/runtime/JsEffectNode.ts — new
+- src/runtime/AudioGraph.ts — jsEffectNodes map + async worklet loader + rewireConnections branches
+- src/canvas/JsEffectPanel.ts — new
+- src/canvas/JsEffectPanelController.ts — new
+- src/canvas/ObjectRenderer.ts — `js~` branch emitting host slot
+- src/canvas/DragController.ts — `.pn-jseffect-panel-host` allowlist
+- src/main.ts — controller wiring (instantiate, setAudioGraph bindings, mount/prune, destroy)
+- src/shell.css — `.pn-jseffect-*` block
+- docs/JS_OBJECT_PLAN.md — new (master plan)
+- docs/phase-js-A-prompt.md — new (this phase's prompt)
+- AGENTS.md — this entry + project-state header
+
+**Notes / decisions made:**
+- **Name: `js~`, not `js`.** Tilde-suffix matches patchNet's convention for every audio-rate object (`adc~`, `dac~`, `fft~`, `click~`). REAPER's historical "js" name is cosmetic; the tilde carries real meaning in the patchNet graph model.
+- **Plain-JS worklet file, not TS.** `AudioWorkletGlobalScope` has no module system; the file must be self-contained. Vite's `new URL(..., import.meta.url)` on a `.ts` file copies the raw TS verbatim (with type annotations intact — browser-unexecutable). Rewriting as `.js` with JSDoc types sidesteps the issue with zero Vite config changes.
+- **Data: URL is fine for `addModule`.** Under Vite's 4 KB inline threshold the worklet gets base64-embedded in the main bundle. Chrome, Firefox, Safari all accept data: URLs in `audioWorklet.addModule()` (documented in the WebAudio spec; data URLs are same-origin). Tried `?url` suffix — still inlines. Can revisit with a Vite asset-inline config if the file ever grows past 4 KB or if a browser starts rejecting.
+- **EEL2 subset scoped to what proves the architecture works**. Control flow and math builtins are table-stakes for real JSFX but a lot of parser/emitter code; deferring them to Phase B keeps Phase A a true vertical slice — parse → translate → worklet → audio pipeline proven end-to-end with the bare minimum.
+- **User variables prefixed `u_` in emitted JS.** Cheap, complete collision-avoidance with `L`, `R`, `sliders`, `srate`, `Math`, JS reserved words, everything else the translator framework uses. User sees their name in error messages; the worklet sees the prefixed version. Alternative (sealed Proxy / with-block) adds perf cost inside the per-sample loop.
+- **Worklet lifecycle is async but surfaced as synchronous to the Panel.** `AudioGraph.onJsEffectReady(nodeId, listener)` fires immediately if the node already exists, or buffers until `ensureJsfxWorklet().then()` resolves and `new JsEffectNode()` completes. Panel can set code / slider values unconditionally — they're cached until bind.
+- **Per-sample state reset is acceptable for Phase A.** Real EEL2 variables persist across `@sample` calls; my emitted frame declares `let u_x = 0` every sample, so running averages / feedback lines don't work yet. That rules out chorus/flange/delay-line effects, which in Phase A is fine — those need `mem[]` anyway (Phase D). Memoryless effects (gain, ring mod, bit-reduction, tilt EQ with `@init`-initialised coefficients in Phase B) all work without cross-sample persistence.
+- **Four KB inline threshold exposed a real design question.** If the worklet grows past ~4 KB (certain with Phase B builtins), it'll move to a separate asset automatically — no code change needed. Good hygiene, not a blocker.
+
+**Next needed (user smoke test):**
+1. Fresh page → drop `adc~` → `js~` → `dac~`, cable them L→L, R→R on both hops.
+2. Start audio. The `js~` body should show an empty CodeMirror pane + "no sliders declared" placeholder.
+3. Paste:
+   ```
+   desc:trivial gain
+   slider1:1<0,2,0.01>gain
+
+   @sample
+   spl0 *= slider1;
+   spl1 *= slider1;
+   ```
+   Within ~300 ms: status line goes green ("ok — 1 slider"), title becomes "js~ — trivial gain", a "gain" slider appears on the right.
+4. Drag the slider from 0 → 2. Audio should go silent → 2× gain, smoothly. Passthrough is audible when slider = 1.
+5. Paste gibberish (e.g. `spl0 ~= 3`). Status goes red with "line N: unsupported character '~'…". Audio stays at the last good state — does NOT cut out.
+6. Fix the typo. Status goes green again; audio resumes with the new code.
+7. Save patch to file → reload page → re-open. Code + slider value both restored. Start audio, gain still works.
+8. Try a ring mod: `slider1:440<20,2000,1>freq` + `@sample` with `tp = 0; tp += 2*3.14159*slider1/srate; spl0 *= 0; spl1 *= 0;` (a reminder: no persistent vars in Phase A, so a real ring mod needs Phase B). Instead try: `spl0 *= 0.5; spl1 *= 0.5;` — should halve.
+
+**Follow-ups captured as Phase B / C / D in `docs/JS_OBJECT_PLAN.md`:**
+- Phase B: `@init` + `@slider` execution, control flow (`if/while/loop`), all built-in math fns, proper variable persistence across `@sample` invocations, 3–5-effect test corpus.
+- Phase C: slider type variants (log, enum), proper error pane with line numbers, structured error outlet, `desc:` → object title on canvas.
+- Phase D: `mem[]` buffer (unlocks delays/reverbs), user `function`, multi-channel variants, `@block`/`@serialize`.
+---
 
 ---
 ## [2026-04-22] COMPLETED | dmx object — Phase 4 (robustness + recovery)
@@ -535,4 +836,42 @@ Older entries archived to `AGENTS-archive.md`.
 **Blocking:** Nothing functional — knip reports false-positive unused files.
 **Details:** `dist/assets/index-D4hyy6T0.js` shows up as an unused file.
 **Needs:** Add `dist/` to `.gitignore`, remove committed files. Trivial.
+---
+
+---
+## [2026-04-23] COMPLETED | `browser~` object (audio L/R + video outlets)
+**Agent:** Claude Code
+**Phase:** browser~ Phase A + B (see `docs/browser-object-plan.md`)
+**Done:**
+- `BrowserNode` runtime: getDisplayMedia → ChannelSplitter → L/R outlets (mirrors `AdcNode` shape) + hidden `<video>` srcObject for the video outlet.
+- Registered `browser~` in `objectDefs.ts` with 3 outlets (signal L, signal R, media video) and a message inlet (navigate / capture / release).
+- Wired into `AudioGraph` sync + rewire (outlets 0/1 audio only; outlet 2 handled downstream).
+- Extracted `MediaVideoSource` interface from `MediaVideoNode` so `LayerNode`, `vfxCRT`, `vfxBlur` accept either the file-backed video node OR the captured-tab node structurally.
+- Wired `browser~` outlet 2 into `VisualizerGraph.rewireMedia()` at all three consumer sites (layer / vfxCRT / vfxBlur) via a new `setBrowserNodeLookup` setter.
+- `BrowserPanel` + `BrowserPanelController`: URL bar, sandboxed iframe preview with CSP-block hint, capture / release buttons, live status line. Follows `JsEffectPanel` lifecycle pattern.
+- `ObjectRenderer` emits `[data-browser-panel-host]`; `main.ts` wires the controller like the js~ controller (setAudioGraph, mount, prune, destroy).
+- CSS in `shell.css` under the jseffect section.
+- Serialization: `args = [url, captureOnLoad]` — plain strings, round-trips through the default serializer/parser branch.
+
+**Changed files:**
+- `src/runtime/BrowserNode.ts` (new) — audio+video capture node.
+- `src/canvas/BrowserPanel.ts` (new) — inline panel UI.
+- `src/canvas/BrowserPanelController.ts` (new) — panel lifecycle manager.
+- `src/graph/objectDefs.ts` — registered `browser~`.
+- `src/runtime/AudioGraph.ts` — integrated BrowserNode (create/destroy/rewire/meter) + `getBrowserNode()` accessor.
+- `src/runtime/MediaVideoNode.ts` — added `MediaVideoSource` interface.
+- `src/runtime/LayerNode.ts` — widened `mediaVideo` field to `MediaVideoSource`.
+- `src/runtime/VisualizerGraph.ts` — `setBrowserNodeLookup` + `browser~` branches in vfxCRT / vfxBlur / layer wiring.
+- `src/canvas/ObjectRenderer.ts` — browser~ body host slot.
+- `src/main.ts` — controller lifecycle + browser-node lookup plumbing.
+- `src/shell.css` — `.pn-browser-*` styles.
+
+**Notes / decisions made:**
+- Browser security requires a user gesture for `getDisplayMedia`, so capture is panel-button-triggered, not auto-started on node creation or DSP start. `captureOnLoad` arg is reserved for a future "resume capture prompt" UX but currently only persists the last known capture state.
+- Iframe preview and tab capture are intentionally decoupled: the iframe shows whatever URL the user typed (works for embed-friendly sites), while the outlets are driven by whichever tab the user picked in the native `getDisplayMedia` picker. One bundled object as agreed with Director.
+- `setBrowserNodeLookup` pattern (instead of giving VisualizerGraph a direct AudioGraph reference) matches the existing one-way coupling style in the codebase.
+
+**Next needed:**
+- Manual smoke test in browser: `[browser~ https://youtube.com] → [dac~]` for audio, `[browser~] outlet 2 → [vFX.crt] → [layer] → [visualizer]` for video.
+- Phase C polish (deferred): cached tab thumbnail, resume-capture UX, URL autocomplete.
 ---

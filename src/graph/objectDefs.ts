@@ -331,9 +331,12 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
   },
 
   "fft~": {
-    description: "FFT spectrum analyzer. Displays a spectrogram and outputs 4 band levels: low, low-mid, hi-mid, hi.",
+    description: "FFT spectrum analyzer. Displays a spectrogram and outputs N band levels. Arg: band count (4, 8, or 16 — default 4).",
     category: "audio",
-    args: [],
+    args: [
+      { name: "bands", type: "int", default: "4",
+        description: "Number of frequency bands to output: 4, 8, or 16." },
+    ],
     messages: [],
     inlets: [
       { index: 0, type: "signal", label: "left channel in" },
@@ -361,6 +364,52 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     defaultWidth: 80,
     defaultHeight: 64,
+  },
+
+  "browser~": {
+    description: "Live browser tab mirror. Click a site chip to open it in a new browser tab; pick that tab in the capture prompt to mirror it here and route its audio (L/R) + video to the patch.",
+    category: "audio",
+    args: [
+      { name: "lastSite", type: "symbol", default: "", hidden: true,
+        description: "Last site chip the user clicked. Persisted for future 'resume last' UX." },
+      { name: "captureOnLoad", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Reserved: set when a capture was active at save time." },
+    ],
+    messages: [
+      { inlet: 0, selector: "release", description: "stop mirroring" },
+    ],
+    inlets:  [{ index: 0, type: "any", label: "release" }],
+    outlets: [
+      { index: 0, type: "signal", label: "audio L" },
+      { index: 1, type: "signal", label: "audio R" },
+      { index: 2, type: "media",  label: "video out (→ layer / vFX)" },
+    ],
+    defaultWidth: 480,
+    defaultHeight: 320,
+  },
+
+  "js~": {
+    description: "JSFX-style audio effect. Paste REAPER JS-effect code; sliders populate the GUI; audio is processed sample-by-sample in an AudioWorklet.",
+    category: "audio",
+    args: [
+      { name: "code", type: "symbol", default: "", hidden: true,
+        description: "JSFX source. Base64-encoded on disk; raw at runtime." },
+      { name: "library", type: "symbol", default: "", hidden: true,
+        description: "Per-patch saved-effects library (JSON array of {name, code}, base64 on disk)." },
+      { name: "locked", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Lock state: 1 = drag anywhere on body (code/dropdown disabled, sliders stay live); 0 = unlocked (default)." },
+    ],
+    messages: [],
+    inlets: [
+      { index: 0, type: "signal", label: "left channel in" },
+      { index: 1, type: "signal", label: "right channel in" },
+    ],
+    outlets: [
+      { index: 0, type: "signal", label: "left channel out" },
+      { index: 1, type: "signal", label: "right channel out" },
+    ],
+    defaultWidth: 560,
+    defaultHeight: 280,
   },
 
   codebox: {
@@ -917,6 +966,53 @@ export function deriveTriggerPorts(args: string[]): { inlets: PortDef[]; outlets
       default:  return { index: i, type: "any"     as PortType, label: raw };
     }
   });
+  return { inlets, outlets };
+}
+
+/**
+ * FFT spectrum analyzer: 2 signal inlets + N float outlets (one per band).
+ * Band count comes from args[0]: 4, 8, or 16. Anything else → 4.
+ */
+const FFT_BAND_CHOICES = [4, 8, 16] as const;
+export type FftBandCount = (typeof FFT_BAND_CHOICES)[number];
+
+export function fftBandCount(args: string[]): FftBandCount {
+  const n = Math.trunc(Number.parseFloat(args[0] ?? "4"));
+  return (FFT_BAND_CHOICES as readonly number[]).includes(n) ? (n as FftBandCount) : 4;
+}
+
+/** Hz range [lo, hi] for each of the N bands. 4 uses fixed perceptual bands;
+ *  8 and 16 split 20 Hz – 20 kHz log-evenly. */
+export function fftBandRanges(n: FftBandCount): Array<[number, number]> {
+  if (n === 4) {
+    return [[20, 250], [250, 2000], [2000, 6000], [6000, 20000]];
+  }
+  const logMin = Math.log10(20);
+  const logMax = Math.log10(20000);
+  const step = (logMax - logMin) / n;
+  return Array.from({ length: n }, (_, i) => [
+    Math.pow(10, logMin + i * step),
+    Math.pow(10, logMin + (i + 1) * step),
+  ]);
+}
+
+function fftBandLabel(n: FftBandCount, i: number): string {
+  if (n === 4) return ["LO", "LM", "HM", "HI"][i] ?? `B${i + 1}`;
+  return String(i + 1);
+}
+
+export function deriveFftPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const n = fftBandCount(args);
+  const ranges = fftBandRanges(n);
+  const inlets: PortDef[] = [
+    { index: 0, type: "signal", label: "left channel in" },
+    { index: 1, type: "signal", label: "right channel in" },
+  ];
+  const outlets: PortDef[] = ranges.map(([lo, hi], i) => ({
+    index: i,
+    type: "float" as PortType,
+    label: `${fftBandLabel(n, i)} (${Math.round(lo)}–${Math.round(hi)} Hz)`,
+  }));
   return { inlets, outlets };
 }
 

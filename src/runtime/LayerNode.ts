@@ -1,4 +1,4 @@
-import type { MediaVideoNode } from "./MediaVideoNode";
+import type { MediaVideoSource } from "./MediaVideoNode";
 import type { MediaImageNode } from "./MediaImageNode";
 import type { ImageFXNode }    from "./ImageFXNode";
 
@@ -23,7 +23,7 @@ export interface VideoFXSource {
  * The scaled image is always centered in the canvas.
  */
 export class LayerNode {
-  private mediaVideo: MediaVideoNode  | null = null;
+  private mediaVideo: MediaVideoSource | null = null;
   private mediaImage: MediaImageNode  | null = null;
   private mediaFX:    ImageFXNode     | null = null;
   private videoFX:    VideoFXSource   | null = null;
@@ -47,7 +47,7 @@ export class LayerNode {
     this.posY   = posY;
   }
 
-  setMediaVideo(node: MediaVideoNode | null): void { this.mediaVideo = node; this.mediaImage = null; this.mediaFX = null; this.videoFX = null; }
+  setMediaVideo(node: MediaVideoSource | null): void { this.mediaVideo = node; this.mediaImage = null; this.mediaFX = null; this.videoFX = null; }
   setMediaImage(node: MediaImageNode | null): void { this.mediaImage = node; this.mediaVideo = null; this.mediaFX = null; this.videoFX = null; }
   setMediaFX   (node: ImageFXNode    | null): void { this.mediaFX    = node; this.mediaImage = null; this.mediaVideo = null; this.videoFX = null; }
   setVideoFX   (node: VideoFXSource  | null): void { this.videoFX    = node; this.mediaVideo = null; this.mediaImage = null; this.mediaFX = null; }

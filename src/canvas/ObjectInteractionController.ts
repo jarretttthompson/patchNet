@@ -13,6 +13,7 @@ import {
   buildArgMessage,
   getVisibleArgs,
   deriveTriggerPorts,
+  deriveFftPorts,
   canonicalizeType,
   ensureSequencerArgs,
   getSequencerCells,
@@ -1425,6 +1426,9 @@ export class ObjectInteractionController {
           ensureSequencerArgs(node.args);
           this.syncSequencerPorts(node);
         }
+        if (newType === "fft~") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveFftPorts(newArgs));
+        }
         // Remove edges that now reference out-of-range ports
         for (const edge of this.graph.getEdges()) {
           const isFromThis = edge.fromNodeId === node.id;
@@ -1444,6 +1448,12 @@ export class ObjectInteractionController {
         if (node.type === "sequencer") {
           ensureSequencerArgs(node.args);
           this.syncSequencerPorts(node);
+        }
+        if (node.type === "fft~") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveFftPorts(newArgs));
+          for (const edge of this.graph.getEdges()) {
+            if (edge.fromNodeId === node.id && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
+          }
         }
       }
 

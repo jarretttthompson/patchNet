@@ -1,5 +1,5 @@
 import { PatchEdge } from "../graph/PatchEdge";
-import { canonicalizeType, deriveSequencerPorts, deriveTriggerPorts, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
+import { canonicalizeType, deriveFftPorts, deriveSequencerPorts, deriveTriggerPorts, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
 import { PatchNode } from "../graph/PatchNode";
 import type { PortType } from "../graph/PatchNode";
 import { derivePortsFromCode } from "../canvas/codeboxPorts";
@@ -123,6 +123,34 @@ export function parsePatch(text: string): ParsedPatch {
         ({ inlets, outlets } = derivePortsFromCode(source));
       }
 
+      if (type === "js~") {
+        // args[0] = raw JSFX source (base64 on disk)
+        // args[1] = patch library JSON string (base64 on disk; "-" or missing = no library)
+        // args[2] = locked flag ("0"/"1")
+        let source = "";
+        if (args[0]) {
+          try {
+            source = decodeCodeboxSource(args[0]);
+          } catch {
+            console.warn(`Failed to decode js~ source on line ${lineNumber}`);
+          }
+        }
+        args[0] = source;
+
+        let library = "";
+        if (args[1] && args[1] !== "-") {
+          try {
+            library = decodeCodeboxSource(args[1]);
+          } catch {
+            console.warn(`Failed to decode js~ library on line ${lineNumber}`);
+          }
+        }
+        args[1] = library;
+
+        // locked flag — preserve literal "0"/"1"; default to "0".
+        args[2] = (args[2] === "1") ? "1" : "0";
+      }
+
       if (type === "subPatch") {
         const ic = Math.max(0, parseInt(args[0] ?? "0", 10) || 0);
         const oc = Math.max(0, parseInt(args[1] ?? "0", 10) || 0);
@@ -137,6 +165,10 @@ export function parsePatch(text: string): ParsedPatch {
       if (type === "sequencer") {
         ensureSequencerArgs(args);
         ({ inlets, outlets } = deriveSequencerPorts(args));
+      }
+
+      if (type === "fft~") {
+        ({ inlets, outlets } = deriveFftPorts(args));
       }
 
       nodes.push(

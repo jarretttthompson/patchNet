@@ -1,4 +1,5 @@
 import { AudioRuntime } from "./AudioRuntime";
+import { fftBandRanges, type FftBandCount } from "../graph/objectDefs";
 
 const SCREEN_W = 128;
 const SCREEN_H = 64;
@@ -8,16 +9,19 @@ const BG        = "#000000";   // --pn-bg-deep
 const BAR_DIM   = "#060a06";   // --pn-surface (unlit column)
 const GRID_LINE = "rgba(0,0,0,0.5)";
 
-// Low → hi: deep infernal green ramping to pure lime — all in app palette
-const BAND_COLORS: string[] = ["#006400", "#00b300", "#00ff00", "#a8ffa8"];
+// Low → hi: deep infernal green ramping to pure lime — all in app palette.
+// 4 stops; intermediate band counts interpolate by position.
+const BAND_COLOR_STOPS: string[] = ["#006400", "#00b300", "#00ff00", "#a8ffa8"];
 
-// Frequency band definitions [lo, hi] in Hz
-const BANDS: [number, number][] = [
-  [20,   250],   // low
-  [250,  2000],  // low-mid
-  [2000, 6000],  // hi-mid
-  [6000, 20000], // hi
-];
+function bandColor(bandIndex: number, bandCount: number): string {
+  if (bandCount <= 1) return BAND_COLOR_STOPS[BAND_COLOR_STOPS.length - 1];
+  const t = bandIndex / (bandCount - 1);
+  const slot = Math.min(
+    BAND_COLOR_STOPS.length - 1,
+    Math.floor(t * (BAND_COLOR_STOPS.length - 1) + 0.0001),
+  );
+  return BAND_COLOR_STOPS[slot];
+}
 
 export class FftAnalyzerNode {
   private readonly merger: ChannelMergerNode;
@@ -27,9 +31,11 @@ export class FftAnalyzerNode {
   private readonly freqData: Uint8Array<ArrayBuffer>;
   private readonly sampleRate: number;
 
-  private _bandLevels: [number, number, number, number] = [0, 0, 0, 0];
+  private _bandCount: FftBandCount;
+  private _bandRanges: Array<[number, number]>;
+  private _bandLevels: number[];
 
-  constructor(runtime: AudioRuntime) {
+  constructor(runtime: AudioRuntime, bandCount: FftBandCount = 4) {
     const actx = runtime.context;
     this.sampleRate = actx.sampleRate;
 
@@ -47,11 +53,24 @@ export class FftAnalyzerNode {
     const c = this.canvas.getContext("2d");
     if (!c) throw new Error("[FftAnalyzerNode] canvas context unavailable");
     this.ctx2d = c;
+
+    this._bandCount  = bandCount;
+    this._bandRanges = fftBandRanges(bandCount);
+    this._bandLevels = new Array(bandCount).fill(0);
   }
 
   get inputNode(): AudioNode { return this.merger; }
 
-  get bandLevels(): [number, number, number, number] { return this._bandLevels; }
+  get bandCount(): FftBandCount { return this._bandCount; }
+
+  get bandLevels(): readonly number[] { return this._bandLevels; }
+
+  setBandCount(bandCount: FftBandCount): void {
+    if (this._bandCount === bandCount) return;
+    this._bandCount  = bandCount;
+    this._bandRanges = fftBandRanges(bandCount);
+    this._bandLevels = new Array(bandCount).fill(0);
+  }
 
   draw(): void {
     this.analyser.getByteFrequencyData(this.freqData);
@@ -78,11 +97,10 @@ export class FftAnalyzerNode {
       const binIdx = Math.min(Math.round(freq / binHz), this.freqData.length - 1);
       const value = this.freqData[binIdx] / 255;
 
-      // Pick color by frequency band
-      let color = BAND_COLORS[3];
-      if (freq < 250)  color = BAND_COLORS[0];
-      else if (freq < 2000) color = BAND_COLORS[1];
-      else if (freq < 6000) color = BAND_COLORS[2];
+      // Pick color by band whose range contains this freq
+      let bandIdx = this._bandRanges.findIndex(([lo, hi]) => freq >= lo && freq < hi);
+      if (bandIdx < 0) bandIdx = this._bandRanges.length - 1;
+      const color = bandColor(bandIdx, this._bandCount);
 
       const barH = Math.ceil(value * h);
 
@@ -104,16 +122,16 @@ export class FftAnalyzerNode {
     }
   }
 
-  private computeBands(): [number, number, number, number] {
+  private computeBands(): number[] {
     const nyquist = this.sampleRate / 2;
     const binHz = nyquist / this.freqData.length;
-    return BANDS.map(([lo, hi]) => {
+    return this._bandRanges.map(([lo, hi]) => {
       const s = Math.max(0, Math.floor(lo / binHz));
       const e = Math.min(Math.ceil(hi / binHz), this.freqData.length - 1);
       let sum = 0;
       for (let i = s; i <= e; i++) sum += this.freqData[i];
       return sum / ((e - s + 1) * 255);
-    }) as [number, number, number, number];
+    });
   }
 
   destroy(): void {

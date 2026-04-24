@@ -1,3 +1,11 @@
+/** Narrow shape consumed by LayerNode / vFX nodes. Satisfied by
+ *  MediaVideoNode and also by BrowserNode (captured-tab video). */
+export interface MediaVideoSource {
+  readonly video: HTMLVideoElement;
+  readonly isReady: boolean;
+  readonly hasError: boolean;
+}
+
 /**
  * MediaVideoNode — wraps an HTMLVideoElement.
  *
@@ -6,7 +14,7 @@
  * File data is stored in IndexedDB via VideoStore; only a tiny reference key
  * lives in patchNode.args so the graph serialization stays small and fast.
  */
-export class MediaVideoNode {
+export class MediaVideoNode implements MediaVideoSource {
   readonly video: HTMLVideoElement;
   private objectUrl: string | null = null;
   private loading = false;

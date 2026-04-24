@@ -15,6 +15,7 @@ import { ShaderToyNode, SHADERTOY_PRESETS } from "./ShaderToyNode";
 import { VideoStore } from "./VideoStore";
 import { ImageStore } from "./ImageStore";
 import { PatchVizNode } from "./PatchVizNode";
+import type { BrowserNode } from "./BrowserNode";
 import { LocalBus } from "../control/ControlBus";
 import { RenderDirector } from "../control/RenderDirector";
 
@@ -54,6 +55,7 @@ export class VisualizerGraph {
   private positionLoops   = new Map<string, number>();            // patchNodeId → rafId
 
   private objectInteraction: ObjectInteractionController | null = null;
+  private browserNodeLookup: ((id: string) => BrowserNode | null) | null = null;
   private unsubscribe: () => void;
   private unsubscribeRuntime: () => void;
 
@@ -78,6 +80,18 @@ export class VisualizerGraph {
 
   setObjectInteraction(oi: ObjectInteractionController): void {
     this.objectInteraction = oi;
+  }
+
+  /** Called by main.ts when AudioGraph comes up / down. Lets the video-outlet
+   *  wiring in rewireMedia() resolve `browser~` nodes into their runtime
+   *  captured-tab video source. */
+  setBrowserNodeLookup(lookup: ((id: string) => BrowserNode | null) | null): void {
+    this.browserNodeLookup = lookup;
+    this.rewireMedia();
+  }
+
+  private getBrowserNode(id: string): BrowserNode | null {
+    return this.browserNodeLookup?.(id) ?? null;
   }
 
   // ── Message delivery ─────────────────────────────────────────────
@@ -611,6 +625,9 @@ export class VisualizerGraph {
         if (fromNode.type === "mediaVideo") {
           const mvn = this.mediaVideoNodes.get(edge.fromNodeId);
           if (mvn) { vfx.setInput(mvn.video); break; }
+        } else if (fromNode.type === "browser~" && edge.fromOutlet === 2) {
+          const bn = this.getBrowserNode(edge.fromNodeId);
+          if (bn) { vfx.setInput(bn.video); break; }
         } else if (fromNode.type === "vfxCRT") {
           const up = this.vfxCrtNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
@@ -632,6 +649,9 @@ export class VisualizerGraph {
         if (fromNode.type === "mediaVideo") {
           const mvn = this.mediaVideoNodes.get(edge.fromNodeId);
           if (mvn) { vfx.setInput(mvn.video); break; }
+        } else if (fromNode.type === "browser~" && edge.fromOutlet === 2) {
+          const bn = this.getBrowserNode(edge.fromNodeId);
+          if (bn) { vfx.setInput(bn.video); break; }
         } else if (fromNode.type === "vfxCRT") {
           const up = this.vfxCrtNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
@@ -656,6 +676,9 @@ export class VisualizerGraph {
         if (fromNode.type === "mediaVideo") {
           const mvn = this.mediaVideoNodes.get(edge.fromNodeId);
           if (mvn) layer.setMediaVideo(mvn);
+        } else if (fromNode.type === "browser~" && edge.fromOutlet === 2) {
+          const bn = this.getBrowserNode(edge.fromNodeId);
+          if (bn) layer.setMediaVideo(bn);
         } else if (fromNode.type === "vfxCRT") {
           const vfx = this.vfxCrtNodes.get(edge.fromNodeId);
           if (vfx) layer.setVideoFX(vfx);

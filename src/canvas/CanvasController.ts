@@ -86,6 +86,11 @@ export class CanvasController {
   private rbStartX = 0;
   private rbStartY = 0;
 
+  // Cursor tracking for Max-style at-cursor object spawning (n/b/t/s/a/m keys).
+  private lastMouseClientX = 0;
+  private lastMouseClientY = 0;
+  private mouseOverCanvas = false;
+
   private readonly onCanvasClick: (e: MouseEvent) => void;
   private readonly onCanvasContextMenu: (e: MouseEvent) => void;
   private readonly onKeyDown: (e: KeyboardEvent) => void;
@@ -97,6 +102,8 @@ export class CanvasController {
   private readonly onPanMouseUp: (e: MouseEvent) => void;
   private readonly onDoubleClick: (e: MouseEvent) => void;
   private readonly onWheel: (e: WheelEvent) => void;
+  private readonly onCanvasMouseMove: (e: MouseEvent) => void;
+  private readonly onCanvasMouseLeave: () => void;
 
   constructor(
     private readonly canvasEl: HTMLElement,
@@ -116,12 +123,20 @@ export class CanvasController {
     this.onPanMouseUp = this.handlePanMouseUp.bind(this);
     this.onDoubleClick = this.handleDoubleClick.bind(this);
     this.onWheel = this.handleWheel.bind(this);
+    this.onCanvasMouseMove = (e: MouseEvent) => {
+      this.lastMouseClientX = e.clientX;
+      this.lastMouseClientY = e.clientY;
+      this.mouseOverCanvas = true;
+    };
+    this.onCanvasMouseLeave = () => { this.mouseOverCanvas = false; };
 
     this.canvasEl.addEventListener("click", this.onCanvasClick);
     this.canvasEl.addEventListener("dblclick", this.onDoubleClick);
     this.canvasEl.addEventListener("contextmenu", this.onCanvasContextMenu);
     this.canvasEl.addEventListener("mousedown", this.onPanMouseDown);
     this.canvasEl.addEventListener("wheel", this.onWheel, { passive: false });
+    this.canvasEl.addEventListener("mousemove", this.onCanvasMouseMove);
+    this.canvasEl.addEventListener("mouseleave", this.onCanvasMouseLeave);
     document.addEventListener("keydown", this.onKeyDown);
     document.addEventListener("keyup", this.onKeyUp);
     document.addEventListener("click", this.onDocClick, true);
@@ -297,6 +312,8 @@ export class CanvasController {
     this.canvasEl.removeEventListener("contextmenu", this.onCanvasContextMenu);
     this.canvasEl.removeEventListener("mousedown", this.onPanMouseDown);
     this.canvasEl.removeEventListener("wheel", this.onWheel);
+    this.canvasEl.removeEventListener("mousemove", this.onCanvasMouseMove);
+    this.canvasEl.removeEventListener("mouseleave", this.onCanvasMouseLeave);
     this.scrollSpacer?.remove();
     this.scrollSpacer = null;
     document.removeEventListener("keydown", this.onKeyDown);
@@ -345,7 +362,7 @@ export class CanvasController {
     if (target.closest(".pn-cable-svg")) return;
 
     const { x, y } = this.getGraphCoords(e.clientX, e.clientY);
-    this.openEntryBox(x, y);
+    this.openEntryBox(...this.centerEntryBox(x, y));
   }
 
   private handleKeyDown(e: KeyboardEvent): void {
@@ -413,10 +430,12 @@ export class CanvasController {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
     switch (e.key.toLowerCase()) {
-      case "n":
+      case "n": {
         e.preventDefault();
-        this.openEntryBox(...this.viewportCenter());
+        const { x, y } = this.spawnAnchor();
+        this.openEntryBox(...this.centerEntryBox(x, y));
         break;
+      }
       case "b":
         e.preventDefault();
         this.placeObject("button");
@@ -547,9 +566,38 @@ export class CanvasController {
   }
 
   private placeObject(type: string): void {
-    const [x, y] = this.viewportCenter();
-    const node = this.graph.addNode(type, x, y);
+    const { x, y } = this.spawnAnchor();
+    const def = getObjectDef(type);
+    const w = def?.defaultWidth ?? 80;
+    const h = def?.defaultHeight ?? 40;
+    const nx = Math.max(0, x - Math.round(w / 2));
+    const ny = Math.max(0, y - Math.round(h / 2));
+    const node = this.graph.addNode(type, nx, ny);
     this.onObjectPlaced?.(type, node.id);
+  }
+
+  /**
+   * Where a keyboard-triggered spawn (n, b, t, s, a, m) should anchor.
+   * Cursor position if it's over the canvas (Max convention), otherwise
+   * the center of the currently visible area.
+   */
+  private spawnAnchor(): { x: number; y: number } {
+    if (this.mouseOverCanvas) {
+      return this.getGraphCoords(this.lastMouseClientX, this.lastMouseClientY);
+    }
+    const [x, y] = this.viewportCenter();
+    return { x, y };
+  }
+
+  /**
+   * Offset a world-space anchor so the ~80x24 entry box appears just above
+   * the cursor. The cursor hotspot is at the arrow's tip while the arrow's
+   * visible body hangs down-right from there, so a pure geometric center
+   * reads as "below the cursor" — bias the box upward so the arrow sits
+   * near its lower edge instead of overlapping the input.
+   */
+  private centerEntryBox(x: number, y: number): [number, number] {
+    return [Math.max(0, x - 40), Math.max(0, y - 22)];
   }
 
   /** World-space center of the currently visible canvas area. */

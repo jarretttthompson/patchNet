@@ -6,8 +6,10 @@
  * presses Enter to confirm or Escape to cancel.
  *
  * Shows an autocomplete dropdown below the input as the user types.
- * Arrow keys navigate the list; Tab or Enter on a highlighted item
- * completes the type name.
+ * Arrow keys navigate the list and live-fill the input with the
+ * highlighted match (browser-style autocomplete). Tab commits the
+ * current match and hides the dropdown so the user can type args;
+ * Enter confirms whatever's in the input.
  *
  * IMPORTANT: VALID_TYPES is derived from OBJECT_DEFS — do NOT maintain a
  * separate list here. Adding a new type to objectDefs.ts is sufficient.
@@ -24,6 +26,12 @@ export class ObjectEntryBox {
   private destroyed = false;
   private activeIndex = -1;
   private matches: string[] = [];
+  /**
+   * What the user has actually typed, as opposed to what's currently shown
+   * in the input (which may be an arrow-key preview of a suggestion).
+   * Filtering keeps using this so previewing doesn't collapse the match set.
+   */
+  private userPrefix = "";
 
   constructor(
     panGroup: HTMLElement,
@@ -57,6 +65,10 @@ export class ObjectEntryBox {
 
     // ── Events ───────────────────────────────────────────────────────
     this.input.addEventListener("input", () => {
+      // Any typed keystroke resets the "user prefix" — programmatic value
+      // changes from arrow-preview don't fire the input event, so this is
+      // always driven by real user input.
+      this.userPrefix = this.input.value;
       this.refreshDropdown();
     });
 
@@ -84,11 +96,8 @@ export class ObjectEntryBox {
       }
       if (e.key === "Enter") {
         e.preventDefault();
-        // If an autocomplete item is highlighted, accept it first
-        if (this.activeIndex >= 0 && this.matches[this.activeIndex]) {
-          this.acceptSuggestion(this.matches[this.activeIndex]);
-          return;
-        }
+        // Arrow-key preview already filled input.value with the highlighted
+        // match, so Enter always just commits whatever's currently shown.
         const tokens = this.input.value.trim().split(/\s+/);
         const type = tokens[0] ?? "";
         if (!VALID_TYPES.includes(type)) return;
@@ -130,7 +139,7 @@ export class ObjectEntryBox {
   // ── Autocomplete helpers ──────────────────────────────────────────
 
   private refreshDropdown(): void {
-    const raw = this.input.value.trim();
+    const raw = this.userPrefix.trim();
     const typePart = raw.split(/\s+/)[0] ?? "";
 
     // Only show dropdown while user is still typing the type name
@@ -183,6 +192,24 @@ export class ObjectEntryBox {
     if (len === 0) return;
     this.activeIndex = (this.activeIndex + delta + len) % len;
     this.updateActiveClass();
+    this.previewActiveMatch();
+  }
+
+  /**
+   * Fills the input with the highlighted suggestion (preserving any args
+   * the user had already typed) so arrow-key navigation reads like live
+   * autocomplete. Filtering still uses `userPrefix`, so the match set
+   * doesn't collapse to just the previewed value.
+   */
+  private previewActiveMatch(): void {
+    if (this.activeIndex < 0) return;
+    const match = this.matches[this.activeIndex];
+    const userTokens = this.userPrefix.trim().split(/\s+/);
+    const userArgs = userTokens.slice(1);
+    this.input.value = userArgs.length ? `${match} ${userArgs.join(" ")}` : match;
+    const caret = match.length;
+    this.input.setSelectionRange(caret, caret);
+    this.el.classList.remove("pn-object-entry--error");
   }
 
   private updateActiveClass(): void {
