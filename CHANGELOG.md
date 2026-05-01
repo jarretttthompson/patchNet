@@ -1,63 +1,27 @@
-# patchNet — Agent Communication & Changelog
+# patchNet — Changelog
 
-This file is the shared communication channel for all agents working on patchNet.
-**All agents must read this before starting work and append an entry after completing work.**
+Append-only work log. After completing meaningful work, add an entry here.
 
-Director: Claude Code
-Second in Command: Cursor
-Team: Cursor (canvas/UI), Codex (audio/runtime), Copilot (inline acceleration)
-
----
-
-## How to Use This File
-
-### Before starting any task:
-1. Read all entries below to understand current project state
-2. Check what phase is active in `PLAN.md`
-3. Note any BLOCKER entries that affect your work
-
-### After completing any task, append an entry in this format:
-
+Entry format:
 ```
----
 ## [YYYY-MM-DD] COMPLETED | <task name>
-**Agent:** Cursor | Codex | Claude Code | Copilot
+**Agent:** Claude Code
 **Phase:** Phase N — <phase name>
+
 **Done:**
 - bullet list of what was completed
 
 **Changed files:**
 - path/to/file.ts — what changed
 
-**Notes / decisions made:**
-- any architectural decisions or deviations from PLAN.md
+**Notes / decisions:**
+- any architectural decisions
 
 **Next needed:**
-- what the next agent or task needs to do
----
+- what should happen next
 ```
 
-### When blocked, append a BLOCKER entry:
-
-```
----
-## [YYYY-MM-DD] BLOCKER | <description>
-**Agent:** <who is blocked>
-**Blocking:** <what task is stopped>
-**Details:** <what the problem is>
-**Needs:** <what is required to unblock>
----
-```
-
----
-
-## Project State
-
-**Current Phase:** `js~` object Phase E landed (effect library per-patch + global via localStorage; dropdown selector; lock toggle with sliders-stay-live). Phase D mem[]/@block/bitwise still current; avocado + Stillwell 1175 + waveshaper all confirmed translating. DMX Phase 4 hardware-verified; Control/Render Split Phase 1 landed.
-**Active tasks:** `js~` Phase E pending user browser test — save effects into the per-patch library, reload, switch between them via dropdown, lock toggle disables code editing while leaving sliders live. E.4 (.jsfx file import/export) deferred. On greenlight: remaining Phase D-ish gaps (user-defined `function`, multi-channel `spl2..spl63`, `@serialize`) come up on demand. Control/Render Split Phase 2 gated on test infra (BLOCKER-1). Evaluation Plan: Part 1.4 deferred (BLOCKER-2).
-**Last updated:** 2026-04-23 by Claude Code
-
----
+For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
 ## Architecture Decisions Log
 
@@ -76,6 +40,121 @@ Agents: append here when making a decision that affects the whole project.
 ## Changelog
 
 Older entries archived to `AGENTS-archive.md`.
+
+---
+## [2026-04-30] COMPLETED | buffer~ Phase 3b — streaming PCM (worklet ring + OPFS pull)
+**Agent:** Claude Code
+**Phase:** buffer~ Phase 3b — true streaming model
+
+**Done:**
+- Worklet (`buffer-worklet.js`) rewritten to a ring-buffer model. Holds ~2 sec of PCM in `RING_SAMPLES = 96000` slots, regardless of recording length. Emits `recordChunk(offset,L,R,totalLen)` during record, requests `needSamples(from,count)` when play crosses `validFrom`/`validUpTo`, and consumes `playChunk` responses asynchronously.
+- `BufferStorage.ts` now defines two formats: streaming PNB2 (`createWritable`/`getFile`-driven appender, interleaved frames) and PNK1 peaks sidecar (interleaved min/max per bucket, 1024 buckets default). Legacy PNB1 still decodable for migration.
+- `BufferNode.ts` rewritten: no main-side PCM mirror. Writes record chunks to OPFS via `PcmWriteHandle.appendFrames`. Serves `needSamples` from a `PcmReadHandle.readFrames` (slice-and-arrayBuffer per request). Uses `_readEpoch` token to discard stale needSamples replies after seek/stop. Maintains an in-memory peaks summary appended per chunk, persisted to PNK1 on `recordDone`.
+- New `BufferNode.adoptStorage()` reads OPFS metadata + peaks sidecar on patch reload (recomputes peaks from PCM if sidecar missing).
+- `AudioGraph.restoreBufferState` updated for the new flow: prefers `adoptStorage()`; rekeys foreign storageKey by reading + rewriting; legacy base64 path goes through `loadBuffers()` → OPFS write.
+- `main.ts` `drawBufferWaveform` now reads the peaks summary (interleaved min/max) instead of full PCM; per-column aggregation maps canvas columns to bucket spans. `handleBufferStateChange` no longer writes PCM (BufferNode owns the OPFS lifecycle now).
+
+**Changed files:**
+- `src/runtime/buffer/buffer-worklet.js` — full rewrite to ring-buffer + needSamples pull model
+- `src/runtime/buffer/BufferStorage.ts` — PNB2 streaming append, PNK1 peaks sidecar, OpfsBackend + MemoryBackend, PNB1 backward-compat decode
+- `src/runtime/BufferNode.ts` — full rewrite; adds `adoptStorage`, `getPeaks`, async `setMode`/`loadBuffers`; removes RAM-mirror fields
+- `src/runtime/AudioGraph.ts` — pass `nodeId` to BufferNode constructor; new `restoreBufferState` uses `adoptStorage` + async `loadBuffers`
+- `src/main.ts` — peaks-based `drawBufferWaveform`; simplified `handleBufferStateChange`; dropped direct `bufferStorage` import
+
+**Notes / decisions:**
+- Ring window of ~2 sec is well above typical OPFS read latency (~1–10ms for ≤256 KB blocks). Pre-fetch threshold at half-ring keeps the worklet ahead of the playhead.
+- Peaks sidecar uses 1024 buckets — fixed count so render performance is independent of recording length. Per-chunk peaks during record produce variable bucket counts; recompute path normalizes to 1024 on `setMode` / migration.
+- `_readEpoch` is the simplest race guard: bumping on close/seek invalidates any in-flight `needSamples` reply, which is critical because OPFS reads are async and a stale chunk would corrupt playback after seek.
+
+**Next needed:**
+- Manual end-to-end test: record ≥30 s, verify RAM stays ≈ ring + peaks (≤ 10 MB), verify play / seek / loop / range still work, verify legacy patch with inline base64 PCM auto-migrates to OPFS.
+
+---
+## [2026-04-28] COMPLETED | object scaling + no-overlap (plan: docs/object-scaling-and-no-overlap-plan.md)
+**Agent:** Claude Code
+**Phase:** Parts A.1–A.6 + B.1–B.3 from the plan, all in one pass.
+
+**Part A — Uniform body scaling:**
+- New `.pn-stage-host` / `.pn-stage` CSS helpers in `shell.css` (driven by `--pn-stage-w` / `--pn-stage-h` custom properties on the stage). Body becomes a `container-type: size`; stage is a fixed-size design surface transform-scaled uniformly via `min(100cqw / Wpx, 100cqh / Hpx)`.
+- New `applyStage(body, designW, designH)` helper + `SCALE_ELIGIBLE_TYPES` set in `ObjectRenderer.ts`. Auto-wraps eligible-type bodies post-buildBody using each type's `defaultWidth/defaultHeight`. Excluded: comment/message/sequencer (flex-reflow), buffer~ (manages own stage), all panel-managed types (codebox, js~, reaperVideo, dmx, mixer~, browser~, youtube~, frame~, subPatch).
+- `integer`/`float` odometer manually wrapped (then folded into auto-wrap via the eligible set).
+- Panel-host audit (A.6) — confirmed all `.pn-*-panel-host` selectors fill their parents via `flex: 1` or `width/height: 100%` or `inset: 0`. No fix needed.
+
+**Part B — No-overlap:**
+- New `src/canvas/OverlapGuard.ts` — `checkOverlap(graph, movingIds, proposed)`, `findFreePlacement(graph, x, y, w, h)`, `boxesOverlap`, `objectIgnoresOverlap`, `getNodeBox`. Strict AABB; touching edges allowed. Exempt set: `frame~`, `comment`.
+- `DragController` — adds `lastValidX/Y` + `flashed` flag to drag state; per-frame `checkOverlap` blocks the rigid group at last valid position; `onBlocked(obstacleId, movingId)` callback fires once per drag.
+- `main.ts` — wires the blocked callback to a 600ms diffused phosphor pulse (`.patch-object--collide-flash`) on BOTH the moving primary AND the obstacle (no harsh border edge — bloom from 0 → diffuse halo at 35% → 0 over 600ms).
+- `ResizeController` — adds `lastValidWidth/Height`; per-frame `checkOverlap` clamps to last non-colliding extent; commit uses `lastValid` rather than re-deriving from raw mouse delta.
+- `PatchGraph.addNode` — `findFreePlacement` slides new objects down-right by 20px until non-colliding (skipped for exempt types).
+- `PatchGraph.duplicateNodes` — clones land at `(+20, +20)` from sources (uniform offset preserves group's internal layout). Exempt types clone in place.
+- `DragController.handleMouseDown` Cmd+drag branch — captures cursor offset from the SOURCE element rect BEFORE `duplicateNodes` runs, so the cascade shift doesn't strand the cursor 20px off the dragged clone.
+
+**Tested:** type-check + vite build clean.
+
+**Files changed:**
+- New: `src/canvas/OverlapGuard.ts`, `docs/object-scaling-and-no-overlap-plan.md`
+- Modified: `src/shell.css`, `src/canvas/ObjectRenderer.ts`, `src/canvas/DragController.ts`, `src/canvas/ResizeController.ts`, `src/graph/PatchGraph.ts`, `src/main.ts`
+
+---
+## [2026-04-28] COMPLETED | buffer~ object — tape-recorder with rate, reverse, loop, mono/stereo
+**Agent:** Claude Code
+**Phase:** new object — Phases 1, 2, 3 from `docs/buffer-object-plan.md`, executed in one pass (Director Protocol Override).
+
+**What landed:**
+- `src/runtime/buffer/buffer-worklet.js` — AudioWorkletProcessor doing record + variable-rate playback with linear interpolation. Negative rate = reverse. Loop wraps both directions. Position posted ~46 Hz; recordDone fires on max-fill or user-stop.
+- `src/runtime/BufferNode.ts` — per-object runtime; ChannelMerger input, ChannelSplitter output (matches `js~`); message API to/from worklet; mono↔stereo conversion preserves stereo originals in `bufLStereo`/`bufRStereo` for lossless restore.
+- `OBJECT_DEFS["buffer~"]` + `deriveBufferPorts` + `ensureBufferArgs` + `bufferControlInlet` + `bufferMode`/`bufferMaxLen` in `src/graph/objectDefs.ts`. Stereo: 2 sig in + 1 ctrl in / 2 sig out + 1 pos out. Mono: 1 sig in + 1 ctrl in / 1 sig out + 1 pos out.
+- `AudioGraph.ensureBufferWorklet` + sync/rewire branches. As-source: outlets 0/1 to dac~/fft~/js~/mixer~/buffer~. As-sink: control inlet skipped, audio inlets accept click~/adc~/browser~/youtube~/js~/mixer~/buffer~. Position polled by main rAF tick → fired through last outlet.
+- `ObjectRenderer` body: title + 4 transport buttons (`◉ ▶ ❚❚ ■`) + `<canvas class="pn-buf-wave">` + info row (rate × value, loop on/off, STEREO↔MONO toggle button).
+- `ObjectInteractionController.deliverBufferMessage` — record/play/pause/stop/rate/float/loop/seek/stereo/mono/clear. `setBufferMode` rebuilds ports + drops orphan edges. Body buttons routed via delegated click on `.pn-buf-btn[data-buf-action]`. Cable on control inlet routes through `deliverMessageValue` → `deliverBufferMessage`. Bang on control inlet = play.
+- `DragController` allowlist: `.pn-buf-btn` and `.pn-buf-wave` never start drags.
+- `serialize.ts` blob schema: 4 PCM slots (`buf-L`/`buf-R`/`buf-Ls`/`buf-Rs`) marked `preEncoded: true` so disk emits the runtime-stored base64 verbatim. `pcmSummary` reports `<N>smp` in display abbreviation.
+- `parse.ts` — buffer~ branch normalizes "-" → "" for blob slots, runs `ensureBufferArgs` + `deriveBufferPorts`. Placeholder PCM passes through; PatchGraph.deserialize structurally rehydrates.
+- `main.ts` — `handleBufferStateChange` persists transport/position/PCM into args on every BufferNode emit (length-change → re-encode + emit `change`; non-length → emit `display`). rAF tick polls `getBufferPositions()`, emits the position outlet, and repaints each waveform with cursor (full envelope per frame; ~14M ops/sec/buffer at 5s/48kHz, fine for v1, can cache later).
+
+**Notes / risks:**
+- Position-tick worklet messages do NOT call `emitState` (avoids 46 Hz "display" emit storm); main rAF polls `bn.position` directly.
+- Listener attachment in `AudioGraph.sync` happens BEFORE `restoreBufferState(loadBuffers)` so the load-time emit triggers the initial waveform paint.
+- Worklet `stop` message snapshots and re-emits `recordDone` for user-stopped recordings (worklet only auto-emits when filling to maxSamples).
+- 5 min × 48 kHz × stereo = ~57 MB raw PCM (~76 MB base64) per buffer~ — `maxLen` arg caps at 300 s. Future: move to IndexedDB (mediaVideo pattern).
+- Mode-switch port rebuild uses `graph.edges.delete(id)` (not `removeEdge`) to avoid mid-emit re-entry, matching the sequencer playhead pattern.
+
+**Tested:** type-check passes, vite build emits `dist/assets/buffer-worklet-*.js`. Browser smoke test deferred to user (no headless audio in this loop).
+
+**Files changed:**
+- New: `src/runtime/buffer/buffer-worklet.js`, `src/runtime/BufferNode.ts`
+- Modified: `src/graph/objectDefs.ts`, `src/graph/PatchGraph.ts`, `src/runtime/AudioGraph.ts`, `src/canvas/ObjectRenderer.ts`, `src/canvas/ObjectInteractionController.ts`, `src/canvas/DragController.ts`, `src/serializer/parse.ts`, `src/serializer/serialize.ts`, `src/main.ts`, `src/shell.css`
+
+---
+## [2026-04-26] COMPLETED | frame~ object — tab-region pixel capture as video source
+**Agent:** Claude Code
+**Phase:** new object
+**Done:**
+- New `frame~` object: a draggable/resizable transparent rectangle on the canvas whose pixel contents are streamed out as a real video (HTMLVideoElement) for downstream vfxCRT / vfxBlur / reaperVideo / layer.
+- Implementation uses Region Capture (`getDisplayMedia({ preferCurrentTab: true })` + `CropTarget.fromElement` + `MediaStreamTrack.cropTo`) so the captured pixels are bit-identical to what the browser paints inside the frame's bounds — cables, object DOM, embedded canvases, text, everything.
+- Each `frame~` instance owns its own `getDisplayMedia` stream — one share-prompt per frame. The natural "share one capture across all frames" design clones the source track and crops each clone, but Chromium refuses `cropTo` on a track whose source has clones (`Can't change target while clones exist.`), so per-instance capture is the only path that actually works today. `preferCurrentTab` keeps each prompt to one click.
+- The frame's body interior is fully transparent with `pointer-events: none` so it doesn't paint over content beneath (preserving capture fidelity) and doesn't intercept clicks (objects beneath stay reachable). The capture/release toolbar floats above the body via negative `top` so it isn't included in the captured region.
+
+**Changed files:**
+- `src/runtime/frame/CaptureSession.ts` — new: refcounted shared display-media singleton
+- `src/runtime/FrameNode.ts` — new: per-instance runtime; owns hidden `<video>`, applies cropTo against bound element
+- `src/canvas/FramePanel.ts` — new: inline panel (capture/stop button + status + transparent capture rect)
+- `src/canvas/FramePanelController.ts` — new: lifecycle manager mirroring `YouTubePanelController`
+- `src/canvas/ObjectRenderer.ts` — added `frame~` body slot (`[data-frame-panel-host]`)
+- `src/canvas/ObjectInteractionController.ts` — added `frame~` case in `deliverMessageValue` for `capture` / `release` selectors
+- `src/graph/objectDefs.ts` — registered `frame~` (1 video outlet, 1 message inlet, 320×240 default)
+- `src/runtime/VisualizerGraph.ts` — `frameNodes` map + sync; wired as a video source in vfxCRT, vfxBlur, reaperVideo (all inlets), and layer; added `getFrameNode(id)` accessor
+- `src/main.ts` — instantiates `FramePanelController`, sets vizGraph reference, mounts/destroys with the rest
+- `src/shell.css` — `.patch-object-frame-body` (transparent + dashed outline), `.pn-frame-panel*` styles, floating toolbar
+
+**Notes / decisions made:**
+- Region Capture chosen over manual canvas compositing because the user's spec was "every single pixel that exists within its bounds" — only the browser's own paint pipeline gives that fidelity. Trade-off: Chrome / Edge only (Firefox / Safari fall back to a clean error message in the panel).
+- FrameNode lives under `VisualizerGraph` (not `AudioGraph`) since it has no audio side; the panel resolves its runtime via a new `getFrameNode()` accessor.
+- Capture is gated by user-gesture; the panel button is the canonical entry. Cable-driven `capture` messages will work only when fired synchronously from a click-edge.
+- Known feedback caveat: if a downstream renderer (e.g. patchViz) paints captured pixels back into the same tab inside the frame's bounds, the user gets a feedback hall-of-mirrors. Mirrors how `youtube~`'s tab-mirror flow already behaves; left to the user to manage.
+
+**Next needed:**
+- User browser test: drop a `frame~`, drag it over some other canvas content, click capture, accept the share prompt; pipe `frame~` → `reaperVideo` → `layer` and confirm the captured region drives the visualizer. Also verify multi-frame sharing the prompt only once.
 
 ---
 ## [2026-04-23] COMPLETED | js~ object — Phase E (effect library + dropdown + lock)
@@ -874,4 +953,81 @@ Older entries archived to `AGENTS-archive.md`.
 **Next needed:**
 - Manual smoke test in browser: `[browser~ https://youtube.com] → [dac~]` for audio, `[browser~] outlet 2 → [vFX.crt] → [layer] → [visualizer]` for video.
 - Phase C polish (deferred): cached tab thumbnail, resume-capture UX, URL autocomplete.
+---
+
+---
+## [2026-04-25] COMPLETED | youtube~ object Phase A — embedded YouTube player with L/R + video outlets
+**Agent:** Claude Code
+**Phase:** youtube~ Phase A — paste URL → embed plays in body → tab capture routes audio + video to outlets
+**Done:**
+- URL parser (`parseUrl.ts`) accepts watch / youtu.be / embed / shorts / mobile / music URLs; extracts 11-char video id; parses `?t=` / `?start=` in `90`, `90s`, `1m30s`, `1h2m3s` forms.
+- `YouTubeNode` extends `BrowserNode` and adds `videoId` / `startSeconds` state plus an independent `setOnVideoChange` listener (separate from BrowserNode's capture-state listener so panel reacts to URL edits without triggering AudioGraph rewires).
+- Registered `youtube~` in `OBJECT_DEFS` adjacent to `browser~`. Same outlet shape (signal L, signal R, media). Single registration point per project convention.
+- AudioGraph: parallel `youtubeNodes` map with full lifecycle parity (create / destroy / dispose / disconnect / meter / channel-routing) to `browser~`. `getYouTubeNode(id)` accessor.
+- VisualizerGraph: `setYouTubeNodeLookup` mirrors `setBrowserNodeLookup`. All 4 `browser~ && fromOutlet === 2` sites (vfxCRT, vfxBlur, reaperVideo, layer) have a `youtube~` sibling — verified by grep (4-for-4).
+- `YouTubePanel`: URL bar + load button + error pill, embedded `<iframe>` with `mute=1 enablejsapi=1 origin=...` (preview-only, no audio leak; jsapi flag is forward-compat for Phase B's IFrame Player API), placeholder when empty, "open in tab" + "mirror tab" two-step button row + tab-label / error status pill. Wheel + mousedown stopPropagation match `BrowserPanel` so canvas pan/zoom doesn’t eat panel events.
+- `YouTubePanelController` mirrors `BrowserPanelController` — panels persist across re-renders.
+- ObjectRenderer emits `pn-youtube-panel-host`; resize handle suppressed for `youtube~` (fixed-layout panel, same as `browser~`).
+- DragController allowlist excludes `.pn-youtube-panel-host` so iframe clicks never start an object drag.
+- `main.ts` wires controller into `startAudio` / `stopAudio` / render loop / shutdown alongside `browserPanelController`.
+- CSS in `shell.css`: full panel block using `--pn-*` tokens only, Vulf Mono / Vulf Sans, 16:9 iframe filling preview area.
+- Serializer round-trip: `youtube~` special-cases `url` and `videoId` with `-` placeholder so empty fields survive `/\s+/` parse-split. URL → videoId → startSeconds re-derived from URL on load (URL is source of truth); legacy `videoId`-only patches synthesize a canonical watch URL.
+- `tsc --noEmit` clean. `npm run build` clean. `+~13 KB` to bundle (parser + node + panel + controller).
+
+**Changed / new files:**
+- src/runtime/youtube/parseUrl.ts — new (URL parser)
+- src/runtime/YouTubeNode.ts — new (extends BrowserNode)
+- src/canvas/YouTubePanel.ts — new
+- src/canvas/YouTubePanelController.ts — new
+- src/graph/objectDefs.ts — added `youtube~` registration
+- src/runtime/AudioGraph.ts — youtubeNodes map + all browser~ sibling sites
+- src/runtime/VisualizerGraph.ts — setYouTubeNodeLookup + 4 outlet-2 branches
+- src/canvas/ObjectRenderer.ts — youtube~ panel-host emit + resize-handle skip
+- src/canvas/DragController.ts — allowlist entry
+- src/main.ts — controller create / setAudioGraph / lookup / mount / prune / destroy
+- src/serializer/serialize.ts — youtube~ branch with `-` placeholder
+- src/serializer/parse.ts — youtube~ branch decoding `-` placeholders
+- src/shell.css — `.patch-object-youtube-body`, `.pn-youtube-*` block
+- docs/youtube-object-plan.md — plan doc
+
+**Notes / decisions made:**
+- **Extension over composition.** Plan doc recommended composing `BrowserNode`. Switched to `extends BrowserNode` during implementation — composition was ~80 lines of mechanical forwarding for zero benefit. YouTubeNode "is a" BrowserNode that also tracks which YT video is loaded; that's what extension expresses. AudioGraph + VisualizerGraph still treat them as distinct types via separate maps.
+- **In-panel iframe is muted.** `?mute=1` in the embed URL. The iframe is a visual preview; audio routing is via tab capture only. Avoids the double-playback / feedback mess of having both the iframe and the captured tab playing audio simultaneously.
+- **Two-step capture flow (Open in tab / Mirror tab).** Explicit comment in `BrowserPanel.onOpenClick` documents that bundling `window.open` + `getDisplayMedia` in one click breaks capture (focus-steal → InvalidStateError). Honored that rule here; user clicks open, switches focus back to patchNet, clicks mirror.
+- **YouTubeNode has its own video-change listener** (`setOnVideoChange`) separate from BrowserNode's `setOnStateChange`. Necessary because AudioGraph subscribes to the latter for rewire-on-capture, and we don't want URL edits to trigger AudioGraph rewires.
+- **Director Protocol override.** Per user feedback this session: Claude is no longer formatting phase prompts for Codex on patchNet. Implementation is done in-session.
+
+**Next needed:**
+- Manual smoke test in browser per `docs/youtube-object-plan.md` Phase A QA list — confirm rickroll URL with `&t=43s` round-trips end-to-end through `dac~` and `layer → visualizer`.
+- On greenlight, Phase B: IFrame Player API integration (postMessage transport for play/pause/seek/rate), oEmbed metadata (title, thumbnail, duration), scrubber + time readout. Will land message-inlet wiring (`url` / `play` / `pause` / `seek` / `rate`) at the same time.
+---
+
+---
+## [2026-04-25] COMPLETED | youtube~ — lock/unlock toggle (movable when locked, interactive when unlocked)
+**Agent:** Claude Code
+**Phase:** youtube~ Phase A delta
+**Done:**
+- Added `locked` arg at args[4] (hidden, default "1" — locked-by-default per Max/MSP convention).
+- ObjectRenderer renders the standard `pn-subpatch-lock` button + sets `data-locked` on the body, mirroring dmx / mixer / sequencer.
+- ObjectInteractionController: lock-button click toggles args[4].
+- CSS: `data-locked="1"` → `pointer-events: none` on the panel-host + descendants (so clicks fall through to the body and the existing canvas drag picks them up); lock button stays interactive in either state; dashed accent outline when locked (signals "panel inert, object draggable" — same convention as dmx).
+- Serializer round-trips args[4] with the same `0`/`1` discipline as the other locked flags. Legacy patches without the field default to `1` (locked).
+- `tsc --noEmit` clean.
+
+**Changed files:**
+- src/graph/objectDefs.ts — added `locked` arg
+- src/canvas/ObjectRenderer.ts — lock button + data-locked on youtube~ body
+- src/canvas/ObjectInteractionController.ts — youtube~ lock toggle handler
+- src/shell.css — pointer-events gate + dashed-when-locked outline
+- src/serializer/serialize.ts — args[4]
+- src/serializer/parse.ts — args[4]
+
+**Notes / decisions made:**
+- **Locked-by-default.** Default args[4] = "1" so a freshly placed `youtube~` is movable from anywhere on the body the moment it lands. User unlocks (click the lock icon, becomes accent / open-padlock) to interact with the URL field, buttons, and YouTube player controls.
+- **No DragController changes.** The existing `target.closest(".pn-youtube-panel-host") return;` rule plus the new `pointer-events: none` CSS gate is enough — when locked, the panel-host is invisible to `target.closest`, so the rule doesn't fire and drag proceeds. Same pattern mixer~ uses.
+- **Iframe inertness in locked state** — `pointer-events: none` on an iframe element is honored by the browser (the iframe stops swallowing clicks). YouTube player controls become inert, the user drags from anywhere.
+
+**Next needed:**
+- Manual smoke: drop `youtube~`, paste URL, drag from URL bar / iframe / buttons (locked = should drag); click lock icon (should unlock + show dashed outline + accent on the icon); now URL field + buttons + YouTube player controls interact normally; click lock again to relock and drag again. Save / reload should preserve locked state.
+- Phase B unchanged.
 ---

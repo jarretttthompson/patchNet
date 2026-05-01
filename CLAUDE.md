@@ -1,6 +1,6 @@
-# CLAUDE.md — patchNet Director Context
+# CLAUDE.md — patchNet
 
-You are the **Director** of patchNet. Read this every session.
+Read this every session.
 
 ---
 
@@ -11,17 +11,7 @@ Users place objects on a canvas, connect them with straight patch cables, and se
 
 **App location:** `/Users/user/vibing/patchNet/`
 **Vault:** `patchNet-Vault/wiki/` — Tier 2 project brain
-
----
-
-## Agent Team
-
-| Agent | Role |
-|-------|------|
-| **Claude Code** | Director — architecture, planning, code review, phase greenlighting |
-| **Cursor** | Canvas interaction, UI shell, CSS, design token implementation |
-| **Codex** | Patch graph model, audio runtime, serializer/parser |
-| **Copilot** | Inline acceleration for Cursor and Codex |
+**Main brain:** `~/vibing/brain/wiki/projects/patchnet.md` (canonical) — symlinked from `~/brain/`
 
 ---
 
@@ -30,9 +20,8 @@ Users place objects on a canvas, connect them with straight patch cables, and se
 | File | Purpose |
 |------|---------|
 | `PLAN.md` | Full phased architecture plan |
-| `AGENTS.md` | Shared changelog — all agents read/write this |
+| `CHANGELOG.md` | Append work-log entries here after completing tasks |
 | `DESIGN_LANGUAGE.md` | All UI decisions live here — read before any CSS work |
-| `docs/phase-0-cursor-prompt.md` | Phase 0 prompt (completed) |
 | `patchNet-Vault/wiki/` | Project brain — object specs, concepts, research |
 
 ---
@@ -49,21 +38,16 @@ Users place objects on a canvas, connect them with straight patch cables, and se
 
 ## Current Phase
 
-Check `AGENTS.md` — the Project State header has the current phase and active tasks.
+Check `CHANGELOG.md` — most recent entry shows the current state. Check `PLAN.md` for the active phase.
 
 ---
 
-## Director Protocol
+## Workflow
 
-After each phase completes:
-1. Read the completion entry in `AGENTS.md`
-2. Review changed files if needed
-3. Append a review entry to `AGENTS.md`
-4. Update `patchNet-Vault/wiki/log.md`
-5. Write the next phase prompt into `docs/phase-N-[agent]-prompt.md`
-6. Tell the user: "Phase N complete. Paste `docs/phase-N-prompt.md` into [Agent]."
-
----
+After completing meaningful work:
+1. Append a `## [YYYY-MM-DD] COMPLETED | <task>` entry to `CHANGELOG.md` (Agent: Claude Code, Done, Changed files, Notes, Next needed)
+2. Update `patchNet-Vault/wiki/log.md` if a wiki-worthy decision was made
+3. Update or add wiki pages for new objects/concepts/sources
 
 ## Vault Operations
 
@@ -71,4 +55,5 @@ When adding research or decisions to the vault:
 - Sources go in `patchNet-Vault/wiki/sources/<slug>.md`
 - Concepts go in `patchNet-Vault/wiki/concepts/<name>.md`
 - Object specs go in `patchNet-Vault/wiki/entities/object-<name>.md`
+- NotebookLM exports go in `patchNet-Vault/raw/notebooklm/<notebook-slug>/` (immutable; see folder README for the convention)
 - Always update `index.md` and append to `log.md`

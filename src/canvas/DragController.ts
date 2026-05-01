@@ -1,4 +1,5 @@
 import type { PatchGraph } from "../graph/PatchGraph";
+import { checkOverlap, getNodeBox, type Box } from "./OverlapGuard";
 import { getZoom } from "./zoomState";
 
 interface DragState {
@@ -13,6 +14,16 @@ interface DragState {
   mouseStartX: number;
   mouseStartY: number;
   moved: boolean;
+  /** Last (x,y) at which the no-overlap guard accepted the move. Used to
+   *  snap back when a frame would cause a collision. Updated only on
+   *  successful frames; stays stuck when blocked. */
+  lastValidX: number;
+  lastValidY: number;
+  /** True once the user has triggered a blocked-flash during this drag.
+   *  Subsequent blocked frames are silent so the pulse plays once per
+   *  drag rather than re-triggering on every contact event. Reset on
+   *  the next drag start. */
+  flashed: boolean;
 }
 
 interface CoMover {
@@ -20,6 +31,8 @@ interface CoMover {
   el: HTMLElement;
   startX: number;
   startY: number;
+  lastValidX: number;
+  lastValidY: number;
 }
 
 /**
@@ -51,6 +64,10 @@ export class DragController {
     private readonly getSelection?: () => Set<string>,
     /** Called immediately after Cmd+drag clones nodes, with the new ID set */
     private readonly onDuplicated?: (newIds: Set<string>) => void,
+    /** Called when a drag frame is blocked by no-overlap. Receives the
+     *  obstacle node id and the primary moving node id so the host can
+     *  flash visual feedback on both objects. */
+    private readonly onBlocked?: (obstacleId: string, movingId: string) => void,
   ) {
     this.onMouseDown = this.handleMouseDown.bind(this);
     this.onMouseMove = this.handleMouseMove.bind(this);
@@ -95,6 +112,11 @@ export class DragController {
     // initiate an object drag. The object can still be dragged by grabbing
     // its border or any area outside the panel host.
     if (target.closest(".pn-dmx-panel-host")) return;
+    if (target.closest(".pn-mixer-panel-host")) return;
+    // youtube~ panel — interior is URL input + iframe + buttons. Buttons/
+    // inputs are already excluded above; this catches clicks on the iframe
+    // body (which we never want to convert into an object drag).
+    if (target.closest(".pn-youtube-panel-host")) return;
     // Same treatment for the js~ inline code-pane + slider panel — BUT
     // only when the js~ is unlocked. Locked js~ objects drag from anywhere
     // on the body, with an explicit exception for sliders (which stay
@@ -109,6 +131,19 @@ export class DragController {
       if (!lockedBody) return;  // unlocked → panel interactive (no drag)
       // locked → fall through to drag
     }
+    const rvideoHost = target.closest<HTMLElement>(".pn-rvideo-panel-host");
+    if (rvideoHost) {
+      // Knobs always stay interactive.
+      if (target.closest(".pn-rvideo-knob-range")) return;
+      // Lock button always clicks, never drags.
+      if (target.closest(".pn-rvideo-lock")) return;
+      const lockedBody = rvideoHost.closest<HTMLElement>('.patch-object-rvideo-body[data-locked="1"]');
+      if (!lockedBody) return;
+      // locked → fall through to drag
+    }
+    // buffer~ transport buttons + waveform canvas: never start drag.
+    if (target.closest(".pn-buf-btn")) return;
+    if (target.closest(".pn-buf-wave")) return;
     if (target.closest(".patch-object-slider-track")) return;
     if (target.closest(".patch-object-face-button")) return;
     if (target.closest(".patch-object-toggle-rocker")) return;
@@ -140,8 +175,16 @@ export class DragController {
         for (const id of selected) toDuplicate.add(id);
       }
 
-      // Clone at the same position. graph.emit("change") fires synchronously
-      // inside duplicateNodes, so render() runs and new DOM elements exist
+      // Capture the cursor's offset within the SOURCE element BEFORE
+      // duplicateNodes runs — the clones land cascaded by (+20, +20) so
+      // the no-overlap rule holds, and we want the cursor to stay
+      // anchored to the same logical pixel of the dragged clone.
+      const sourceRect = objectEl.getBoundingClientRect();
+      const cursorOffsetX = (e.clientX - sourceRect.left) / z;
+      const cursorOffsetY = (e.clientY - sourceRect.top)  / z;
+
+      // Clone — graph.emit("change") fires synchronously inside
+      // duplicateNodes, so render() runs and new DOM elements exist
       // by the time duplicateNodes() returns.
       const idMap   = this.graph.duplicateNodes([...toDuplicate]);
       const newPrimId = idMap.get(primaryId);
@@ -154,17 +197,21 @@ export class DragController {
       const newEl = this.canvasEl.querySelector<HTMLElement>(`[data-node-id="${newPrimId}"]`);
       if (!newEl) return;
 
-      const newRect = newEl.getBoundingClientRect();
+      const newPrimX = parseFloat(newEl.style.left || "0");
+      const newPrimY = parseFloat(newEl.style.top || "0");
       this.drag = {
         nodeId: newPrimId,
         el: newEl,
-        offsetX: (e.clientX - newRect.left) / z,
-        offsetY: (e.clientY - newRect.top)  / z,
-        startX: mouseStartX - parseFloat(newEl.style.left || "0"),
-        startY: mouseStartY - parseFloat(newEl.style.top || "0"),
+        offsetX: cursorOffsetX,
+        offsetY: cursorOffsetY,
+        startX: mouseStartX - newPrimX,
+        startY: mouseStartY - newPrimY,
         mouseStartX,
         mouseStartY,
         moved: false,
+        lastValidX: newPrimX,
+        lastValidY: newPrimY,
+        flashed: false,
       };
       newEl.classList.add("patch-object--dragging");
 
@@ -175,11 +222,15 @@ export class DragController {
         if (!toDuplicate.has(oldId)) continue;
         const coEl = this.canvasEl.querySelector<HTMLElement>(`[data-node-id="${newId}"]`);
         if (!coEl) continue;
+        const cx = parseFloat(coEl.style.left || "0");
+        const cy = parseFloat(coEl.style.top || "0");
         this.coMovers.push({
           nodeId: newId,
           el: coEl,
-          startX: parseFloat(coEl.style.left || "0"),
-          startY: parseFloat(coEl.style.top || "0"),
+          startX: cx,
+          startY: cy,
+          lastValidX: cx,
+          lastValidY: cy,
         });
         coEl.classList.add("patch-object--dragging");
       }
@@ -191,17 +242,22 @@ export class DragController {
 
     // ── Normal drag ────────────────────────────────────────────────────
     const rect = objectEl.getBoundingClientRect();
+    const primX = parseFloat(objectEl.style.left || "0");
+    const primY = parseFloat(objectEl.style.top  || "0");
 
     this.drag = {
       nodeId: primaryId,
       el: objectEl,
       offsetX: (e.clientX - rect.left) / z,
       offsetY: (e.clientY - rect.top)  / z,
-      startX: (e.clientX - canvasRect.left) / z - parseFloat(objectEl.style.left || "0"),
-      startY: (e.clientY - canvasRect.top)  / z - parseFloat(objectEl.style.top  || "0"),
+      startX: (e.clientX - canvasRect.left) / z - primX,
+      startY: (e.clientY - canvasRect.top)  / z - primY,
       mouseStartX,
       mouseStartY,
       moved: false,
+      lastValidX: primX,
+      lastValidY: primY,
+      flashed: false,
     };
 
     objectEl.classList.add("patch-object--dragging");
@@ -217,11 +273,15 @@ export class DragController {
         if (selId === primaryId) continue;
         const el = this.canvasEl.querySelector<HTMLElement>(`[data-node-id="${selId}"]`);
         if (!el) continue;
+        const cx = parseFloat(el.style.left || "0");
+        const cy = parseFloat(el.style.top || "0");
         this.coMovers.push({
           nodeId: selId,
           el,
-          startX: parseFloat(el.style.left || "0"),
-          startY: parseFloat(el.style.top || "0"),
+          startX: cx,
+          startY: cy,
+          lastValidX: cx,
+          lastValidY: cy,
         });
         el.classList.add("patch-object--dragging");
         coveredIds.add(selId);
@@ -235,11 +295,15 @@ export class DragController {
         if (node.groupId !== primaryNode.groupId || coveredIds.has(node.id)) continue;
         const el = this.canvasEl.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`);
         if (!el) continue;
+        const cx = parseFloat(el.style.left || "0");
+        const cy = parseFloat(el.style.top || "0");
         this.coMovers.push({
           nodeId: node.id,
           el,
-          startX: parseFloat(el.style.left || "0"),
-          startY: parseFloat(el.style.top || "0"),
+          startX: cx,
+          startY: cy,
+          lastValidX: cx,
+          lastValidY: cy,
         });
         el.classList.add("patch-object--dragging");
         coveredIds.add(node.id);
@@ -262,15 +326,8 @@ export class DragController {
     // intrinsic coords render inside that gutter. The caller grows the
     // pan-group live during drag via updatePanGroupSize() so the scrollable
     // area expands as the object moves outward.
-    const el = this.drag.el;
     const nx = Math.round(x);
     const ny = Math.round(y);
-
-    el.style.left = `${nx}px`;
-    el.style.top = `${ny}px`;
-    this.drag.moved = true;
-
-    this.onMove?.(this.drag.nodeId, nx, ny);
 
     // Move co-selected nodes by the same delta (intrinsic)
     const mouseX = (e.clientX - canvasRect.left) / z;
@@ -278,12 +335,60 @@ export class DragController {
     const dx = mouseX - this.drag.mouseStartX;
     const dy = mouseY - this.drag.mouseStartY;
 
+    // No-overlap check: build the proposed boxes for primary + every co-mover
+    // and run a single guard. If ANY member of the rigid group would collide
+    // with a non-moving object, the entire group stays at its last valid spot.
+    const movingIds = new Set<string>([this.drag.nodeId, ...this.coMovers.map(cm => cm.nodeId)]);
+    const proposed = new Map<string, Box>();
+    const primNode = this.graph.nodes.get(this.drag.nodeId);
+    if (primNode) {
+      const box = getNodeBox(primNode);
+      proposed.set(this.drag.nodeId, { x: nx, y: ny, w: box.w, h: box.h });
+    }
     for (const cm of this.coMovers) {
-      const nx = Math.round(cm.startX + dx);
-      const ny = Math.round(cm.startY + dy);
-      cm.el.style.left = `${nx}px`;
-      cm.el.style.top = `${ny}px`;
-      this.onMove?.(cm.nodeId, nx, ny);
+      const cmNode = this.graph.nodes.get(cm.nodeId);
+      if (!cmNode) continue;
+      const box = getNodeBox(cmNode);
+      proposed.set(cm.nodeId, {
+        x: Math.round(cm.startX + dx),
+        y: Math.round(cm.startY + dy),
+        w: box.w,
+        h: box.h,
+      });
+    }
+    const result = checkOverlap(this.graph, movingIds, proposed);
+
+    const el = this.drag.el;
+    if (result.ok) {
+      el.style.left = `${nx}px`;
+      el.style.top = `${ny}px`;
+      this.drag.lastValidX = nx;
+      this.drag.lastValidY = ny;
+      this.drag.moved = true;
+      this.onMove?.(this.drag.nodeId, nx, ny);
+
+      for (const cm of this.coMovers) {
+        const cnx = Math.round(cm.startX + dx);
+        const cny = Math.round(cm.startY + dy);
+        cm.el.style.left = `${cnx}px`;
+        cm.el.style.top = `${cny}px`;
+        cm.lastValidX = cnx;
+        cm.lastValidY = cny;
+        this.onMove?.(cm.nodeId, cnx, cny);
+      }
+    } else {
+      // Snap back to the last valid spot. Don't update lastValid; don't fire
+      // onMove (graph state already reflects last valid via the prior frame).
+      el.style.left = `${this.drag.lastValidX}px`;
+      el.style.top = `${this.drag.lastValidY}px`;
+      for (const cm of this.coMovers) {
+        cm.el.style.left = `${cm.lastValidX}px`;
+        cm.el.style.top = `${cm.lastValidY}px`;
+      }
+      if (result.obstacleId && !this.drag.flashed) {
+        this.drag.flashed = true;
+        this.onBlocked?.(result.obstacleId, this.drag.nodeId);
+      }
     }
   }
 

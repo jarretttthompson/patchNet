@@ -38,10 +38,15 @@ export function getPortPos(
   if (direction === "inlet" && port?.side === "left") {
     const domPos = readNubPos(panGroupEl, node.id, "patch-port-side-left", portIndex);
     if (domPos) return domPos;
-    // Formula fallback mirrors the layout in ObjectRenderer.ts for side inlets.
+    // Formula fallback mirrors the layout in ObjectRenderer.ts for side
+    // inlets: slot = position within the filtered side-inlet list (not the
+    // raw port.index), so multi-inlet nodes with non-side inlets preceding
+    // don't push the formula off by those counts.
+    const sideSlot = ports.filter(p => p.side === "left").findIndex(p => p.index === portIndex);
+    const slot = sideSlot >= 0 ? sideSlot : 0;
     return {
       x: node.x,
-      y: node.y + ATTR_SIDE_INLET_HEADER_H + portIndex * ATTR_SIDE_INLET_ROW_H + ATTR_SIDE_INLET_ROW_H / 2,
+      y: node.y + ATTR_SIDE_INLET_HEADER_H + slot * ATTR_SIDE_INLET_ROW_H + ATTR_SIDE_INLET_ROW_H / 2,
     };
   }
 

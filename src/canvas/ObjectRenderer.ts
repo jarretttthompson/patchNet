@@ -1,5 +1,5 @@
 import { renderPorts } from "./PortRenderer";
-import { getObjectDef, OBJECT_DEFS, getVisibleArgs, getSequencerCells, sequencerCols, sequencerRows, fftBandCount, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
+import { getObjectDef, OBJECT_DEFS, getVisibleArgs, getSequencerCells, sequencerCols, sequencerRows, fftBandCount, bufferMode, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
 import type { PatchNode } from "../graph/PatchNode";
 
 const LOCK_ICON_SVG = `
@@ -13,6 +13,67 @@ const LOCK_ICON_SVG = `
       </svg>`;
 
 const MATH_OPS = new Set(["+", "-", "*", "/", "%", "==", "!=", ">", "<", ">=", "<="]);
+
+/**
+ * Object types whose body content has a fixed "design size" and should be
+ * uniformly transform-scaled when the user resizes the object. Excluded:
+ *   - flex-reflow types (comment, message, sequencer)
+ *   - panel-managed types (codebox, js~, reaperVideo, dmx, mixer~,
+ *     browser~, youtube~, frame~, subPatch)
+ *   - buffer~ (already manages its own stage)
+ *   - attribute (its panel-style scrolling list reflows naturally)
+ */
+const SCALE_ELIGIBLE_TYPES = new Set<string>([
+  "+", "-", "*", "/", "%", "==", "!=", ">", "<", ">=", "<=",
+  "s", "r", "t", "metro", "click~", "scale", "timer", "oscillateNumbers",
+  "integer", "float",
+  "inlet", "outlet",
+  "mediaImage*", "mediaVideo*", "visualizer*", "layer*", "shaderToy*", "patchViz", "imageFX*",
+  "adc~", "dac~",
+]);
+
+/**
+ * Wrap whatever the type-specific buildBody branch emitted in a `.pn-stage`
+ * so it scales uniformly with the object. The def's defaults act as a
+ * minimum size floor — short content stays at design size; long content
+ * (e.g. a long object title) grows the stage so nothing clips. After the
+ * stage is mounted we measure its actual layout box and feed the values
+ * into --pn-stage-w / --pn-stage-h so the transform-scale denominator
+ * matches reality.
+ */
+/** Render a buffer~ maxLen (seconds) as a compact "1m30s" / "45s" label. */
+export function formatMaxLen(seconds: number): string {
+  const s = Math.max(1, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const r = s - m * 60;
+  return r === 0 ? `${m}m` : `${m}m${r}s`;
+}
+
+function applyStage(body: HTMLDivElement, designW: number, designH: number): void {
+  if (body.querySelector(":scope > .pn-stage")) return;  // already staged
+  const stage = document.createElement("div");
+  stage.className = "pn-stage";
+  stage.style.setProperty("--pn-stage-min-w", `${designW}px`);
+  stage.style.setProperty("--pn-stage-min-h", `${designH}px`);
+  // Initial denominator values so the first paint is roughly correct
+  // before the post-layout measurement updates them.
+  stage.style.setProperty("--pn-stage-w", `${designW}px`);
+  stage.style.setProperty("--pn-stage-h", `${designH}px`);
+  while (body.firstChild) stage.appendChild(body.firstChild);
+  body.classList.add("pn-stage-host");
+  body.appendChild(stage);
+
+  // After layout, sync the transform denominators to the stage's actual
+  // pre-transform layout box. offsetWidth/Height honour min-width and
+  // max-content sizing without being affected by the transform.
+  requestAnimationFrame(() => {
+    const w = stage.offsetWidth;
+    const h = stage.offsetHeight;
+    if (w > 0) stage.style.setProperty("--pn-stage-w", `${w}px`);
+    if (h > 0) stage.style.setProperty("--pn-stage-h", `${h}px`);
+  });
+}
 
 const SVG_SPEAKER = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" xmlns="http://www.w3.org/2000/svg">
   <polygon points="2,7 2,13 6,13 11,16.5 11,3.5 6,7" fill="currentColor"/>
@@ -215,10 +276,10 @@ function buildBody(node: PatchNode): HTMLDivElement {
   } else if (node.type === "attribute") {
     body.appendChild(buildAttributeBody(node));
 
-  } else if (node.type === "imageFX") {
+  } else if (node.type === "imageFX*") {
     const title = document.createElement("div");
     title.className = "patch-object-visual-label";
-    title.textContent = "imageFX";
+    title.textContent = "imageFX*";
     body.appendChild(title);
 
     // Show which effects are non-default as a compact sub-label
@@ -236,7 +297,7 @@ function buildBody(node: PatchNode): HTMLDivElement {
     sub.textContent = parts.length ? parts.join(" ") : "dbl-click to edit";
     body.appendChild(sub);
 
-  } else if (node.type === "mediaImage") {
+  } else if (node.type === "mediaImage*") {
     body.classList.add("patch-object-mediaimage-body");
 
     const polaroid = document.createElement("div");
@@ -285,10 +346,10 @@ function buildBody(node: PatchNode): HTMLDivElement {
     label.textContent = `${node.args[0] ?? "world1"} · ${enabled ? "on" : "off"}`;
     body.appendChild(label);
 
-  } else if (node.type === "shaderToy") {
+  } else if (node.type === "shaderToy*") {
     const title = document.createElement("div");
     title.className = "patch-object-visual-label";
-    title.textContent = "shaderToy";
+    title.textContent = "shaderToy*";
     body.appendChild(title);
 
     const preset = node.args[0] ?? "default";
@@ -300,14 +361,14 @@ function buildBody(node: PatchNode): HTMLDivElement {
     sub.textContent = `${hasCode ? "custom" : preset} · ${w}×${h}`;
     body.appendChild(sub);
 
-  } else if (node.type === "visualizer" || node.type === "mediaVideo" || node.type === "layer") {
+  } else if (node.type === "visualizer*" || node.type === "mediaVideo*" || node.type === "layer*") {
     const title = document.createElement("div");
     title.className = "patch-object-visual-label";
     title.textContent = node.type;
     body.appendChild(title);
 
     let subText = "";
-    if (node.type === "visualizer") {
+    if (node.type === "visualizer*") {
       const nm = node.args[0] ?? "world1";
       const open = (node.args[2] ?? "0") === "1";
       const w = node.args[5];
@@ -315,11 +376,11 @@ function buildBody(node: PatchNode): HTMLDivElement {
       const bits = [`"${nm}"`, open ? "open" : "closed"];
       if (w && h) bits.push(`${w}×${h}`);
       subText = bits.join(" · ");
-    } else if (node.type === "layer") {
+    } else if (node.type === "layer*") {
       const ctx = node.args[0] ?? "world1";
       const pri = node.args[1] ?? "0";
       subText = `${ctx} · ${pri}`;
-    } else if (node.type === "mediaVideo") {
+    } else if (node.type === "mediaVideo*") {
       const url = node.args[0] ?? "";
       const name = node.args[1] ?? "";
       const transport = node.args[2] ?? "stop";
@@ -344,12 +405,64 @@ function buildBody(node: PatchNode): HTMLDivElement {
     host.dataset.jseffectPanelHost = node.id;
     body.appendChild(host);
 
-  } else if (node.type === "browser~") {
+  } else if (node.type === "reaperVideo*") {
+    // Inline panel host — ReaperVideoPanelController mounts CodeMirror +
+    // knob GUI after render(). args[0]=code, args[1]=library, args[2]=locked.
+    body.classList.add("patch-object-rvideo-body");
+    body.dataset.locked = (node.args[2] ?? "0") === "1" ? "1" : "0";
+    const host = document.createElement("div");
+    host.className = "pn-rvideo-panel-host";
+    host.dataset.rvideoPanelHost = node.id;
+    body.appendChild(host);
+
+  } else if (node.type === "mixer~") {
+    const locked = (node.args[3] ?? "0") === "1";
+    body.classList.add("patch-object-mixer-body");
+    body.dataset.locked = locked ? "1" : "0";
+    const host = document.createElement("div");
+    host.className = "pn-mixer-panel-host";
+    host.dataset.mixerPanelHost = node.id;
+    body.appendChild(host);
+
+    const lockBtn = document.createElement("button");
+    lockBtn.className = "pn-subpatch-lock";
+    lockBtn.dataset.locked = locked ? "1" : "0";
+    lockBtn.setAttribute("aria-label", locked ? "Unlock to use controls" : "Lock to move object");
+    lockBtn.innerHTML = LOCK_ICON_SVG;
+    body.appendChild(lockBtn);
+
+  } else if (node.type === "browser~*") {
     body.classList.add("patch-object-browser-body");
     const host = document.createElement("div");
     host.className = "pn-browser-panel-host";
     host.dataset.browserPanelHost = node.id;
     body.appendChild(host);
+
+  } else if (node.type === "frame*") {
+    // Inline panel host — FramePanelController mounts the toolbar +
+    // transparent capture rect here. Body itself is transparent so the
+    // canvas content beneath the frame remains visible (and capturable).
+    body.classList.add("patch-object-frame-body");
+    const host = document.createElement("div");
+    host.className = "pn-frame-panel-host";
+    host.dataset.framePanelHost = node.id;
+    body.appendChild(host);
+
+  } else if (node.type === "youtube~*") {
+    body.classList.add("patch-object-youtube-body");
+    const locked = (node.args[4] ?? "0") === "1";
+    body.dataset.locked = locked ? "1" : "0";
+    const host = document.createElement("div");
+    host.className = "pn-youtube-panel-host";
+    host.dataset.youtubePanelHost = node.id;
+    body.appendChild(host);
+
+    const lockBtn = document.createElement("button");
+    lockBtn.className = "pn-subpatch-lock";
+    lockBtn.dataset.locked = locked ? "1" : "0";
+    lockBtn.setAttribute("aria-label", locked ? "Unlock to use URL field + buttons" : "Lock to move object");
+    lockBtn.innerHTML = LOCK_ICON_SVG;
+    body.appendChild(lockBtn);
 
   } else if (node.type === "dmx") {
     // Inline panel host — DmxPanelController mounts the live GUI here after
@@ -379,6 +492,56 @@ function buildBody(node: PatchNode): HTMLDivElement {
     title.textContent = node.args[0] ? `${node.type} ${node.args[0]}` : node.type;
     row.appendChild(title);
     body.appendChild(row);
+
+  } else if (node.type === "buffer~") {
+    body.classList.add("patch-object-buffer-body");
+
+    const transport = node.args[4] ?? "stop";
+    const mode      = bufferMode(node.args);
+    const rate      = parseFloat(node.args[1] ?? "1");
+    const loop      = (node.args[2] ?? "0") !== "0";
+    const maxLen    = parseFloat(node.args[3] ?? "180");
+
+    // Stage = fixed-size inner box (220×110) scaled uniformly via CSS to fill
+    // whatever the user resizes the object to. Keeps font-sizes, button paddings,
+    // and waveform resolution all in a single visual ratio.
+    const stage = document.createElement("div");
+    stage.className = "pn-buf-stage";
+
+    const title = document.createElement("div");
+    title.className = "pn-buf-title";
+    title.textContent = "buffer~";
+    stage.appendChild(title);
+
+    const transportRow = document.createElement("div");
+    transportRow.className = "pn-buf-transport";
+    transportRow.innerHTML = `
+      <button type="button" class="pn-buf-btn pn-buf-rec${transport === "record" ? " pn-buf-active" : ""}"   data-buf-action="record" aria-label="Record">⏺</button>
+      <button type="button" class="pn-buf-btn pn-buf-play${transport === "play"   ? " pn-buf-active" : ""}"  data-buf-action="play"   aria-label="Play">▶</button>
+      <button type="button" class="pn-buf-btn pn-buf-pause${transport === "pause" ? " pn-buf-active" : ""}" data-buf-action="pause"  aria-label="Pause">❚❚</button>
+      <button type="button" class="pn-buf-btn pn-buf-stop${transport === "stop"   ? " pn-buf-active" : ""}" data-buf-action="stop"   aria-label="Stop">■</button>
+    `;
+    stage.appendChild(transportRow);
+
+    const wave = document.createElement("canvas");
+    wave.className = "pn-buf-wave";
+    wave.dataset.bufNodeId = node.id;
+    wave.width  = 200;
+    wave.height = 36;
+    stage.appendChild(wave);
+
+    const info = document.createElement("div");
+    info.className = "pn-buf-info";
+    const rateStr = `×${rate.toFixed(2)}`;
+    info.innerHTML = `
+      <span class="pn-buf-rate">${rateStr}</span>
+      <span class="pn-buf-loop${loop ? " pn-buf-loop-on" : ""}">loop:${loop ? "on" : "off"}</span>
+      <span class="pn-buf-maxlen" data-buf-maxlen-display title="Max recording length (1s–60m) — click to edit">max:${formatMaxLen(maxLen)}</span>
+      <button type="button" class="pn-buf-btn pn-buf-mode" data-buf-action="${mode === "stereo" ? "mono" : "stereo"}">${mode === "stereo" ? "STEREO" : "MONO"}</button>
+    `;
+    stage.appendChild(info);
+
+    body.appendChild(stage);
 
   } else if (node.type === "fft~") {
     body.classList.add("pn-fft-body");
@@ -554,6 +717,15 @@ function buildBody(node: PatchNode): HTMLDivElement {
     }
   }
 
+  // Auto-wrap eligible types in a fixed-size .pn-stage so resizing the object
+  // uniformly scales the body content. Excluded types either reflow naturally
+  // (comment, message, sequencer) or own their own layout (panel-managed
+  // types + buffer~).
+  if (SCALE_ELIGIBLE_TYPES.has(node.type)) {
+    const def = getObjectDef(node.type);
+    applyStage(body, def.defaultWidth, def.defaultHeight);
+  }
+
   return body;
 }
 
@@ -677,11 +849,17 @@ export function renderObject(node: PatchNode): HTMLDivElement {
   el.appendChild(buildBody(node));
   el.appendChild(renderPorts("outlet", topOutlets));
 
-  // Side inlet nubs — absolutely positioned on the left edge, aligned with rows
-  for (const port of sideInlets) {
+  // Side inlet nubs — absolutely positioned on the left edge. Nub index
+  // within the side-inlet strip = position in the filtered array (NOT the
+  // raw port.index), so Phase C's secondary media inlets on reaperVideo
+  // don't shift the param-knob nubs. All consumers (attribute, js~,
+  // reaperVideo) use the same 22px header + 24px row grid; panels must
+  // lay out their rows to match so this formula alone is authoritative —
+  // no runtime sync required.
+  sideInlets.forEach((port, slot) => {
     const nub = document.createElement("div");
     const portY = ATTR_SIDE_INLET_HEADER_H
-      + port.index * ATTR_SIDE_INLET_ROW_H
+      + slot * ATTR_SIDE_INLET_ROW_H
       + ATTR_SIDE_INLET_ROW_H / 2;
     nub.className = `patch-port patch-port-inlet patch-port-type-${port.type} patch-port-hot patch-port-side-left`;
     nub.dataset.portIndex = String(port.index);
@@ -691,7 +869,7 @@ export function renderObject(node: PatchNode): HTMLDivElement {
     nub.style.top  = `${portY}px`;
     nub.style.left = "0";
     el.appendChild(nub);
-  }
+  });
 
   // Side outlet nubs — absolutely positioned on the right edge, row-centered.
   // Vertical position is a percentage of the object height so the nubs track
@@ -710,8 +888,8 @@ export function renderObject(node: PatchNode): HTMLDivElement {
   }
 
   // Resize handle — bottom-right corner drag target. Suppressed for objects
-  // whose panel UI assumes a fixed layout (browser~).
-  if (node.type !== "browser~") {
+  // whose panel UI assumes a fixed layout (browser~, youtube~).
+  if (node.type !== "browser~*" && node.type !== "youtube~*") {
     const resizeHandle = document.createElement("div");
     resizeHandle.className = "pn-resize-handle";
     el.appendChild(resizeHandle);

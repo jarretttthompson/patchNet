@@ -5,6 +5,8 @@ import type { CodeboxController } from "./CodeboxController";
 import type { VisualizerGraph } from "../runtime/VisualizerGraph";
 import type { DmxGraph } from "../runtime/DmxGraph";
 import type { SubPatchManager } from "./SubPatchManager";
+import type { JsEffectPanelController } from "./JsEffectPanelController";
+import type { ReaperVideoPanelController } from "./ReaperVideoPanelController";
 import {
   OBJECT_DEFS,
   getObjectDef,
@@ -14,15 +16,37 @@ import {
   getVisibleArgs,
   deriveTriggerPorts,
   deriveFftPorts,
+  deriveMixerPorts,
+  mixerDefaultWidth,
   canonicalizeType,
   ensureSequencerArgs,
   getSequencerCells,
   setSequencerCells,
   sequencerCols,
   sequencerRows,
+  bufferControlInlet,
+  deriveBufferPorts,
+  JS_EFFECT_SIDE_INLET_START,
+  getReaperVideoSideInletStart,
 } from "../graph/objectDefs";
 import { ImageFXPanel } from "./ImageFXPanel";
 import { buildOdometerContent } from "./ObjectRenderer";
+
+/** Parse "90", "1m30s", "2m", "45s" → seconds. Plain numbers are interpreted
+ *  as seconds. Returns null if the input doesn't parse. */
+function parseSecondsLoose(raw: string): number | null {
+  const s = raw.trim().toLowerCase();
+  if (!s) return null;
+  if (/^[-+]?\d+(\.\d+)?$/.test(s)) {
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : null;
+  }
+  const m = s.match(/^(?:(\d+)\s*m)?\s*(?:(\d+(?:\.\d+)?)\s*s)?$/);
+  if (!m || (!m[1] && !m[2])) return null;
+  const minutes = m[1] ? parseInt(m[1], 10) : 0;
+  const seconds = m[2] ? parseFloat(m[2])    : 0;
+  return minutes * 60 + seconds;
+}
 
 function applyDollarArgs(template: string, values: string[]): string {
   return template.replace(/\$(\d)/g, (_, n: string) => values[Number.parseInt(n, 10) - 1] ?? `$${n}`);
@@ -69,6 +93,14 @@ export class ObjectInteractionController {
     activePlace: number | null;
   } | null = null;
 
+  private bufWaveDrag: {
+    node: PatchNode;
+    canvas: HTMLCanvasElement;
+    startNorm: number;
+    endNorm: number;
+    shift: boolean;
+  } | null = null;
+
   private readonly onDocMouseMove: (e: MouseEvent) => void;
   private readonly onDocMouseUp: (e: MouseEvent) => void;
   private readonly onAttrInput: (e: Event) => void;
@@ -80,10 +112,15 @@ export class ObjectInteractionController {
   private readonly oscTimers = new Map<string, { rafId: number; startT: number }>();
   private readonly mathLeftOps = new Map<string, number>();
   private codeboxController?: CodeboxController;
+  private jsEffectPanelController?: JsEffectPanelController;
+  private reaperVideoPanelController?: ReaperVideoPanelController;
   private visualizerGraph?: VisualizerGraph;
   private dmxGraph?: DmxGraph;
   private outletCallback?: (outletIndex: number, value: string | null) => void;
   private subPatchManager?: SubPatchManager;
+  /** Repaint a single buffer~ waveform without going through the audio rAF
+   *  tick (so drag overlays update with DSP off). main.ts injects this. */
+  private bufferRedraw?: (nodeId: string) => void;
   /** Presentation panel elements (in the main canvas) that this OIC also handles. */
   private readonly externalPanels: HTMLElement[] = [];
   /** Node ids currently mid-flash — re-applied after render() rebuilds the DOM. */
@@ -131,6 +168,14 @@ export class ObjectInteractionController {
     this.codeboxController = cc;
   }
 
+  setJsEffectPanelController(c: JsEffectPanelController): void {
+    this.jsEffectPanelController = c;
+  }
+
+  setReaperVideoPanelController(c: ReaperVideoPanelController): void {
+    this.reaperVideoPanelController = c;
+  }
+
   setVisualizerGraph(vg: VisualizerGraph): void {
     this.visualizerGraph = vg;
   }
@@ -145,6 +190,10 @@ export class ObjectInteractionController {
 
   setSubPatchManager(mgr: SubPatchManager): void {
     this.subPatchManager = mgr;
+  }
+
+  setBufferRedrawCallback(cb: (nodeId: string) => void): void {
+    this.bufferRedraw = cb;
   }
 
   destroy(): void {
@@ -215,6 +264,28 @@ export class ObjectInteractionController {
 
     this.mouseDownX = e.clientX;
     this.mouseDownY = e.clientY;
+
+    // buffer~ waveform: click + drag to play / commit a range. Caught before
+    // generic numbox/odometer handling and before the canvas drag-select layer.
+    if (node.type === "buffer~") {
+      const waveEl = (e.target as Element).closest<HTMLCanvasElement>(".pn-buf-wave");
+      if (waveEl) {
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = waveEl.getBoundingClientRect();
+        const norm = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        this.bufWaveDrag = {
+          node,
+          canvas: waveEl,
+          startNorm: norm,
+          endNorm:   norm,
+          shift:     e.shiftKey,
+        };
+        document.addEventListener("mousemove", this.onDocMouseMove);
+        document.addEventListener("mouseup",   this.onDocMouseUp);
+        return;
+      }
+    }
 
     if (node.type === "slider") {
       const trackEl = objectEl.querySelector<HTMLElement>(".patch-object-slider-track");
@@ -289,6 +360,45 @@ export class ObjectInteractionController {
         e.stopPropagation();
         return;
       }
+      if (node?.type === "mixer~") {
+        const nowLocked = (node.args[3] ?? "0") === "1";
+        node.args[3] = nowLocked ? "0" : "1";
+        this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
+      if (node?.type === "youtube~*") {
+        const nowLocked = (node.args[4] ?? "0") === "1";
+        node.args[4] = nowLocked ? "0" : "1";
+        this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    // buffer~ transport buttons — match by data-buf-action.
+    const bufBtn = (e.target as Element).closest<HTMLElement>(".pn-buf-btn[data-buf-action]");
+    if (bufBtn) {
+      const objectElForBtn = bufBtn.closest<HTMLElement>(".patch-object");
+      const bufNode = objectElForBtn ? this.getNode(objectElForBtn) : null;
+      if (bufNode?.type === "buffer~") {
+        const action = bufBtn.dataset.bufAction ?? "";
+        this.deliverBufferMessage(bufNode, action, []);
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    // buffer~ maxLen — click on the "max:Nm" label to edit.
+    const maxLenEl = (e.target as Element).closest<HTMLElement>("[data-buf-maxlen-display]");
+    if (maxLenEl) {
+      const objectElForMax = maxLenEl.closest<HTMLElement>(".patch-object");
+      const bufNode = objectElForMax ? this.getNode(objectElForMax) : null;
+      if (bufNode?.type === "buffer~") {
+        this.beginEditBufferMaxLen(bufNode, maxLenEl);
+        e.stopPropagation();
+        return;
+      }
     }
 
     const objectEl = this.getObjectEl(e.target);
@@ -303,7 +413,7 @@ export class ObjectInteractionController {
       this.handleToggleClick(node);
     } else if (node.type === "message") {
       this.handleMessageClick(node);
-    } else if (node.type === "visualizer") {
+    } else if (node.type === "visualizer*") {
       this.visualizerGraph?.deliverMessage(node.id, "bang", []);
     } else if (node.type === "patchViz") {
       this.visualizerGraph?.deliverPatchVizMessage(node.id, "bang", []);
@@ -396,11 +506,17 @@ export class ObjectInteractionController {
         this.audioGraph?.triggerClick(node.id);
         break;
 
+      case "buffer~":
+        if (inlet === bufferControlInlet(node.args)) {
+          this.deliverBufferMessage(node, "play", []);
+        }
+        break;
+
       case "codebox":
         this.codeboxController?.executeBang(node, inlet);
         break;
 
-      case "visualizer":
+      case "visualizer*":
         if (inlet === 0) this.visualizerGraph?.deliverMessage(node.id, "bang", []);
         break;
 
@@ -408,25 +524,25 @@ export class ObjectInteractionController {
         if (inlet === 0) this.visualizerGraph?.deliverPatchVizMessage(node.id, "bang", []);
         break;
 
-      case "mediaVideo":
-        if (inlet === 0) this.visualizerGraph?.deliverMediaMessage(node.id, "mediaVideo", "bang", []);
+      case "mediaVideo*":
+        if (inlet === 0) this.visualizerGraph?.deliverMediaMessage(node.id, "mediaVideo*", "bang", []);
         break;
 
-      case "mediaImage":
+      case "mediaImage*":
         break;
 
-      case "imageFX":
+      case "imageFX*":
         break; // bang has no effect on imageFX
 
-      case "vfxCRT":
-      case "vfxBlur":
+      case "vfxCRT*":
+      case "vfxBlur*":
         break; // bang has no effect on vFX nodes
 
-      case "shaderToy":
+      case "shaderToy*":
         if (inlet === 0) this.visualizerGraph?.deliverShaderToyMessage(node.id, "reset", []);
         break;
 
-      case "layer":
+      case "layer*":
         break;
 
       case "dmx":
@@ -583,7 +699,7 @@ export class ObjectInteractionController {
         this.codeboxController?.executeValue(node, inlet, value);
         break;
 
-      case "visualizer":
+      case "visualizer*":
         if (inlet === 0) {
           const tokens   = value.trim().split(/\s+/);
           const selector = tokens[0] ?? "";
@@ -597,7 +713,7 @@ export class ObjectInteractionController {
         }
         break;
 
-      case "mediaVideo":
+      case "mediaVideo*":
         if (inlet === 0) {
           const tokens   = value.trim().split(/\s+/);
           const selector = tokens[0] ?? "";
@@ -606,10 +722,10 @@ export class ObjectInteractionController {
             // Attribute panel sends "transport play|pause|stop" — route to the matching command
             const cmd = args[0] ?? "";
             if (cmd === "play" || cmd === "stop" || cmd === "pause") {
-              this.visualizerGraph?.deliverMediaMessage(node.id, "mediaVideo", cmd, []);
+              this.visualizerGraph?.deliverMediaMessage(node.id, "mediaVideo*", cmd, []);
             }
           } else {
-            this.visualizerGraph?.deliverMediaMessage(node.id, "mediaVideo", selector, args);
+            this.visualizerGraph?.deliverMediaMessage(node.id, "mediaVideo*", selector, args);
           }
         }
         break;
@@ -755,7 +871,7 @@ export class ObjectInteractionController {
         }
         break;
 
-      case "mediaImage":
+      case "mediaImage*":
         break;
 
       case "outlet":
@@ -783,7 +899,7 @@ export class ObjectInteractionController {
         }
         break;
 
-      case "imageFX":
+      case "imageFX*":
         if (inlet === 0) {
           const tokens   = value.trim().split(/\s+/);
           const selector = tokens[0] ?? "";
@@ -793,27 +909,27 @@ export class ObjectInteractionController {
         }
         break;
 
-      case "vfxCRT":
+      case "vfxCRT*":
         if (inlet === 0) {
           const tokens   = value.trim().split(/\s+/);
           const selector = tokens[0] ?? "";
           const args     = tokens.slice(1);
-          this.visualizerGraph?.deliverVfxMessage(node.id, "vfxCRT", selector, args);
+          this.visualizerGraph?.deliverVfxMessage(node.id, "vfxCRT*", selector, args);
           this.graph.emit("display");
         }
         break;
 
-      case "vfxBlur":
+      case "vfxBlur*":
         if (inlet === 0) {
           const tokens   = value.trim().split(/\s+/);
           const selector = tokens[0] ?? "";
           const args     = tokens.slice(1);
-          this.visualizerGraph?.deliverVfxMessage(node.id, "vfxBlur", selector, args);
+          this.visualizerGraph?.deliverVfxMessage(node.id, "vfxBlur*", selector, args);
           this.graph.emit("display");
         }
         break;
 
-      case "shaderToy":
+      case "shaderToy*":
         if (inlet === 0) {
           const raw      = value.trim();
           // `glsl <rest of line>` keeps spaces and symbols in the GLSL body intact.
@@ -837,7 +953,7 @@ export class ObjectInteractionController {
         }
         break;
 
-      case "layer":
+      case "layer*":
         if (inlet === 0) {
           const tokens   = value.trim().split(/\s+/);
           const selector = tokens[0] ?? "";
@@ -854,6 +970,64 @@ export class ObjectInteractionController {
           } else {
             this.visualizerGraph?.deliverLayerMessage(node.id, selector, args);
           }
+        }
+        break;
+
+      case "js~":
+        if (inlet >= JS_EFFECT_SIDE_INLET_START) {
+          const raw = value.trim().split(/\s+/).pop() ?? value; // tolerate "name value"
+          this.jsEffectPanelController?.getPanel(node.id)?.applyInletValue(inlet, raw);
+          return; // don't fall through to trySetArgByName — these are hidden args
+        }
+        break;
+
+      case "reaperVideo*":
+        if (inlet >= getReaperVideoSideInletStart(node.args[0])) {
+          const raw = value.trim().split(/\s+/).pop() ?? value;
+          this.reaperVideoPanelController?.getPanel(node.id)?.applyInletValue(inlet, raw);
+          return;
+        }
+        break;
+
+      case "buffer~": {
+        const ctrlInlet = bufferControlInlet(node.args);
+        const tokens    = value.trim().split(/\s+/);
+        const head      = tokens[0] ?? "";
+        const rest      = tokens.slice(1);
+        // Parameter setters (rate / loop / maxLen / mode) accept messages on
+        // any inlet, so the attribute object can wire to whichever inlet the
+        // user prefers. Transport selectors stay on the control inlet only —
+        // signal-rate audio on inlets 0/1 must not trigger record/play/stop.
+        const PARAM_SELECTORS = new Set([
+          "rate", "loop", "maxLen", "mode", "stereo", "mono", "range",
+        ]);
+        if (PARAM_SELECTORS.has(head)) {
+          this.deliverBufferMessage(node, head, rest);
+          return;
+        }
+        if (inlet !== ctrlInlet) return;
+        // Bare float on control inlet → set rate.
+        if (tokens.length === 1 && head !== "" && !isNaN(parseFloat(head))) {
+          this.deliverBufferMessage(node, "float", [head]);
+        } else {
+          this.deliverBufferMessage(node, head, rest);
+        }
+        return;
+      }
+
+      case "frame*":
+        if (inlet === 0) {
+          const selector = value.trim().split(/\s+/)[0] ?? "";
+          const fn = this.visualizerGraph?.getFrameNode(node.id);
+          if (fn) {
+            // Note: 'capture' from a cable usually fails browser
+            // user-activation gating — clicking the panel button is the
+            // canonical path. We still try, in case the message arrived
+            // synchronously from a button-click edge.
+            if (selector === "release") fn.release();
+            else if (selector === "capture") void fn.capture();
+          }
+          return;
         }
         break;
 
@@ -1217,6 +1391,8 @@ export class ObjectInteractionController {
       this.dispatchValue(this.sliderDrag.node.id, 0, this.getSliderValue(this.sliderDrag.node));
     } else if (this.numboxDrag) {
       this.updateNumboxFromEvent(e);
+    } else if (this.bufWaveDrag) {
+      this.updateBufWaveDragFromEvent(e);
     }
   }
 
@@ -1241,7 +1417,59 @@ export class ObjectInteractionController {
       document.body.classList.remove("pn-state-numbox-drag");
       document.removeEventListener("mousemove", this.onDocMouseMove);
       document.removeEventListener("mouseup", this.onDocMouseUp);
+    } else if (this.bufWaveDrag) {
+      this.completeBufWaveDrag(e);
+      document.removeEventListener("mousemove", this.onDocMouseMove);
+      document.removeEventListener("mouseup",   this.onDocMouseUp);
     }
+  }
+
+  private updateBufWaveDragFromEvent(e: MouseEvent): void {
+    if (!this.bufWaveDrag) return;
+    const { canvas } = this.bufWaveDrag;
+    const rect = canvas.getBoundingClientRect();
+    const norm = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    this.bufWaveDrag.endNorm = norm;
+    // Stash the live selection on the canvas dataset; drawBufferWaveform
+    // reads it as an overlay until cleared on mouseup.
+    const a = Math.min(this.bufWaveDrag.startNorm, norm);
+    const b = Math.max(this.bufWaveDrag.startNorm, norm);
+    canvas.dataset.bufSelection = `${a},${b}`;
+    this.bufferRedraw?.(this.bufWaveDrag.node.id);
+  }
+
+  private completeBufWaveDrag(_e: MouseEvent): void {
+    if (!this.bufWaveDrag) return;
+    const { node, canvas, startNorm, endNorm, shift } = this.bufWaveDrag;
+    this.bufWaveDrag = null;
+    const a = Math.min(startNorm, endNorm);
+    const b = Math.max(startNorm, endNorm);
+    const span = b - a;
+    delete canvas.dataset.bufSelection;
+
+    const rs = parseFloat(node.args[10] ?? "");
+    const re = parseFloat(node.args[11] ?? "");
+    const hasRange = Number.isFinite(rs) && Number.isFinite(re) && re > rs;
+
+    // Click (no real drag): if it lands inside the existing highlighted
+    // range, play from there to range end (highlight stays). If it lands
+    // outside, clear the highlight and play from there to end of buffer.
+    if (span < 0.005) {
+      if (hasRange && a >= rs && a < re) {
+        this.deliverBufferMessage(node, "play", [String(a), String(re)]);
+      } else {
+        if (hasRange) this.deliverBufferMessage(node, "range", ["0", "0"]);
+        this.deliverBufferMessage(node, "play", [String(a)]);
+      }
+      this.bufferRedraw?.(node.id);
+      return;
+    }
+
+    // Drag (with or without shift): commit a persistent range so the
+    // highlight survives stop / mode change. Plain drag also kicks off
+    // playback within that range; shift-drag is range-only (no play).
+    this.deliverBufferMessage(node, "range", [String(a), String(b)]);
+    if (!shift) this.deliverBufferMessage(node, "play", [String(a), String(b)]);
   }
 
   private updateNumboxFromEvent(e: MouseEvent): void {
@@ -1283,7 +1511,7 @@ export class ObjectInteractionController {
     const node = this.getNode(objectEl);
     if (!node) return;
 
-    if (node.type === "imageFX") {
+    if (node.type === "imageFX*") {
       e.preventDefault();
       e.stopPropagation();
       const fxNode = this.visualizerGraph?.getImageFXNode(node.id);
@@ -1338,6 +1566,55 @@ export class ObjectInteractionController {
     const node = this.getNode(objectEl);
     if (!node || node.type !== "message") return;
     this.beginMessageEdit(objectEl, node);
+  }
+
+  private beginEditBufferMaxLen(node: PatchNode, displayEl: HTMLElement): void {
+    if (displayEl.querySelector("input")) return;
+    const current = parseFloat(node.args[3] ?? "180");
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "pn-buf-maxlen-input";
+    input.value = String(Math.round(current));
+    input.size = 4;
+    input.title = "Seconds (1–3600). Accepts 90, 2m, 1m30s. Resetting clears the recording.";
+
+    const prevText = displayEl.textContent ?? "";
+    displayEl.textContent = "max:";
+    displayEl.appendChild(input);
+    input.focus();
+    input.select();
+
+    let settled = false;
+
+    const commit = () => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      const raw = input.value.trim();
+      const parsed = parseSecondsLoose(raw);
+      if (parsed != null) {
+        this.deliverBufferMessage(node, "maxLen", [String(parsed)]);
+      } else {
+        // Restore the original label so the row doesn't render as "max:".
+        displayEl.textContent = prevText;
+      }
+    };
+
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      input.remove();
+      displayEl.textContent = prevText;
+    };
+
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter")  { ev.preventDefault(); commit(); }
+      if (ev.key === "Escape") { ev.preventDefault(); cancel(); }
+      ev.stopPropagation();
+    });
+    input.addEventListener("pointerdown", (ev) => { ev.stopPropagation(); });
+    input.addEventListener("blur", commit);
   }
 
   private beginNumericEdit(objectEl: HTMLElement, node: PatchNode): void {
@@ -1429,6 +1706,10 @@ export class ObjectInteractionController {
         if (newType === "fft~") {
           ({ inlets: node.inlets, outlets: node.outlets } = deriveFftPorts(newArgs));
         }
+        if (newType === "mixer~") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveMixerPorts(newArgs));
+          node.width = mixerDefaultWidth(node.inlets.length);
+        }
         // Remove edges that now reference out-of-range ports
         for (const edge of this.graph.getEdges()) {
           const isFromThis = edge.fromNodeId === node.id;
@@ -1453,6 +1734,13 @@ export class ObjectInteractionController {
           ({ inlets: node.inlets, outlets: node.outlets } = deriveFftPorts(newArgs));
           for (const edge of this.graph.getEdges()) {
             if (edge.fromNodeId === node.id && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
+          }
+        }
+        if (node.type === "mixer~") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveMixerPorts(newArgs));
+          node.width = mixerDefaultWidth(node.inlets.length);
+          for (const edge of this.graph.getEdges()) {
+            if (edge.toNodeId === node.id && edge.toInlet >= node.inlets.length) this.graph.removeEdge(edge.id);
           }
         }
       }
@@ -1742,6 +2030,161 @@ export class ObjectInteractionController {
         this.startMetro(node);
       }
     }
+  }
+
+  // ── buffer~ ────────────────────────────────────────────────────────
+
+  /**
+   * Route a buffer~ message (from cable, body button, or panel control) to
+   * the runtime BufferNode. Persists transport / rate / loop / mode back into
+   * node.args so a re-render reflects current state.
+   */
+  private deliverBufferMessage(node: PatchNode, selector: string, args: string[]): void {
+    if (node.type !== "buffer~") return;
+    const bn = this.audioGraph?.getBufferNode(node.id);
+
+    switch (selector) {
+      case "record":
+        bn?.record();
+        node.args[4] = "record";
+        this.graph.emit("change");
+        break;
+
+      case "play": {
+        const startArg = parseFloat(args[0] ?? "");
+        const endArg   = parseFloat(args[1] ?? "");
+        if (Number.isFinite(startArg)) {
+          bn?.playFrom(startArg, Number.isFinite(endArg) ? endArg : undefined);
+        } else {
+          bn?.play();
+        }
+        node.args[4] = bn?.state ?? "play";
+        this.graph.emit("change");
+        break;
+      }
+
+      case "pause":
+        bn?.pause();
+        node.args[4] = "pause";
+        this.graph.emit("change");
+        break;
+
+      case "stop": {
+        bn?.stop();
+        node.args[4] = "stop";
+        node.args[5] = "0";
+        // Drop any one-shot drag-selection overlay; persistent range stays.
+        const wave = this.panGroup.querySelector<HTMLCanvasElement>(
+          `.pn-buf-wave[data-buf-node-id="${node.id}"]`,
+        );
+        if (wave) delete wave.dataset.bufSelection;
+        this.graph.emit("change");
+        break;
+      }
+
+      case "rate":
+      case "float": {
+        const v = parseFloat(args[0] ?? "");
+        if (!Number.isFinite(v)) break;
+        // Phase D1: streaming buffer~ supports forward playback only for now.
+        // Map negative rates to |rate| so the user gets audio at the intended
+        // speed instead of silence (true reverse playback lands in D2).
+        const effective = Math.abs(v);
+        bn?.setRate(effective);
+        node.args[1] = String(effective);
+        this.graph.emit("display");
+        break;
+      }
+
+      case "loop": {
+        const v = (args[0] ?? "1") !== "0";
+        bn?.setLoop(v);
+        node.args[2] = v ? "1" : "0";
+        this.graph.emit("display");
+        break;
+      }
+
+      case "maxLen": {
+        const v = parseFloat(args[0] ?? "");
+        if (!Number.isFinite(v)) break;
+        const clamped = Math.max(1, Math.min(3600, v));
+        if (clamped === parseFloat(node.args[3] ?? "")) break;
+        bn?.setMaxSeconds(clamped);
+        // Reset transport + persisted PCM since the worklet wipes its buffers.
+        node.args[3] = String(clamped);
+        node.args[4] = "stop";
+        node.args[5] = "0";
+        node.args[6] = "";
+        node.args[7] = "";
+        node.args[8] = "";
+        node.args[9] = "";
+        this.graph.emit("change");
+        break;
+      }
+
+      case "seek": {
+        const v = parseFloat(args[0] ?? "");
+        if (!Number.isFinite(v)) break;
+        bn?.seek(v);
+        break;
+      }
+
+      case "range": {
+        const s = parseFloat(args[0] ?? "");
+        const e = parseFloat(args[1] ?? "");
+        if (!Number.isFinite(s) || !Number.isFinite(e)) break;
+        const cs = Math.max(0, Math.min(1, s));
+        const ce = Math.max(0, Math.min(1, e));
+        // Set args BEFORE setRange — setRange's internal emitState ➜
+        // handleBufferStateChange reads node.args synchronously and would
+        // miss the new range if we updated args after the call.
+        node.args[10] = String(cs);
+        node.args[11] = String(ce);
+        bn?.setRange(cs, ce);
+        // Repaint the overlay even when DSP is off (no BufferNode yet, so
+        // setRange's emitState path didn't fire).
+        if (!bn) this.bufferRedraw?.(node.id);
+        this.graph.emit("display");
+        break;
+      }
+
+      case "stereo":
+      case "mono":
+        this.setBufferMode(node, selector);
+        break;
+
+      case "clear":
+        bn?.clear();
+        node.args[4] = "stop";
+        node.args[5] = "0";
+        node.args[6] = "";
+        node.args[7] = "";
+        this.graph.emit("change");
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  /** Switch buffer~ between mono and stereo. Rebuilds ports, drops orphaned
+   *  edges, and emits "change" so the renderer + text panel re-paint. */
+  private setBufferMode(node: PatchNode, mode: "stereo" | "mono"): void {
+    const bn = this.audioGraph?.getBufferNode(node.id);
+    bn?.setMode(mode);
+    if (node.args[0] === mode) return;
+    node.args[0] = mode;
+    const next = deriveBufferPorts(node.args);
+    node.inlets  = next.inlets;
+    node.outlets = next.outlets;
+    // Drop edges that now reference out-of-range ports.
+    for (const edge of this.graph.getEdges()) {
+      const isFromThis = edge.fromNodeId === node.id;
+      const isToThis   = edge.toNodeId   === node.id;
+      if (isFromThis && edge.fromOutlet >= node.outlets.length) this.graph.edges.delete(edge.id);
+      if (isToThis   && edge.toInlet    >= node.inlets.length)  this.graph.edges.delete(edge.id);
+    }
+    this.graph.emit("change");
   }
 
   private deliverDmxMessage(node: PatchNode, selector: string, args: string[]): void {

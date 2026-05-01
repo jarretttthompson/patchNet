@@ -28,11 +28,11 @@ export class BrowserNode {
   // even before the user approves capture (falls back to a muted blank frame).
   readonly video: HTMLVideoElement;
 
-  private _capturing = false;
-  private _hasError = false;
-  private _errorMessage = "";
-  private _tabLabel = "";
-  private onStateChange?: () => void;
+  protected _capturing = false;
+  protected _hasError = false;
+  protected _errorMessage = "";
+  protected _tabLabel = "";
+  protected onStateChange?: () => void;
 
   constructor(runtime: AudioRuntime) {
     this.runtime = runtime;
@@ -124,6 +124,41 @@ export class BrowserNode {
       this._errorMessage = describeCaptureError(err);
       this.onStateChange?.();
     }
+  }
+
+  /**
+   * Adopt an already-built MediaStream (e.g. from a custom getDisplayMedia
+   * + region-crop pipeline) instead of going through capture()'s tab picker.
+   *
+   * Audio is wired only when the stream actually contains audio tracks —
+   * the YouTube auto-mirror path passes a video-only stream by design (to
+   * avoid feedback through dac~).
+   */
+  protected adoptStream(stream: MediaStream, label: string): void {
+    if (this._capturing || this.stream) this.release();
+    this.stream = stream;
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length > 0) {
+      this.source = this.runtime.context.createMediaStreamSource(
+        new MediaStream(audioTracks),
+      );
+      this.source.connect(this._splitter);
+    }
+
+    this.videoOnlyStream = new MediaStream(stream.getVideoTracks());
+    this.video.srcObject = this.videoOnlyStream;
+    this.video.play().catch(() => { /* autoplay policy */ });
+
+    for (const track of stream.getTracks()) {
+      track.addEventListener("ended", () => this.release());
+    }
+
+    this._capturing = true;
+    this._hasError = false;
+    this._errorMessage = "";
+    this._tabLabel = label;
+    this.onStateChange?.();
   }
 
   release(): void {

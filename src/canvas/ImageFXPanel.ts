@@ -104,7 +104,7 @@ export class ImageFXPanel {
     header.className = "pn-imgfx-header";
 
     const title = document.createElement("span");
-    title.textContent = "imageFX";
+    title.textContent = "imageFX*";
 
     const closeBtn = document.createElement("button");
     closeBtn.className = "pn-imgfx-close";

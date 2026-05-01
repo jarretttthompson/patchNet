@@ -7,6 +7,7 @@ import type { AudioGraph } from "../runtime/AudioGraph";
 import type { JsEffectNode, JsEffectStatus, JsEffectCompileInput } from "../runtime/JsEffectNode";
 import { parseJsfx, type SliderDecl } from "../runtime/jsfx/parser";
 import { translateJsfxBody } from "../runtime/jsfx/translate";
+import { deriveJsEffectPorts, JS_EFFECT_SIDE_INLET_START } from "../graph/objectDefs";
 import {
   getPatchLibrary,
   getGlobalLibrary,
@@ -94,10 +95,7 @@ export class JsEffectPanel {
       e.stopPropagation();
     });
 
-    // Header
-    const header = document.createElement("div");
-    header.className = "pn-jseffect-header";
-
+    // ── Buttons (re-parented into the slider-column header below) ────
     this.titleButton = document.createElement("button");
     this.titleButton.type = "button";
     this.titleButton.className = "pn-jseffect-title-btn";
@@ -133,33 +131,46 @@ export class JsEffectPanel {
     this.lockButton.addEventListener("click", (e) => { e.stopPropagation(); this.toggleLock(); });
     this.renderLockIcon();
 
-    header.append(this.titleButton, this.saveButton, this.manageButton, this.lockButton);
-
-    // Dropdown sits inside the header region but absolutely-positioned so
-    // it doesn't affect flex layout.
     this.dropdownEl = document.createElement("div");
     this.dropdownEl.className = "pn-jseffect-dropdown";
     this.dropdownEl.hidden = true;
-    header.appendChild(this.dropdownEl);
 
-    this.root.appendChild(header);
-
-    // Body: sliders LEFT, code RIGHT
+    // ── Body: sliders LEFT (full-height column) / code RIGHT ─────────
+    // Two-column layout. Slider column owns its own 22px header so slider
+    // rows begin at exactly ATTR_SIDE_INLET_HEADER_H from the object top —
+    // which is where ObjectRenderer's side-inlet formula places the nubs.
+    // No runtime sync required.
     const body = document.createElement("div");
     body.className = "pn-jseffect-body";
+
+    const sliderCol = document.createElement("div");
+    sliderCol.className = "pn-jseffect-slider-col";
+
+    const sliderHeader = document.createElement("div");
+    sliderHeader.className = "pn-jseffect-slider-header";
+    sliderHeader.append(this.titleButton, this.saveButton, this.manageButton, this.lockButton);
+    sliderHeader.appendChild(this.dropdownEl);
 
     this.sliderPane = document.createElement("div");
     this.sliderPane.className = "pn-jseffect-sliders";
 
+    sliderCol.append(sliderHeader, this.sliderPane);
+
+    const codeCol = document.createElement("div");
+    codeCol.className = "pn-jseffect-code-col";
+
     this.codeHost = document.createElement("div");
     this.codeHost.className = "pn-jseffect-code";
 
-    body.append(this.sliderPane, this.codeHost);
-    this.root.appendChild(body);
-
     this.statusLine = document.createElement("div");
     this.statusLine.className = "pn-jseffect-status";
-    this.root.appendChild(this.statusLine);
+
+    codeCol.append(this.codeHost, this.statusLine);
+
+    body.append(sliderCol, codeCol);
+    this.root.appendChild(body);
+
+    this.sliderValues = this.readSliderValuesFromArgs();
 
     const initial = this.readSourceFromArgs();
     this.view = new EditorView({
@@ -186,6 +197,9 @@ export class JsEffectPanel {
     host.appendChild(this.root);
     this.currentHost = host;
     this.subscribeToAudioGraph();
+    // Nub positioning now follows the fixed 22/24px grid baked into CSS
+    // (matches ObjectRenderer's side-inlet formula). No ResizeObserver
+    // needed — rows align by layout alone.
   }
 
   setAudioGraph(audioGraph: AudioGraph | null): void {
@@ -273,8 +287,11 @@ export class JsEffectPanel {
     if (this.compileTimeout !== null) window.clearTimeout(this.compileTimeout);
     this.compileTimeout = window.setTimeout(() => {
       this.compileTimeout = null;
-      this.compileNow();
+      // Write args[0] before compileNow — syncNodePorts emits "change" which
+      // re-runs syncFromArgs on this same panel. If args[0] is stale the
+      // editor would revert to the pre-edit source.
       this.persistSource();
+      this.compileNow();
     }, COMPILE_DEBOUNCE_MS);
   }
 
@@ -290,6 +307,7 @@ export class JsEffectPanel {
     this.currentDesc = program.desc;
     this.updateTitle(program.desc);
     this.rebuildSliderPane(program.sliders);
+    this.syncNodePorts();
 
     const tInit   = translateJsfxBody(program.initBody);
     const tSlider = translateJsfxBody(program.sliderBody);
@@ -334,6 +352,7 @@ export class JsEffectPanel {
   // ── Slider pane ───────────────────────────────────────────────────────
 
   private rebuildSliderPane(sliders: SliderDecl[]): void {
+    this.latestSliderDeclsRef = sliders;
     const nextValues = new Map<number, number>();
     for (const s of sliders) {
       const prev = this.sliderValues.get(s.index);
@@ -353,19 +372,18 @@ export class JsEffectPanel {
     }
 
     for (const s of sliders) {
+      // Attribute-style horizontal row: [label] [──slider──] [readout].
+      // Fixed 24px height matches ATTR_SIDE_INLET_ROW_H so side-inlet nubs
+      // land on row centers via the ObjectRenderer formula (no sync).
       const wrap = document.createElement("div");
       wrap.className = "pn-jseffect-slider-row";
 
-      const labelRow = document.createElement("div");
-      labelRow.className = "pn-jseffect-slider-labelrow";
       const label = document.createElement("span");
       label.className = "pn-jseffect-slider-label";
       label.textContent = s.label;
-      const readout = document.createElement("span");
-      readout.className = "pn-jseffect-slider-readout";
+      label.title = s.label;
+
       const initialValue = this.sliderValues.get(s.index) ?? s.defaultValue;
-      readout.textContent = formatSliderReadout(initialValue, s);
-      labelRow.append(label, readout);
 
       const range = document.createElement("input");
       range.type = "range";
@@ -374,19 +392,49 @@ export class JsEffectPanel {
       range.max = String(s.max);
       range.step = s.step !== undefined ? String(s.step) : String((s.max - s.min) / 1000);
       range.value = String(initialValue);
+
+      const readout = document.createElement("span");
+      readout.className = "pn-jseffect-slider-readout";
+      readout.textContent = formatSliderReadout(initialValue, s);
+
       range.addEventListener("input", () => {
         const v = parseFloat(range.value);
         if (!Number.isFinite(v)) return;
         this.sliderValues.set(s.index, v);
         readout.textContent = formatSliderReadout(v, s);
         this.jsEffectNode?.setSlider(s.index - 1, v);
+        // Write args[3] in place and emit display only — emitting "change"
+        // here triggers a full render(), which destroys the slider DOM
+        // mid-drag and breaks smooth scrubbing.
+        this.writeSliderValuesToArgs();
+        this.graph.emit("display");
+      });
+      range.addEventListener("change", () => {
+        // Drag committed — emit change so undo / text panel sees final value.
+        this.graph.emit("change");
       });
 
-      wrap.append(labelRow, range);
+      wrap.append(label, range, readout);
       this.sliderPane.appendChild(wrap);
       this.sliderInputs.set(s.index, { wrap, range, readout, label });
 
       this.jsEffectNode?.setSlider(s.index - 1, initialValue);
+    }
+
+    this.ensureMinHeight(sliders.length);
+  }
+
+  /** Grow the object vertically so every slider row (22px header + N*24px)
+   *  fits inside the object body. Prevents side-inlet nubs from rendering
+   *  past the bottom edge when the preset has more sliders than the current
+   *  object height accommodates. */
+  private ensureMinHeight(sliderCount: number): void {
+    // 22 (header) + N*24 (rows) + 22 (status line on right column)
+    const needed = 22 + sliderCount * 24 + 22;
+    const current = this.patchNode.height ?? 0;
+    if (current < needed) {
+      this.patchNode.height = needed;
+      this.graph.emit("display");
     }
   }
 
@@ -662,6 +710,93 @@ export class JsEffectPanel {
     if (this.patchNode.args[0] === source) return;
     this.patchNode.args[0] = source;
     this.graph.emit("change");
+  }
+
+  /** Decode args[3] into a sliderIndex→value map. Tolerant of missing/malformed. */
+  private readSliderValuesFromArgs(): Map<number, number> {
+    const result = new Map<number, number>();
+    const raw = this.patchNode.args[3] ?? "";
+    if (!raw) return result;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        for (const [k, v] of Object.entries(parsed)) {
+          const idx = Number.parseInt(k, 10);
+          const val = typeof v === "number" ? v : Number.parseFloat(String(v));
+          if (Number.isInteger(idx) && Number.isFinite(val)) result.set(idx, val);
+        }
+      }
+    } catch { /* ignore — treat as empty */ }
+    return result;
+  }
+
+  /**
+   * Write sliderValues to args[3] without emitting. Used during slider drag
+   * (input tick) so the DOM isn't destroyed mid-drag; caller emits "display"
+   * for the text panel and "change" on commit.
+   */
+  private writeSliderValuesToArgs(): boolean {
+    const obj: Record<string, number> = {};
+    const keys = Array.from(this.sliderValues.keys()).sort((a, b) => a - b);
+    for (const k of keys) obj[String(k)] = this.sliderValues.get(k)!;
+    const encoded = keys.length === 0 ? "" : JSON.stringify(obj);
+    if ((this.patchNode.args[3] ?? "") === encoded) return false;
+    this.patchNode.args[3] = encoded;
+    return true;
+  }
+
+  /**
+   * Re-derive node.inlets from the current source and prune edges that now
+   * point to indices that no longer exist. Called after every successful parse.
+   */
+  private syncNodePorts(): void {
+    const { inlets, outlets } = deriveJsEffectPorts(this.patchNode.args);
+    const prev = this.patchNode.inlets;
+    const changed =
+      prev.length !== inlets.length ||
+      prev.some((p, i) => p.index !== inlets[i].index || p.label !== inlets[i].label);
+    if (!changed) return;
+
+    this.patchNode.inlets = inlets;
+    this.patchNode.outlets = outlets;
+
+    for (const edge of this.graph.getEdges()) {
+      if (edge.toNodeId === this.patchNode.id && edge.toInlet >= inlets.length) {
+        this.graph.removeEdge(edge.id);
+      }
+    }
+    this.graph.emit("change");
+  }
+
+  /**
+   * Called by ObjectInteractionController when a value arrives on a side-inlet.
+   * Maps inlet index → slider index, updates the DOM range + readout, pushes
+   * to the AudioWorklet node, and persists.
+   */
+  applyInletValue(inletIndex: number, rawValue: string): void {
+    const sliderSlot = inletIndex - JS_EFFECT_SIDE_INLET_START;
+    if (sliderSlot < 0) return;
+    const sliderEntries = Array.from(this.sliderInputs.entries()); // insertion order = display order
+    const entry = sliderEntries[sliderSlot];
+    if (!entry) return;
+    const [sliderIdx, { range, readout }] = entry;
+    const decl = this.latestSliderDeclByIndex(sliderIdx);
+    if (!decl) return;
+
+    const num = Number.parseFloat(rawValue);
+    if (!Number.isFinite(num)) return;
+    const clamped = clamp(num, decl.min, decl.max);
+
+    this.sliderValues.set(sliderIdx, clamped);
+    range.value = String(clamped);
+    readout.textContent = formatSliderReadout(clamped, decl);
+    this.jsEffectNode?.setSlider(sliderIdx - 1, clamped);
+    if (this.writeSliderValuesToArgs()) this.graph.emit("display");
+  }
+
+  private latestSliderDeclsRef: SliderDecl[] = [];
+  private latestSliderDeclByIndex(index: number): SliderDecl | undefined {
+    return this.latestSliderDeclsRef.find(s => s.index === index);
   }
 
   // ── UI helpers ────────────────────────────────────────────────────────

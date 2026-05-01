@@ -1,10 +1,7 @@
 # patchNet — Project Plan
 
-**Director:** Claude Code
-**Second in Command:** Cursor
-**Development Team:** Cursor (frontend/canvas), Copilot (inline acceleration), Codex (logic/audio engine)
-**User:** relays prompts between agents, tests, and gives feedback
 **Started:** 2026-04-16
+**Workflow:** Solo dev (user) collaborating with Claude Code. Append work entries to `CHANGELOG.md` as phases complete.
 
 ---
 
@@ -118,7 +115,7 @@ Completion signal: app runs at `localhost:5173`, shows two-panel layout with cor
 
 ---
 
-### Phase 1 — Patch Graph Model (Claude Code / Codex)
+### Phase 1 — Patch Graph Model
 **Goal:** in-memory data model, serializer, and basic canvas object rendering (no audio yet)
 
 Tasks:
@@ -135,7 +132,7 @@ Completion signal: add a `button` node programmatically, see it on canvas, see i
 
 ---
 
-### Phase 2 — Canvas Interaction (Cursor leads)
+### Phase 2 — Canvas Interaction
 **Goal:** drag to create objects, drag to move, click ports to draw cables
 
 Tasks:
@@ -154,7 +151,7 @@ Completion signal: user can build `button → metro → click~ → dac~` entirel
 
 ---
 
-### Phase 3 — Audio Runtime (Codex leads)
+### Phase 3 — Audio Runtime
 **Goal:** the patch actually makes sound
 
 Tasks:
@@ -173,7 +170,7 @@ Completion signal: `button → metro → click~ → dac~` produces a rhythmic cl
 
 ---
 
-### Phase 4 — Polish & Text-to-Patch (Cursor + Codex)
+### Phase 4 — Polish & Text-to-Patch
 **Goal:** text panel edits reflect back to canvas; overall UX tightening
 
 Tasks:
@@ -237,7 +234,6 @@ patchNet/
       StatusBar.ts
   docs/
     object-reference.md
-  AGENTS.md
   PLAN.md
   DESIGN_LANGUAGE.md
   CHANGELOG.md
@@ -245,25 +241,12 @@ patchNet/
 
 ---
 
-## Agent Roles & Responsibilities
+## Workflow
 
-| Agent | Owns |
-|-------|------|
-| **Claude Code** | Architecture decisions, data model, serializer, runtime message-passing design, code review, this PLAN.md |
-| **Cursor** | All canvas interaction (drag, cable drawing, selection), UI shell (toolbar, status bar, text panel), CSS/layout, design token implementation |
-| **Codex** | Audio runtime, Web Audio API nodes, graph traversal for message dispatch |
-| **Copilot** | Inline acceleration when Cursor or Codex are moving fast through boilerplate |
-
----
-
-## Communication Protocol
-
-All agents read and write `AGENTS.md` in this directory.
-
-- **Before starting any task:** read the latest `AGENTS.md` entries to know current state
-- **After completing any task:** append a completion entry (see `AGENTS.md` format)
-- **When blocked:** note the blocker in `AGENTS.md` and stop; don't guess past a blocker
-- **When making an architecture decision:** note it in `AGENTS.md` and in this `PLAN.md`
+- **Before starting any task:** read the latest `CHANGELOG.md` entries to know current state
+- **After completing any task:** append a completion entry to `CHANGELOG.md`
+- **When blocked:** note the blocker in `CHANGELOG.md` and stop; don't guess past a blocker
+- **When making an architecture decision:** note it in the Architecture Decisions Log inside `CHANGELOG.md` and update this `PLAN.md`
 
 ---
 

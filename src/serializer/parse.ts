@@ -1,8 +1,9 @@
 import { PatchEdge } from "../graph/PatchEdge";
-import { canonicalizeType, deriveFftPorts, deriveSequencerPorts, deriveTriggerPorts, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
+import { canonicalizeType, deriveBufferPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
 import { PatchNode } from "../graph/PatchNode";
 import type { PortType } from "../graph/PatchNode";
 import { derivePortsFromCode } from "../canvas/codeboxPorts";
+import { isBlobPlaceholder } from "./serialize";
 
 export class PatchParseError extends Error {
   line: number;
@@ -109,8 +110,9 @@ export function parsePatch(text: string): ParsedPatch {
       if (type === "codebox") {
         const language = args[0] ?? "js";
         let source = "";
+        const sourcePlaceholder = isBlobPlaceholder(args[1]);
 
-        if (args[1]) {
+        if (args[1] && !sourcePlaceholder) {
           try {
             source = decodeCodeboxSource(args[1]);
           } catch {
@@ -119,36 +121,141 @@ export function parsePatch(text: string): ParsedPatch {
         }
 
         args[0] = language;
-        args[1] = source;
-        ({ inlets, outlets } = derivePortsFromCode(source));
+        args[1] = sourcePlaceholder ? args[1] : source;
+        // Port derivation depends on source; placeholders mean "preserve old
+        // ports from the in-memory node," handled in PatchGraph.deserialize.
+        if (!sourcePlaceholder) {
+          ({ inlets, outlets } = derivePortsFromCode(source));
+        }
       }
 
       if (type === "js~") {
-        // args[0] = raw JSFX source (base64 on disk)
+        // args[0] = raw JSFX source (base64 on disk; ~b64:js-src…~ in display)
         // args[1] = patch library JSON string (base64 on disk; "-" or missing = no library)
         // args[2] = locked flag ("0"/"1")
-        let source = "";
-        if (args[0]) {
-          try {
-            source = decodeCodeboxSource(args[0]);
-          } catch {
-            console.warn(`Failed to decode js~ source on line ${lineNumber}`);
+        // args[3] = sliderValues JSON (base64 on disk; "-" or missing = empty)
+        const sourceIsPlaceholder = isBlobPlaceholder(args[0]);
+        if (!sourceIsPlaceholder) {
+          let source = "";
+          if (args[0]) {
+            try {
+              source = decodeCodeboxSource(args[0]);
+            } catch {
+              console.warn(`Failed to decode js~ source on line ${lineNumber}`);
+            }
           }
+          args[0] = source;
         }
-        args[0] = source;
 
-        let library = "";
-        if (args[1] && args[1] !== "-") {
-          try {
-            library = decodeCodeboxSource(args[1]);
-          } catch {
-            console.warn(`Failed to decode js~ library on line ${lineNumber}`);
+        if (!isBlobPlaceholder(args[1])) {
+          let library = "";
+          if (args[1] && args[1] !== "-") {
+            try {
+              library = decodeCodeboxSource(args[1]);
+            } catch {
+              console.warn(`Failed to decode js~ library on line ${lineNumber}`);
+            }
           }
+          args[1] = library;
         }
-        args[1] = library;
 
-        // locked flag — preserve literal "0"/"1"; default to "0".
         args[2] = (args[2] === "1") ? "1" : "0";
+
+        if (!isBlobPlaceholder(args[3])) {
+          let sliderValues = "";
+          if (args[3] && args[3] !== "-") {
+            try {
+              sliderValues = decodeCodeboxSource(args[3]);
+            } catch {
+              console.warn(`Failed to decode js~ sliderValues on line ${lineNumber}`);
+            }
+          }
+          args[3] = sliderValues;
+        }
+
+        // Port derivation reads source; placeholder source means
+        // "preserve old ports" (PatchGraph.deserialize handles rehydration).
+        if (!sourceIsPlaceholder) {
+          ({ inlets, outlets } = deriveJsEffectPorts(args));
+        }
+      }
+
+      if (type === "reaperVideo*") {
+        // args[0] = raw video-processor source (base64 on disk; ~b64:rv-src…~ in display)
+        // args[1] = patch library JSON (base64 on disk; "-" or missing = no library)
+        // args[2] = locked flag ("0"/"1")
+        // args[3] = paramValues JSON (base64 on disk; "-" or missing = empty)
+        const sourceIsPlaceholder = isBlobPlaceholder(args[0]);
+        if (!sourceIsPlaceholder) {
+          let source = "";
+          if (args[0]) {
+            try {
+              source = decodeCodeboxSource(args[0]);
+            } catch {
+              console.warn(`Failed to decode reaperVideo source on line ${lineNumber}`);
+            }
+          }
+          args[0] = source;
+        }
+
+        if (!isBlobPlaceholder(args[1])) {
+          let library = "";
+          if (args[1] && args[1] !== "-") {
+            try {
+              library = decodeCodeboxSource(args[1]);
+            } catch {
+              console.warn(`Failed to decode reaperVideo library on line ${lineNumber}`);
+            }
+          }
+          args[1] = library;
+        }
+
+        args[2] = (args[2] === "1") ? "1" : "0";
+
+        if (!isBlobPlaceholder(args[3])) {
+          let paramValues = "";
+          if (args[3] && args[3] !== "-") {
+            try {
+              paramValues = decodeCodeboxSource(args[3]);
+            } catch {
+              console.warn(`Failed to decode reaperVideo paramValues on line ${lineNumber}`);
+            }
+          }
+          args[3] = paramValues;
+        }
+
+        if (!sourceIsPlaceholder) {
+          ({ inlets, outlets } = deriveReaperVideoPorts(args));
+        }
+      }
+
+      if (type === "buffer~") {
+        // Positional layout (13 slots):
+        //   mode rate loop maxLen transport position bufL bufR bufLStereo bufRStereo
+        //   rangeStart rangeEnd storageKey
+        // Blob slots (6..9) keep base64 on disk for legacy patches; new saves
+        // write "-" and persist PCM in OPFS via storageKey. Placeholders pass
+        // through verbatim — PatchGraph.deserialize rehydrates them from the
+        // matched in-memory node so a text-panel round-trip preserves PCM.
+        ensureBufferArgs(args);
+        for (let i = 6; i <= 9; i++) {
+          if (args[i] === "-") args[i] = "";
+        }
+        if (args[12] === "-") args[12] = "";
+        ({ inlets, outlets } = deriveBufferPorts(args));
+      }
+
+      if (type === "youtube~*") {
+        // args[0] = url ("-" placeholder for empty)
+        // args[1] = videoId ("-" placeholder for empty)
+        // args[2] = startSeconds (numeric string)
+        // args[3] = captureOnLoad ("0"/"1")
+        // args[4] = locked ("0"/"1"; default "0" — see objectDefs)
+        args[0] = (args[0] && args[0] !== "-") ? args[0] : "";
+        args[1] = (args[1] && args[1] !== "-") ? args[1] : "";
+        args[2] = args[2] ?? "0";
+        args[3] = args[3] === "1" ? "1" : "0";
+        args[4] = args[4] === "1" ? "1" : "0";
       }
 
       if (type === "subPatch") {
@@ -169,6 +276,10 @@ export function parsePatch(text: string): ParsedPatch {
 
       if (type === "fft~") {
         ({ inlets, outlets } = deriveFftPorts(args));
+      }
+
+      if (type === "mixer~") {
+        ({ inlets, outlets } = deriveMixerPorts(args));
       }
 
       nodes.push(

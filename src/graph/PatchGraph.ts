@@ -1,8 +1,9 @@
 import { PatchEdge, type PatchEdgeData } from "./PatchEdge";
-import { canonicalizeType, deriveFftPorts, deriveSequencerPorts, deriveTriggerPorts, ensureSequencerArgs, getObjectDef } from "./objectDefs";
+import { canonicalizeType, deriveBufferPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "./objectDefs";
 import { PatchNode, type PatchNodeData } from "./PatchNode";
 import { parsePatch } from "../serializer/parse";
-import { serializePatch } from "../serializer/serialize";
+import { getBlobSchema, isBlobPlaceholder, serializePatch, serializePatchForDisplay } from "../serializer/serialize";
+import { findFreePlacement, objectIgnoresOverlap } from "../canvas/OverlapGuard";
 
 type PatchGraphEvent = "change" | "display";
 type ChangeHandler = () => void;
@@ -29,11 +30,36 @@ export class PatchGraph {
     if (type === "fft~") {
       ({ inlets, outlets } = deriveFftPorts(args));
     }
+    if (type === "mixer~") {
+      ({ inlets, outlets } = deriveMixerPorts(args));
+    }
+    if (type === "js~") {
+      ({ inlets, outlets } = deriveJsEffectPorts(args));
+    }
+    if (type === "buffer~") {
+      ensureBufferArgs(args);
+      ({ inlets, outlets } = deriveBufferPorts(args));
+    }
+    if (type === "reaperVideo*") {
+      ({ inlets, outlets } = deriveReaperVideoPorts(args));
+    }
+
+    // Auto-shift placement when the requested spot is occupied. Skips
+    // exempt types (frame~, comment) so they can intentionally overlap.
+    const def = getObjectDef(type);
+    let placeX = x;
+    let placeY = y;
+    if (!objectIgnoresOverlap(type)) {
+      const w = def.defaultWidth;
+      const h = def.defaultHeight;
+      ({ x: placeX, y: placeY } = findFreePlacement(this, x, y, w, h));
+    }
+
     const node = new PatchNode({
       id: crypto.randomUUID(),
       type,
-      x,
-      y,
+      x: placeX,
+      y: placeY,
       args,
       inlets,
       outlets,
@@ -139,6 +165,19 @@ export class PatchGraph {
   }
 
   /**
+   * Console-facing serialization. Blob args (codebox/js~/reaperVideo
+   * sources, libraries, slider/param values) are emitted as compact
+   * `~b64:label:hash:summary~` placeholders instead of full base64.
+   *
+   * Round-trip safe: deserialize() rehydrates placeholders from the matched
+   * in-memory node, so the textarea can edit structure without losing
+   * payload bytes. Disk save/load and undo/redo continue to use serialize().
+   */
+  serializeForDisplay(): string {
+    return serializePatchForDisplay(this);
+  }
+
+  /**
    * Diff-based deserialize. Incoming nodes that match an existing node
    * (by id when present, else by type + args or type + position) are mutated
    * in place — this preserves node.id so runtime state keyed by id
@@ -168,15 +207,7 @@ export class PatchGraph {
       // Already matched in pass 1?
       const idMatch = oldNodes.get(parsedNode.id);
       if (idMatch && idMatch.type === parsedNode.type && claimedOldIds.has(idMatch.id)) {
-        // Mutate existing in place — preserves node.id and runtime bindings
-        idMatch.x       = parsedNode.x;
-        idMatch.y       = parsedNode.y;
-        idMatch.args    = [...parsedNode.args];
-        idMatch.inlets  = parsedNode.inlets.map((p) => ({ ...p }));
-        idMatch.outlets = parsedNode.outlets.map((p) => ({ ...p }));
-        idMatch.width   = parsedNode.width;
-        idMatch.height  = parsedNode.height;
-        idMatch.groupId = parsedNode.groupId;
+        this.applyParsedToOld(idMatch, parsedNode);
         resolvedNodes.push(idMatch);
         continue;
       }
@@ -185,18 +216,15 @@ export class PatchGraph {
       const structural = this.findStructuralMatch(parsedNode, oldNodes, claimedOldIds);
       if (structural) {
         claimedOldIds.add(structural.id);
-        structural.x       = parsedNode.x;
-        structural.y       = parsedNode.y;
-        structural.args    = [...parsedNode.args];
-        structural.inlets  = parsedNode.inlets.map((p) => ({ ...p }));
-        structural.outlets = parsedNode.outlets.map((p) => ({ ...p }));
-        structural.width   = parsedNode.width;
-        structural.height  = parsedNode.height;
-        structural.groupId = parsedNode.groupId;
+        this.applyParsedToOld(structural, parsedNode);
         resolvedNodes.push(structural);
         continue;
       }
 
+      // No old match — strip any unresolved blob placeholders so they don't
+      // leak into runtime as literal `~b64:…~` strings. Without an old node,
+      // we have no payload to restore from.
+      this.clearOrphanBlobPlaceholders(parsedNode);
       resolvedNodes.push(parsedNode);
     }
 
@@ -230,6 +258,57 @@ export class PatchGraph {
   }
 
   /**
+   * Copy parsed state onto the matched old node in place (preserves node.id
+   * and runtime bindings). Rehydrates any abbreviated blob args from old —
+   * the textarea uses `~b64:…~` placeholders for source/library/values, so
+   * the parser leaves placeholders verbatim and we substitute the original
+   * payload here.
+   */
+  private applyParsedToOld(target: PatchNode, parsed: PatchNode): void {
+    const args = [...parsed.args];
+    const schema = getBlobSchema(target.type);
+    let portsAbbreviated = false;
+
+    if (schema) {
+      for (const slot of schema) {
+        if (isBlobPlaceholder(args[slot.index])) {
+          args[slot.index] = target.args[slot.index] ?? "";
+          if (slot.drivesPorts) portsAbbreviated = true;
+        }
+      }
+    }
+
+    target.x       = parsed.x;
+    target.y       = parsed.y;
+    target.args    = args;
+    target.groupId = parsed.groupId;
+
+    // When the source slot was abbreviated, the parser couldn't derive ports
+    // from the placeholder — keep the old node's ports/dimensions intact.
+    if (!portsAbbreviated) {
+      target.inlets  = parsed.inlets.map((p) => ({ ...p }));
+      target.outlets = parsed.outlets.map((p) => ({ ...p }));
+      target.width   = parsed.width;
+      target.height  = parsed.height;
+    }
+  }
+
+  /**
+   * Replace orphan blob placeholders with empty strings. Hit when an
+   * abbreviated patch is pasted into a fresh session: there's no old node
+   * to rehydrate from, so the placeholder represents missing data.
+   */
+  private clearOrphanBlobPlaceholders(node: PatchNode): void {
+    const schema = getBlobSchema(node.type);
+    if (!schema) return;
+    for (const slot of schema) {
+      if (isBlobPlaceholder(node.args[slot.index])) {
+        node.args[slot.index] = "";
+      }
+    }
+  }
+
+  /**
    * Structural match for a parsed node against the set of unclaimed old
    * nodes. We prefer same-type + same-position matches (user didn't move
    * the node), then fall back to same-type + matching args[0] for media
@@ -241,7 +320,7 @@ export class PatchGraph {
     claimedOldIds: Set<string>,
   ): PatchNode | null {
     // Media types: match on args[0] when it's a stable ref (idb:/bg:/data:)
-    if (parsedNode.type === "mediaVideo" || parsedNode.type === "mediaImage") {
+    if (parsedNode.type === "mediaVideo*" || parsedNode.type === "mediaImage*") {
       const ref = parsedNode.args[0] ?? "";
       if (ref) {
         for (const old of oldNodes.values()) {
@@ -302,7 +381,11 @@ export class PatchGraph {
   }
 
   /**
-   * Duplicates a set of nodes in place (same position, zero offset).
+   * Duplicates a set of nodes. Clones land at a uniform (+20, +20) offset
+   * from their sources so the no-overlap rule holds without losing the
+   * group's internal spatial layout. Exempt types (frame~, comment) clone
+   * in place since they're allowed to overlap.
+   *
    * Edges whose both endpoints are inside the set are also duplicated.
    * Edges that cross the boundary (one end outside) are not copied.
    *
@@ -311,16 +394,21 @@ export class PatchGraph {
    */
   duplicateNodes(nodeIds: string[]): Map<string, string> {
     const idMap = new Map<string, string>();
+    const CASCADE_OFFSET = 20;
 
     for (const oldId of nodeIds) {
       const src = this.nodes.get(oldId);
       if (!src) continue;
 
+      const exempt = objectIgnoresOverlap(src.type);
+      const dx = exempt ? 0 : CASCADE_OFFSET;
+      const dy = exempt ? 0 : CASCADE_OFFSET;
+
       const cloned = new PatchNode({
         id: crypto.randomUUID(),
         type: src.type,
-        x: src.x,
-        y: src.y,
+        x: src.x + dx,
+        y: src.y + dy,
         args: [...src.args],
         inlets:  src.inlets.map(p => ({ ...p })),
         outlets: src.outlets.map(p => ({ ...p })),

@@ -10,9 +10,18 @@
   </head>
   <body>
     <div id="app">
-      <div class="toolbar">
+      <div class="toolbar toolbar--logo">
         <img class="app-title" src="/patchnet-logo.png" alt="patchNet" />
         <span style="flex: 1"></span>
+        <button
+          id="toolbar-collapse-btn"
+          class="toolbar-collapse-btn"
+          title="Expand toolbar"
+          aria-label="Expand toolbar"
+          aria-expanded="false"
+        >▾</button>
+      </div>
+      <div class="toolbar toolbar--controls toolbar--collapsed" id="toolbar-controls">
         <span
           style="
             color: var(--pn-muted);
@@ -71,10 +80,10 @@
           <div class="canvas-grid"></div>
         </div>
         <div class="divider"></div>
-        <div class="text-panel" id="console-panel">
+        <div class="text-panel text-panel--collapsed" id="console-panel">
           <div class="text-panel-header">
             <span>console</span>
-            <button id="console-collapse-btn" class="console-collapse-btn" title="Collapse console" aria-label="Collapse console">‹</button>
+            <button id="console-collapse-btn" class="console-collapse-btn" title="Expand console" aria-label="Expand console">‹</button>
           </div>
           <textarea data-text-panel placeholder="#N canvas;" spellcheck="false"></textarea>
         </div>

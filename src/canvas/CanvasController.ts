@@ -89,7 +89,6 @@ export class CanvasController {
   // Cursor tracking for Max-style at-cursor object spawning (n/b/t/s/a/m keys).
   private lastMouseClientX = 0;
   private lastMouseClientY = 0;
-  private mouseOverCanvas = false;
 
   private readonly onCanvasClick: (e: MouseEvent) => void;
   private readonly onCanvasContextMenu: (e: MouseEvent) => void;
@@ -102,8 +101,7 @@ export class CanvasController {
   private readonly onPanMouseUp: (e: MouseEvent) => void;
   private readonly onDoubleClick: (e: MouseEvent) => void;
   private readonly onWheel: (e: WheelEvent) => void;
-  private readonly onCanvasMouseMove: (e: MouseEvent) => void;
-  private readonly onCanvasMouseLeave: () => void;
+  private readonly onDocMouseMove: (e: MouseEvent) => void;
 
   constructor(
     private readonly canvasEl: HTMLElement,
@@ -123,20 +121,17 @@ export class CanvasController {
     this.onPanMouseUp = this.handlePanMouseUp.bind(this);
     this.onDoubleClick = this.handleDoubleClick.bind(this);
     this.onWheel = this.handleWheel.bind(this);
-    this.onCanvasMouseMove = (e: MouseEvent) => {
+    this.onDocMouseMove = (e: MouseEvent) => {
       this.lastMouseClientX = e.clientX;
       this.lastMouseClientY = e.clientY;
-      this.mouseOverCanvas = true;
     };
-    this.onCanvasMouseLeave = () => { this.mouseOverCanvas = false; };
 
     this.canvasEl.addEventListener("click", this.onCanvasClick);
     this.canvasEl.addEventListener("dblclick", this.onDoubleClick);
     this.canvasEl.addEventListener("contextmenu", this.onCanvasContextMenu);
     this.canvasEl.addEventListener("mousedown", this.onPanMouseDown);
     this.canvasEl.addEventListener("wheel", this.onWheel, { passive: false });
-    this.canvasEl.addEventListener("mousemove", this.onCanvasMouseMove);
-    this.canvasEl.addEventListener("mouseleave", this.onCanvasMouseLeave);
+    document.addEventListener("mousemove", this.onDocMouseMove);
     document.addEventListener("keydown", this.onKeyDown);
     document.addEventListener("keyup", this.onKeyUp);
     document.addEventListener("click", this.onDocClick, true);
@@ -312,8 +307,7 @@ export class CanvasController {
     this.canvasEl.removeEventListener("contextmenu", this.onCanvasContextMenu);
     this.canvasEl.removeEventListener("mousedown", this.onPanMouseDown);
     this.canvasEl.removeEventListener("wheel", this.onWheel);
-    this.canvasEl.removeEventListener("mousemove", this.onCanvasMouseMove);
-    this.canvasEl.removeEventListener("mouseleave", this.onCanvasMouseLeave);
+    document.removeEventListener("mousemove", this.onDocMouseMove);
     this.scrollSpacer?.remove();
     this.scrollSpacer = null;
     document.removeEventListener("keydown", this.onKeyDown);
@@ -431,8 +425,9 @@ export class CanvasController {
 
     switch (e.key.toLowerCase()) {
       case "n": {
+        if (!this.isCursorOverCanvas()) return;
         e.preventDefault();
-        const { x, y } = this.spawnAnchor();
+        const { x, y } = this.getGraphCoords(this.lastMouseClientX, this.lastMouseClientY);
         this.openEntryBox(...this.centerEntryBox(x, y));
         break;
       }
@@ -453,6 +448,7 @@ export class CanvasController {
         this.placeObject("attribute");
         break;
       case "m":
+        if (!this.isCursorOverCanvas()) return;
         e.preventDefault();
         this.placeObject("message");
         break;
@@ -582,11 +578,19 @@ export class CanvasController {
    * the center of the currently visible area.
    */
   private spawnAnchor(): { x: number; y: number } {
-    if (this.mouseOverCanvas) {
+    if (this.isCursorOverCanvas()) {
       return this.getGraphCoords(this.lastMouseClientX, this.lastMouseClientY);
     }
     const [x, y] = this.viewportCenter();
     return { x, y };
+  }
+
+  /** Geometric check at call-time — robust against missed enter/leave events. */
+  private isCursorOverCanvas(): boolean {
+    const r = this.canvasEl.getBoundingClientRect();
+    const x = this.lastMouseClientX;
+    const y = this.lastMouseClientY;
+    return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
   }
 
   /**
@@ -920,15 +924,15 @@ export class CanvasController {
       const { x, y } = this.getGraphCoords(e.clientX, e.clientY);
 
       if (file.type.startsWith("video/")) {
-        const node = this.graph.addNode("mediaVideo", x, y);
-        this.onObjectPlaced?.("mediaVideo", node.id);
+        const node = this.graph.addNode("mediaVideo*", x, y);
+        this.onObjectPlaced?.("mediaVideo*", node.id);
         // VisualizerGraph.sync() runs synchronously on addNode's "change" event,
         // so the MediaVideoNode exists by the time we call loadFileForNode.
-        this.vizGraph.loadFileForNode(node.id, "mediaVideo", file);
+        this.vizGraph.loadFileForNode(node.id, "mediaVideo*", file);
       } else if (file.type.startsWith("image/")) {
-        const node = this.graph.addNode("mediaImage", x, y);
-        this.onObjectPlaced?.("mediaImage", node.id);
-        this.vizGraph.loadFileForNode(node.id, "mediaImage", file);
+        const node = this.graph.addNode("mediaImage*", x, y);
+        this.onObjectPlaced?.("mediaImage*", node.id);
+        this.vizGraph.loadFileForNode(node.id, "mediaImage*", file);
       }
     });
   }

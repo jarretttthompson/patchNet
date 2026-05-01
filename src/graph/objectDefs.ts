@@ -1,6 +1,8 @@
 import type { PortDef, PortType } from "./PatchNode";
 import type { PatchNode } from "./PatchNode";
 import { getUserDefaultSize } from "./userObjectDefaults";
+import { parseJsfx } from "../runtime/jsfx/parser";
+import { parseRVideo } from "../runtime/rvideo/parser";
 
 /** Height of the attribute panel header — must match --pn-attrui-header-h in shell.css */
 export const ATTR_SIDE_INLET_HEADER_H = 22;
@@ -366,7 +368,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 64,
   },
 
-  "browser~": {
+  "browser~*": {
     description: "Live browser tab mirror. Click a site chip to open it in a new browser tab; pick that tab in the capture prompt to mirror it here and route its audio (L/R) + video to the patch.",
     category: "audio",
     args: [
@@ -388,6 +390,126 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 320,
   },
 
+  "youtube~*": {
+    description: "Embedded YouTube player. Paste a YouTube URL; the embed plays in the body. Outputs L/R audio + video to the patch via user-approved tab capture (getDisplayMedia). The in-panel iframe is preview-only — to route audio + video through the patch, click 'Open in tab' then 'Capture' and pick that tab.",
+    category: "audio",
+    args: [
+      { name: "url", type: "symbol", default: "",
+        description: "YouTube URL (watch / share / embed / shorts / mobile forms accepted)." },
+      { name: "videoId", type: "symbol", default: "", hidden: true,
+        description: "Parsed 11-char video id. Derived from url; persisted for fast reload." },
+      { name: "startSeconds", type: "int", default: "0", min: 0, hidden: true,
+        description: "Start offset in seconds (parsed from ?t= / ?start=)." },
+      { name: "captureOnLoad", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Reserved: set when a capture was active at save time." },
+      { name: "locked", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Lock state: 1 = panel inert and object draggable from anywhere; 0 = panel interactive (URL field + buttons clickable). Defaults unlocked because a fresh youtube~ needs a URL pasted into the field as its first interaction." },
+    ],
+    messages: [
+      { inlet: 0, selector: "url",     description: "url <youtube-url> — load a different video" },
+      { inlet: 0, selector: "release", description: "stop mirroring" },
+    ],
+    inlets:  [{ index: 0, type: "any", label: "url / release" }],
+    outlets: [
+      { index: 0, type: "signal", label: "audio L" },
+      { index: 1, type: "signal", label: "audio R" },
+      { index: 2, type: "media",  label: "video out (→ layer / vFX)" },
+    ],
+    defaultWidth: 480,
+    defaultHeight: 360,
+  },
+
+  "mixer~": {
+    description: "N-channel audio mixer. Sums N mono signal inlets to a stereo bus with per-channel gain and pan sliders.",
+    category: "audio",
+    args: [
+      { name: "channels", type: "int", default: "4", min: 1, max: 32, step: 1,
+        description: "Channel count (1–32). Sets the number of signal inlets and strips." },
+      { name: "gains", type: "symbol", default: "", hidden: true,
+        description: "Per-channel gain values, comma-separated floats 0..1." },
+      { name: "pans", type: "symbol", default: "", hidden: true,
+        description: "Per-channel pan values, comma-separated floats 0..1 (0.5 = center)." },
+      { name: "locked", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Lock state: 1 = object draggable (controls disabled); 0 = controls interactive." },
+      { name: "links", type: "symbol", default: "", hidden: true,
+        description: "Per-channel link targets, comma-separated integers (-1 = unlinked). Linked pairs gang their gain faders." },
+    ],
+    messages: [
+      { inlet: 0, selector: "gain",  description: "gain <ch> <float>  — set channel (1-indexed) gain 0..1" },
+      { inlet: 0, selector: "pan",   description: "pan <ch> <float>   — set channel (1-indexed) pan 0..1" },
+      { inlet: 0, selector: "reset", description: "reset all gains to 0.75 and pans to 0.5" },
+    ],
+    inlets: [
+      { index: 0, type: "signal", label: "ch 1 in" },
+      { index: 1, type: "signal", label: "ch 2 in" },
+      { index: 2, type: "signal", label: "ch 3 in" },
+      { index: 3, type: "signal", label: "ch 4 in" },
+    ],
+    outlets: [
+      { index: 0, type: "signal", label: "sum L" },
+      { index: 1, type: "signal", label: "sum R" },
+    ],
+    defaultWidth: 180,
+    defaultHeight: 140,
+  },
+
+  "buffer~": {
+    description: "Audio tape-recorder buffer. Records incoming signal, plays back at variable rate (negative = reverse), with loop and mono/stereo switching. Transport controls live on the body and as messages on the control inlet.",
+    category: "audio",
+    args: [
+      { name: "mode",     type: "symbol", default: "stereo",
+        description: "Channel mode: stereo or mono. Switching sums or duplicates audio." },
+      { name: "rate",     type: "float",  default: "1", min: -8, max: 8, step: 0.01,
+        description: "Playback rate. 1.0 = normal, -1.0 = reverse, 2.0 = double speed." },
+      { name: "loop",     type: "int",    default: "0", min: 0, max: 1, step: 1,
+        description: "Loop mode: 1 = loop, 0 = stop at end (or start when reversing)." },
+      { name: "maxLen",   type: "float",  default: "180", min: 1, max: 3600, step: 1,
+        description: "Maximum recording length in seconds (1–3600). Default 3 min, max 60 min." },
+      { name: "transport",   type: "symbol", default: "stop", hidden: true,
+        description: "Persisted transport state: record | play | pause | stop." },
+      { name: "position",    type: "float",  default: "0",  hidden: true,
+        description: "Persisted playback/record position (0.0–1.0)." },
+      { name: "bufferL",     type: "symbol", default: "", hidden: true,
+        description: "Base64-encoded Float32 PCM — left (or mono) channel." },
+      { name: "bufferR",     type: "symbol", default: "", hidden: true,
+        description: "Base64-encoded Float32 PCM — right channel (empty in mono mode)." },
+      { name: "bufferLStereo", type: "symbol", default: "", hidden: true,
+        description: "Preserved stereo-L when in mono mode; allows lossless mono→stereo restore." },
+      { name: "bufferRStereo", type: "symbol", default: "", hidden: true,
+        description: "Preserved stereo-R when in mono mode; allows lossless mono→stereo restore." },
+      { name: "rangeStart", type: "float", default: "0", hidden: true,
+        description: "Persistent playback window start (normalized 0–1)." },
+      { name: "rangeEnd", type: "float", default: "0", hidden: true,
+        description: "Persistent playback window end (normalized 0–1). end ≤ start ⇒ no range." },
+      { name: "storageKey", type: "symbol", default: "", hidden: true,
+        description: "OPFS storage key (= node id) pointing to the persisted PCM. Empty ⇒ no recording." },
+    ],
+    messages: [
+      // Parameter setters declared on inlet 0 so the attribute object's
+      // auto-formatter (`buildArgMessage`) emits "<name> <value>". Routing for
+      // these accepts any inlet — see ObjectInteractionController buffer~ case.
+      { inlet:  0, selector: "rate",   description: "set playback rate: rate <float> (negative = reverse)" },
+      { inlet:  0, selector: "loop",   description: "set loop mode: loop 0|1" },
+      { inlet:  0, selector: "maxLen", description: "set max recording length in seconds (clears buffer)" },
+      // Transport + mode-switch on the control inlet only — keeps audio-rate
+      // signal noise on inlets 0/1 from accidentally re-triggering record/etc.
+      { inlet: -1, selector: "record", description: "begin recording (overwrites from position 0)" },
+      { inlet: -1, selector: "play",   description: "begin playback from current position; play <pos> starts at norm position; play <start> <end> plays a sub-range" },
+      { inlet: -1, selector: "pause",  description: "pause transport (preserves position)" },
+      { inlet: -1, selector: "stop",   description: "stop and rewind position to 0" },
+      { inlet: -1, selector: "stereo", description: "switch to stereo mode (changes port count)" },
+      { inlet: -1, selector: "mono",   description: "switch to mono mode — sums channels; preserves originals" },
+      { inlet: -1, selector: "clear",  description: "erase the buffer contents" },
+      { inlet: -1, selector: "seek",   description: "jump to normalized position: seek <0.0–1.0>" },
+      { inlet: -1, selector: "range",  description: "restrict playback (and looping) to a window: range <start> <end> in 0.0–1.0" },
+      { inlet: -1, selector: "float",  description: "shorthand for rate: incoming float sets rate directly" },
+    ],
+    inlets:  [],   // derived by deriveBufferPorts(args)
+    outlets: [],   // derived by deriveBufferPorts(args)
+    defaultWidth:  280,
+    defaultHeight: 110,
+  },
+
   "js~": {
     description: "JSFX-style audio effect. Paste REAPER JS-effect code; sliders populate the GUI; audio is processed sample-by-sample in an AudioWorklet.",
     category: "audio",
@@ -398,6 +520,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
         description: "Per-patch saved-effects library (JSON array of {name, code}, base64 on disk)." },
       { name: "locked", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
         description: "Lock state: 1 = drag anywhere on body (code/dropdown disabled, sliders stay live); 0 = unlocked (default)." },
+      { name: "sliderValues", type: "symbol", default: "", hidden: true,
+        description: "Persisted slider state (JSON {sliderIndex:value}, base64 on disk). One left-side inlet is added per slider for external control." },
     ],
     messages: [],
     inlets: [
@@ -433,7 +557,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 120,
   },
 
-  visualizer: {
+  "visualizer*": {
     description: "Creates a named popup render window for compositing visual layers.",
     category: "visual",
     args: [
@@ -474,7 +598,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
-  imageFX: {
+  "imageFX*": {
     description: "Image effect processor. Sits between mediaImage and layer. Double-click to edit.",
     category: "visual",
     args: [
@@ -509,7 +633,24 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
-  mediaVideo: {
+  "frame*": {
+    description: "Tab-region capture. Drag and resize this object on the canvas; the pixels inside its bounds are streamed out as video, ready for vFX / reaperVideo / layer. Uses the Region Capture API (Chrome / Edge only) — one share prompt per frame~ instance.",
+    category: "visual",
+    args: [
+      { name: "captureOnLoad", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Reserved: set when capture was active at save time." },
+    ],
+    messages: [
+      { inlet: 0, selector: "capture", description: "start capturing this frame's region" },
+      { inlet: 0, selector: "release", description: "stop capturing" },
+    ],
+    inlets:  [{ index: 0, type: "any",   label: "capture | release" }],
+    outlets: [{ index: 0, type: "media", label: "video out (→ layer / vFX / reaperVideo)" }],
+    defaultWidth:  320,
+    defaultHeight: 240,
+  },
+
+  "mediaVideo*": {
     description: "Video media source. Double-click to load a file.",
     category: "visual",
     args: [
@@ -538,7 +679,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
-  mediaImage: {
+  "mediaImage*": {
     description: "Still image media source. Double-click to load a file.",
     category: "visual",
     args: [
@@ -557,7 +698,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 150,
   },
 
-  layer: {
+  "layer*": {
     description: "Composites a media source into a named visualizer at a given draw priority.",
     category: "visual",
     args: [
@@ -621,7 +762,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 30,
   },
 
-  vfxCRT: {
+  "vfxCRT*": {
     description: "CRT video effect. Sits between mediaVideo and layer. Adds scanlines, vignette, and chromatic aberration.",
     category: "visual",
     args: [
@@ -649,7 +790,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
-  shaderToy: {
+  "shaderToy*": {
     description: "GLSL fragment-shader media source. Accepts ShaderToy-style `mainImage()` source and emits a render surface. Connect its outlet to a layer, then route that layer into a visualizer or patchViz.",
     category: "visual",
     args: [
@@ -680,7 +821,31 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
-  vfxBlur: {
+  "reaperVideo*": {
+    description: "REAPER video-processor effect. Paste code from REAPER's video processor; @param declarations populate a knob GUI; video is processed per-frame using Canvas2D.",
+    category: "visual",
+    args: [
+      { name: "code", type: "symbol", default: "", hidden: true,
+        description: "REAPER video-processor source. Base64-encoded on disk; raw at runtime." },
+      { name: "library", type: "symbol", default: "", hidden: true,
+        description: "Per-patch saved-effects library (JSON array of {name, code}, base64 on disk)." },
+      { name: "locked", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Lock state: 1 = drag anywhere on body (code/knobs disabled); 0 = unlocked (default)." },
+      { name: "paramValues", type: "symbol", default: "", hidden: true,
+        description: "Persisted knob state (JSON {paramName:value}, base64 on disk). One left-side inlet is added per //@param for external control." },
+      { name: "maxRenderDim", type: "int", default: "360", min: 128, max: 4096, step: 1,
+        description: "Max render dimension (px) — sources larger than this are downscaled before the frame fn runs. Default 360 hits ~57fps on gfx_evalrect-heavy presets (blurs) at 1080p sources. Raise for more detail at the cost of framerate (540=25fps, 720=14fps, 1080=6fps). Min 128 so the output canvas stays visible to downstream consumers." },
+    ],
+    messages: [
+      { inlet: 0, selector: "maxRenderDim", description: "set render cap: maxRenderDim <px> (0 = native resolution)" },
+    ],
+    inlets:  [{ index: 0, type: "media", label: "video in (← mediaVideo / vFX)" }],
+    outlets: [{ index: 0, type: "media", label: "processed video out (→ layer / vFX)" }],
+    defaultWidth:  560,
+    defaultHeight: 320,
+  },
+
+  "vfxBlur*": {
     description: "Gaussian blur video effect. Sits between mediaVideo and layer.",
     category: "visual",
     args: [
@@ -866,6 +1031,20 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
  */
 const TYPE_ALIASES: Record<string, string> = {
   trigger: "t",
+  // Legacy video/image type names (pre-`*` suffix). Old saved patches and
+  // anyone typing the old names in autocomplete still resolve to the new keys.
+  "frame~":      "frame*",
+  mediaVideo:    "mediaVideo*",
+  mediaImage:    "mediaImage*",
+  shaderToy:     "shaderToy*",
+  vfxCRT:        "vfxCRT*",
+  vfxBlur:       "vfxBlur*",
+  reaperVideo:   "reaperVideo*",
+  imageFX:       "imageFX*",
+  layer:         "layer*",
+  visualizer:    "visualizer*",
+  "browser~":    "browser~*",
+  "youtube~":    "youtube~*",
 };
 export function canonicalizeType(type: string): string {
   return TYPE_ALIASES[type] ?? type;
@@ -976,6 +1155,31 @@ export function deriveTriggerPorts(args: string[]): { inlets: PortDef[]; outlets
 const FFT_BAND_CHOICES = [4, 8, 16] as const;
 export type FftBandCount = (typeof FFT_BAND_CHOICES)[number];
 
+// ── mixer~ helpers ────────────────────────────────────────────────────────────
+
+export function mixerChannelCount(args: string[]): number {
+  const n = Math.trunc(Number.parseFloat(args[0] ?? "4"));
+  return Math.max(1, Math.min(32, Number.isFinite(n) ? n : 4));
+}
+
+export function mixerDefaultWidth(n: number): number {
+  return Math.max(180, n * 28 + 52);
+}
+
+export function deriveMixerPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const n = mixerChannelCount(args);
+  const inlets: PortDef[] = Array.from({ length: n }, (_, i) => ({
+    index: i,
+    type: "signal" as PortType,
+    label: `ch ${i + 1} in`,
+  }));
+  const outlets: PortDef[] = [
+    { index: 0, type: "signal" as PortType, label: "sum L" },
+    { index: 1, type: "signal" as PortType, label: "sum R" },
+  ];
+  return { inlets, outlets };
+}
+
 export function fftBandCount(args: string[]): FftBandCount {
   const n = Math.trunc(Number.parseFloat(args[0] ?? "4"));
   return (FFT_BAND_CHOICES as readonly number[]).includes(n) ? (n as FftBandCount) : 4;
@@ -1014,6 +1218,193 @@ export function deriveFftPorts(args: string[]): { inlets: PortDef[]; outlets: Po
     label: `${fftBandLabel(n, i)} (${Math.round(lo)}–${Math.round(hi)} Hz)`,
   }));
   return { inlets, outlets };
+}
+
+/** First side-inlet index on js~ — after the two stereo signal inlets. */
+export const JS_EFFECT_SIDE_INLET_START = 2;
+
+/**
+ * Derive js~ ports from args[0] (raw JSFX source). Stereo signal inlets are
+ * always present on top; one left-side inlet is added per `sliderN:` declaration
+ * in display order, so the user can patch into each slider directly.
+ */
+export function deriveJsEffectPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const source = args[0] ?? "";
+  const inlets: PortDef[] = [
+    { index: 0, type: "signal", label: "left channel in" },
+    { index: 1, type: "signal", label: "right channel in" },
+  ];
+  const outlets: PortDef[] = [
+    { index: 0, type: "signal", label: "left channel out" },
+    { index: 1, type: "signal", label: "right channel out" },
+  ];
+
+  const sliders = extractJsEffectSliders(source);
+  sliders.forEach((s, i) => {
+    inlets.push({
+      index: JS_EFFECT_SIDE_INLET_START + i,
+      type: "any" as PortType,
+      label: s.label,
+      side: "left",
+    });
+  });
+
+  return { inlets, outlets };
+}
+
+/** Parsed slider list in display order, tolerant of parse errors (returns []). */
+export function extractJsEffectSliders(source: string): Array<{ sliderIndex: number; label: string }> {
+  if (!source) return [];
+  const parsed = parseJsfx(source);
+  if (!parsed.ok) return [];
+  return parsed.program.sliders.map(s => ({ sliderIndex: s.index, label: s.label }));
+}
+
+// ── buffer~ helpers ──────────────────────────────────────────────────
+
+/** Ensure all buffer~ arg slots are present so serialization is positional. */
+export function ensureBufferArgs(args: string[]): string[] {
+  if (args[0] === undefined) args[0] = "stereo";
+  if (args[1] === undefined) args[1] = "1";
+  if (args[2] === undefined) args[2] = "0";
+  if (args[3] === undefined) args[3] = "180";
+  if (args[4] === undefined) args[4] = "stop";
+  if (args[5] === undefined) args[5] = "0";
+  if (args[6] === undefined) args[6] = "";
+  if (args[7] === undefined) args[7] = "";
+  if (args[8] === undefined) args[8] = "";
+  if (args[9] === undefined) args[9] = "";
+  if (args[10] === undefined) args[10] = "0";
+  if (args[11] === undefined) args[11] = "0";
+  if (args[12] === undefined) args[12] = "";
+  return args;
+}
+
+/** Returns `[start, end]` normalized range, or `null` when no range is set
+ *  (end ≤ start). */
+export function bufferRange(args: string[]): [number, number] | null {
+  const s = parseFloat(args[10] ?? "0");
+  const e = parseFloat(args[11] ?? "0");
+  if (!isFinite(s) || !isFinite(e) || e <= s) return null;
+  return [Math.max(0, Math.min(1, s)), Math.max(0, Math.min(1, e))];
+}
+
+export function bufferMode(args: string[]): "stereo" | "mono" {
+  return (args[0] ?? "stereo") === "mono" ? "mono" : "stereo";
+}
+
+export function bufferMaxLen(args: string[]): number {
+  const n = parseFloat(args[3] ?? "180");
+  if (!isFinite(n) || n <= 0) return 180;
+  return Math.max(1, Math.min(3600, n));
+}
+
+export function deriveBufferPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  if (bufferMode(args) === "stereo") {
+    return {
+      inlets: [
+        { index: 0, type: "signal", label: "left channel in (record)" },
+        { index: 1, type: "signal", label: "right channel in (record)" },
+        { index: 2, type: "any",    label: "record | play | pause | stop | rate f | loop 0|1 | stereo | mono", temperature: "hot" },
+      ],
+      outlets: [
+        { index: 0, type: "signal", label: "left channel out (playback)" },
+        { index: 1, type: "signal", label: "right channel out (playback)" },
+        { index: 2, type: "float",  label: "position (0.0–1.0)" },
+      ],
+    };
+  }
+  return {
+    inlets: [
+      { index: 0, type: "signal", label: "mono in (record)" },
+      { index: 1, type: "any",    label: "record | play | pause | stop | rate f | loop 0|1 | stereo | mono", temperature: "hot" },
+    ],
+    outlets: [
+      { index: 0, type: "signal", label: "mono out (playback)" },
+      { index: 1, type: "float",  label: "position (0.0–1.0)" },
+    ],
+  };
+}
+
+/** Inlet index used for control messages (depends on stereo/mono mode). */
+export function bufferControlInlet(args: string[]): number {
+  return bufferMode(args) === "stereo" ? 2 : 1;
+}
+
+/** Phase A constant kept as a legacy alias for single-input presets. Callers
+ *  that depend on the real side-inlet start should use
+ *  `getReaperVideoSideInletStart(source)` — the value shifts when the source
+ *  references additional media inputs via `input_info(N>0, …)`. */
+export const REAPER_VIDEO_SIDE_INLET_START = 1;
+
+/** Parse literal integer args to `input_info(N, …)` with N > 0. Phase C
+ *  auto-derives one additional media inlet per unique N. Dynamic args
+ *  (e.g. `input_info(in, …)`) don't match and are assumed to reference
+ *  input 0 — which is the common case for single-input presets. */
+export function extractExtraMediaInputs(source: string): number[] {
+  if (!source) return [];
+  const re = /\binput_info\s*\(\s*(\d+)\s*,/g;
+  const seen = new Set<number>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (n > 0 && n < 32) seen.add(n);  // arbitrary sanity cap
+  }
+  return Array.from(seen).sort((a, b) => a - b);
+}
+
+/** First param side-inlet index for a given source. Equals 1 when the preset
+ *  only references input 0; grows by the number of extra media inputs. */
+export function getReaperVideoSideInletStart(source: string | undefined): number {
+  return 1 + extractExtraMediaInputs(source ?? "").length;
+}
+
+/**
+ * Derive reaperVideo ports from args[0] (raw video-processor source).
+ *
+ *  - Inlet 0 = primary media input (always).
+ *  - Inlets 1..K = secondary media inputs, one per unique `input_info(N>0, …)`
+ *    reference. Their `sourceIndex` matches the N that code refers to.
+ *  - Inlets K+1..K+P = left-side param inlets, one per `//@param`.
+ */
+export function deriveReaperVideoPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const source = args[0] ?? "";
+  const inlets: PortDef[] = [
+    { index: 0, type: "media", label: "video in 0 (← mediaVideo / vFX)" },
+  ];
+  const outlets: PortDef[] = [
+    { index: 0, type: "media", label: "processed video out (→ layer / vFX)" },
+  ];
+
+  const extras = extractExtraMediaInputs(source);
+  extras.forEach((n, i) => {
+    inlets.push({
+      index: 1 + i,
+      type: "media",
+      label: `video in ${n} (secondary)`,
+    });
+  });
+
+  const sideInletStart = 1 + extras.length;
+  const params = extractReaperVideoParams(source);
+  params.forEach((p, i) => {
+    inlets.push({
+      index: sideInletStart + i,
+      type: "any" as PortType,
+      label: p.label,
+      side: "left",
+    });
+  });
+
+  return { inlets, outlets };
+}
+
+/** Parsed param list in display order, tolerant of parse errors (returns []). */
+export function extractReaperVideoParams(source: string): Array<{ name: string; label: string }> {
+  if (!source) return [];
+  const parsed = parseRVideo(source);
+  if (!parsed.ok) return [];
+  return parsed.program.params.map(p => ({ name: p.name, label: p.label || p.name }));
 }
 
 export function getObjectDef(type: string): ObjectSpec {

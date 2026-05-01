@@ -17,7 +17,7 @@ import { VisualizerObjectUI } from "./canvas/VisualizerObjectUI";
 import { CodeboxController } from "./canvas/CodeboxController";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvas/canvasSpace";
 import { getZoom } from "./canvas/zoomState";
-import { getObjectDef } from "./graph/objectDefs";
+import { getObjectDef, bufferRange } from "./graph/objectDefs";
 import { UndoManager } from "./graph/UndoManager";
 import { AudioRuntime } from "./runtime/AudioRuntime";
 import { AudioGraph } from "./runtime/AudioGraph";
@@ -26,7 +26,11 @@ import { VisualizerGraph } from "./runtime/VisualizerGraph";
 import { DmxGraph } from "./runtime/DmxGraph";
 import { DmxPanelController } from "./canvas/DmxPanelController";
 import { JsEffectPanelController } from "./canvas/JsEffectPanelController";
+import { ReaperVideoPanelController } from "./canvas/ReaperVideoPanelController";
 import { BrowserPanelController } from "./canvas/BrowserPanelController";
+import { YouTubePanelController } from "./canvas/YouTubePanelController";
+import { MixerPanelController } from "./canvas/MixerPanelController";
+import { FramePanelController } from "./canvas/FramePanelController";
 import { SubPatchManager } from "./canvas/SubPatchManager";
 import { TabManager } from "./canvas/TabManager";
 
@@ -94,6 +98,17 @@ const canvas = new CanvasController(canvasArea, graph, (type, nodeId) => {
   // After any object is placed, start edit mode on message boxes immediately
   if (type === "message") {
     objectInteraction.startMessageEdit(nodeId);
+    const el = panGroup.querySelector<HTMLElement>(`[data-node-id="${nodeId}"]`);
+    if (el) {
+      el.classList.add("patch-object--just-placed");
+      const onEnd = (e: AnimationEvent) => {
+        // Wait for the longer of the two animations (the glow) to finish.
+        if (e.animationName !== "pn-object-just-placed-glow") return;
+        el.classList.remove("patch-object--just-placed");
+        el.removeEventListener("animationend", onEnd);
+      };
+      el.addEventListener("animationend", onEnd);
+    }
   }
 });
 // Controllers self-register listeners on construction
@@ -108,6 +123,19 @@ new DragController(panGroup, graph, undefined, (nodeId, x, y) => {
 }, () => canvas.getSelectedNodeIds(), (newIds) => {
   // After Cmd+drag clone, select the new copies
   canvas.selectNodes(newIds);
+}, (obstacleId, movingId) => {
+  // No-overlap block — pulse both the obstacle and the moving object so
+  // the user sees a soft, diffused flare radiating from the contact zone.
+  // animationend cleans up the class; the in-flight guard prevents the
+  // pulse from re-triggering every frame while the drag stays blocked.
+  for (const id of [obstacleId, movingId]) {
+    const el = panGroup.querySelector<HTMLElement>(`[data-node-id="${id}"]`);
+    if (!el || el.classList.contains("patch-object--collide-flash")) continue;
+    el.classList.add("patch-object--collide-flash");
+    el.addEventListener("animationend", () => {
+      el.classList.remove("patch-object--collide-flash");
+    }, { once: true });
+  }
 });
 const cableDraw = new CableDrawController(panGroup, graph, cables);
 canvas.setCableDrawController(cableDraw);
@@ -144,6 +172,14 @@ const dmxPanelController = new DmxPanelController(graph, dmxGraph);
 // stores a null AudioGraph until then and resolves late via onJsEffectReady.
 const jsEffectPanelController = new JsEffectPanelController(graph);
 const browserPanelController = new BrowserPanelController(graph);
+const youtubePanelController = new YouTubePanelController(graph);
+const mixerPanelController = new MixerPanelController(graph);
+const reaperVideoPanelController = new ReaperVideoPanelController(graph, vizGraph);
+const framePanelController = new FramePanelController(graph);
+framePanelController.setVisualizerGraph(vizGraph);
+
+objectInteraction.setJsEffectPanelController(jsEffectPanelController);
+objectInteraction.setReaperVideoPanelController(reaperVideoPanelController);
 
 // ── Audio runtime ─────────────────────────────────────────────────────────────
 
@@ -241,6 +277,45 @@ function startMeterLoop(): void {
         }
       }
     }
+    // Push buffer~ position values out the position outlet (last outlet) and
+    // repaint each body waveform with the current cursor.
+    // Stereo mode → outlet index 2; mono mode → outlet index 1.
+    const bufferPositions = audioGraph.getBufferPositions();
+    for (const [nodeId, pos] of bufferPositions) {
+      const sourceNode = graph.nodes.get(nodeId);
+      if (!sourceNode) continue;
+      const bn = audioGraph.getBufferNode(nodeId);
+      if (bn) drawBufferWaveform(nodeId, bn.getPeaks(), bn.bufferLength, pos, bn.state, bufferRange(sourceNode.args));
+      const posOutlet = sourceNode.outlets.length - 1;
+      const formatted = pos.toFixed(4);
+      for (const edge of graph.getEdges()) {
+        if (edge.fromNodeId !== nodeId) continue;
+        if (edge.fromOutlet !== posOutlet) continue;
+        const targetNode = graph.nodes.get(edge.toNodeId);
+        if (!targetNode) continue;
+        const targetEl = panGroup.querySelector<HTMLElement>(
+          `[data-node-id="${edge.toNodeId}"]`,
+        );
+        if (targetNode.type === "float" || targetNode.type === "integer") {
+          const isFloat = targetNode.type === "float";
+          const stored  = isFloat ? formatted : String(Math.trunc(pos));
+          targetNode.args[0] = stored;
+          const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
+          if (odo) buildOdometerContent(odo, isFloat ? pos : Math.trunc(pos), isFloat, null);
+          if (edge.toInlet === 0) {
+            objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
+          }
+        } else if (targetNode.type === "message") {
+          targetNode.args[0] = formatted;
+          const contentEl = targetEl?.querySelector(".patch-object-message-content");
+          if (contentEl) contentEl.textContent = formatted;
+          objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+        } else {
+          objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
+        }
+      }
+    }
+
     const levels = audioGraph.getMeterLevels();
     for (const [nodeId, info] of levels) {
       const el = panGroup.querySelector<HTMLElement>(`[data-node-id="${nodeId}"]`);
@@ -274,6 +349,136 @@ function stopMeterLoop(): void {
   });
 }
 
+/**
+ * Persist buffer~ runtime state back into the patch node's args + repaint
+ * the body waveform. Called every time the BufferNode pings the AudioGraph
+ * (transport change, position tick, record-end, mode switch).
+ *
+ * Phase 3b: PCM is streamed to OPFS by BufferNode itself during recording, so
+ * main.ts no longer writes PCM. We just sync transport state and ensure the
+ * storage-key arg matches reality whenever the buffer length crosses 0.
+ */
+const lastPersistedBufferLengths = new Map<string, number>();
+
+function handleBufferStateChange(nodeId: string): void {
+  if (!audioGraph) return;
+  const bn = audioGraph.getBufferNode(nodeId);
+  if (!bn) return;
+  const node = graph.nodes.get(nodeId)
+    ?? subPatchManager.getSubPatchGraphs().flatMap(g => g.getNodes()).find(n => n.id === nodeId);
+  if (!node || node.type !== "buffer~") return;
+
+  const len = bn.bufferLength;
+  const prevLen = lastPersistedBufferLengths.get(nodeId) ?? -1;
+  const lenChanged = len !== prevLen;
+
+  node.args[4] = bn.state;
+  node.args[5] = bn.position.toFixed(6);
+
+  if (lenChanged) {
+    lastPersistedBufferLengths.set(nodeId, len);
+    // Patch text never carries inline base64 anymore; storage key points to
+    // the OPFS file. args[6..9] stay empty.
+    node.args[6] = "";
+    node.args[7] = "";
+    node.args[8] = "";
+    node.args[9] = "";
+    node.args[12] = len > 0 ? nodeId : "";
+    graph.emit("change");
+  } else {
+    graph.emit("display");
+  }
+  // Draw AFTER emit — "change" rebuilds the canvas DOM, so any draw before
+  // emit would land on an element that's about to be replaced.
+  drawBufferWaveform(nodeId, bn.getPeaks(), len, bn.position, bn.state, bufferRange(node.args));
+}
+
+function drawBufferWaveform(
+  nodeId: string,
+  peaks: { values: Float32Array; bucketCount: number },
+  bufferLen: number,
+  cursor: number,
+  state?: string,
+  range?: [number, number] | null,
+): void {
+  const canvas = panGroup.querySelector<HTMLCanvasElement>(`.pn-buf-wave[data-buf-node-id="${nodeId}"]`);
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const computed = getComputedStyle(canvas);
+  const accent = computed.getPropertyValue("--pn-accent").trim() || "#00ff00";
+  const dim    = computed.getPropertyValue("--pn-muted-deep").trim() || "rgba(0,255,0,0.3)";
+
+  // Range overlay — drawn before the waveform so the PCM strokes paint on top.
+  // Also covers a transient drag-selection (signaled via dataset.bufSelection).
+  const sel = canvas.dataset.bufSelection;
+  let overlay: [number, number] | null = range ?? null;
+  if (sel) {
+    const parts = sel.split(",").map(Number);
+    if (parts.length === 2 && parts[0] < parts[1]) overlay = [parts[0], parts[1]];
+  }
+  if (overlay) {
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = 0.18;
+    ctx.fillRect(overlay[0] * w, 0, (overlay[1] - overlay[0]) * w, h);
+    ctx.globalAlpha = 1;
+  }
+
+  if (bufferLen === 0 || peaks.bucketCount === 0) {
+    ctx.strokeStyle = dim;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+    return;
+  }
+
+  // Peaks are interleaved (min,max) per bucket. Map each canvas column to a
+  // span of buckets and aggregate min/max across them.
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1;
+  const buckets = peaks.bucketCount;
+  const v = peaks.values;
+  for (let x = 0; x < w; x++) {
+    const lo = Math.floor((x       * buckets) / w);
+    const hi = Math.max(lo + 1, Math.floor(((x + 1) * buckets) / w));
+    let mn =  Infinity, mx = -Infinity;
+    for (let b = lo; b < hi && b < buckets; b++) {
+      const bmn = v[b * 2];
+      const bmx = v[b * 2 + 1];
+      if (bmn < mn) mn = bmn;
+      if (bmx > mx) mx = bmx;
+    }
+    if (!isFinite(mn) || mn > mx) continue;
+    const y1 = h / 2 - mx * (h / 2);
+    const y2 = h / 2 - mn * (h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + 0.5, y1);
+    ctx.lineTo(x + 0.5, y2);
+    ctx.stroke();
+  }
+
+  // While recording, the growing waveform itself is the indicator — drawing
+  // a playhead at pos=0 (the position outlet's record-state value) would
+  // park a misleading cursor at the left edge.
+  if (state === "record") return;
+
+  // Cursor — vertical line at the current normalized position.
+  const cx = Math.max(0, Math.min(1, cursor)) * w;
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.85;
+  ctx.beginPath();
+  ctx.moveTo(cx, 0);
+  ctx.lineTo(cx, h);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+
 async function startAudio(): Promise<void> {
   await audioRuntime.start();
   audioGraph = new AudioGraph(audioRuntime, graph, subPatchManager);
@@ -281,12 +486,30 @@ async function startAudio(): Promise<void> {
   subPatchManager.setAudioGraph(audioGraph);
   jsEffectPanelController.setAudioGraph(audioGraph);
   browserPanelController.setAudioGraph(audioGraph);
+  youtubePanelController.setAudioGraph(audioGraph);
+  mixerPanelController.setAudioGraph(audioGraph);
+  audioGraph.setBufferStateChangeCallback((nodeId) => {
+    handleBufferStateChange(nodeId);
+  });
   vizGraph.setBrowserNodeLookup((id) => audioGraph?.getBrowserNode(id) ?? null);
+  vizGraph.setYouTubeNodeLookup((id) => audioGraph?.getYouTubeNode(id) ?? null);
   // Re-mount so any already-placed js~ panels can bind to their
   // freshly-constructed JsEffectNodes.
   jsEffectPanelController.mount(panGroup);
   browserPanelController.mount(panGroup);
+  youtubePanelController.mount(panGroup);
+  mixerPanelController.mount(panGroup);
+  // Always start with the OS-default device on DSP enable. In Chrome that's
+  // the entry with deviceId="default" (labeled "Default - <device name>",
+  // e.g. "Default - MacBook Pro Microphone").
+  try { await audioRuntime.setOutputDevice("default"); } catch { /* ignore */ }
+  await audioGraph.setInputDevice("default");
+  // Populate AFTER setInputDevice — getUserMedia in AdcNode.start unlocks
+  // labels for input devices, so the dropdown can show "Default - MacBook Pro
+  // Microphone" instead of an unnamed placeholder.
   await populateDevices();
+  if (audioDeviceSel) audioDeviceSel.value = "default";
+  if (audioInputSel)  audioInputSel.value  = "default";
   audioGraph.mountFftNodes(panGroup);
   startMeterLoop();
   setDspUi(true);
@@ -300,7 +523,10 @@ async function stopAudio(): Promise<void> {
   subPatchManager.setAudioGraph(undefined);
   jsEffectPanelController.setAudioGraph(null);
   browserPanelController.setAudioGraph(null);
+  youtubePanelController.setAudioGraph(null);
+  mixerPanelController.setAudioGraph(null);
   vizGraph.setBrowserNodeLookup(null);
+  vizGraph.setYouTubeNodeLookup(null);
   await audioRuntime.stop();
   setDspUi(false);
 }
@@ -363,6 +589,19 @@ tabManager.onMainActivate = () => {
 };
 
 objectInteraction.setSubPatchManager(subPatchManager);
+objectInteraction.setBufferRedrawCallback((nodeId) => {
+  const bn = audioGraph?.getBufferNode(nodeId);
+  const node = graph.nodes.get(nodeId)
+    ?? subPatchManager.getSubPatchGraphs().flatMap(g => g.getNodes()).find(n => n.id === nodeId);
+  if (!node || node.type !== "buffer~") return;
+  // bn may be missing pre-DSP; render with empty peaks so the range +
+  // selection overlays still draw on the resting waveform canvas.
+  const peaks  = bn ? bn.getPeaks() : { values: new Float32Array(0), bucketCount: 0 };
+  const len    = bn ? bn.bufferLength : 0;
+  const cursor = bn ? bn.position     : 0;
+  const state  = bn ? bn.state        : "stop";
+  drawBufferWaveform(nodeId, peaks, len, cursor, state, bufferRange(node.args));
+});
 
 // ── Render ───────────────────────────────────────────────────────────────────
 
@@ -371,7 +610,7 @@ objectInteraction.setSubPatchManager(subPatchManager);
 let renderingToTextPanel = false;
 
 function syncTextPanel(): void {
-  const next = graph.serialize();
+  const next = graph.serializeForDisplay();
   if (textArea.value === next) return;
   renderingToTextPanel = true;
   const hasFocus    = document.activeElement === textArea;
@@ -437,9 +676,25 @@ function render(): void {
   jsEffectPanelController.mount(panGroup);
   jsEffectPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
 
+  // Mount inline reaperVideo panels
+  reaperVideoPanelController.mount(panGroup);
+  reaperVideoPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
   // Mount inline browser~ panels
   browserPanelController.mount(panGroup);
   browserPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
+  // Mount inline youtube~ panels
+  youtubePanelController.mount(panGroup);
+  youtubePanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
+  // Mount inline mixer~ panels
+  mixerPanelController.mount(panGroup);
+  mixerPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
+  // Mount inline frame~ panels
+  framePanelController.mount(panGroup);
+  framePanelController.prune(new Set(graph.getNodes().map(n => n.id)));
 
   // Restore selection visual on re-render
   for (const id of canvas.getSelectedNodeIds()) {
@@ -532,6 +787,25 @@ consolePanel?.querySelector(".text-panel-header")?.addEventListener("click", () 
   if (consolePanel.classList.contains("text-panel--collapsed")) toggleConsole();
 });
 
+// ── Toolbar (controls row) collapse ──────────────────────────────────────────
+
+const toolbarControls = document.getElementById("toolbar-controls");
+const toolbarCollapseBtn = document.getElementById("toolbar-collapse-btn");
+
+toolbarCollapseBtn?.addEventListener("click", () => {
+  if (!toolbarControls) return;
+  const collapsed = toolbarControls.classList.toggle("toolbar--collapsed");
+  toolbarCollapseBtn.setAttribute("aria-expanded", String(!collapsed));
+  toolbarCollapseBtn.title = collapsed ? "Expand toolbar" : "Collapse toolbar";
+  toolbarCollapseBtn.setAttribute("aria-label", collapsed ? "Expand toolbar" : "Collapse toolbar");
+  // Canvas height shifts when the controls row appears/disappears — redraw
+  // cables (their endpoints read live DOM positions).
+  requestAnimationFrame(() => {
+    cables.render();
+    canvas.updatePanGroupSize();
+  });
+});
+
 // ── Persistence ──────────────────────────────────────────────────────────────
 
 const STORAGE_KEY = "patchnet-patch";
@@ -556,6 +830,45 @@ function loadPatch(): boolean {
 }
 
 graph.on("change", savePatch);
+
+// ── Autosave to disk (dev only) ──────────────────────────────────────────────
+// Posts the current patch to a Vite dev-server endpoint every 10 minutes, and
+// also on demand when the dev server pushes a `patchnet:force-autosave` event.
+// Lets Claude inspect the live patch without copy-paste from the browser.
+
+if (import.meta.env.DEV) {
+  const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  const autosaveFilename = (): string => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const weekday = WEEKDAYS[now.getDay()];
+    const time = `${pad(now.getHours())}${pad(now.getMinutes())}`;
+    return `patch-${date}-${weekday}-${time}.patchnet`;
+  };
+
+  const autosaveToDisk = async (): Promise<void> => {
+    try {
+      await fetch("/__autosave", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          filename: autosaveFilename(),
+          content: graph.serialize(),
+        }),
+      });
+    } catch {
+      // dev server gone — ignore
+    }
+  };
+
+  setInterval(autosaveToDisk, 10 * 60 * 1000);
+
+  if (import.meta.hot) {
+    import.meta.hot.on("patchnet:force-autosave", autosaveToDisk);
+  }
+}
 
 // ── File save / load ─────────────────────────────────────────────────────────
 
@@ -693,10 +1006,38 @@ window.addEventListener("beforeunload", () => {
   vizGraph.destroy();
   dmxPanelController.destroy();
   jsEffectPanelController.destroy();
+  reaperVideoPanelController.destroy();
+  mixerPanelController.destroy();
   browserPanelController.destroy();
+  youtubePanelController.destroy();
+  framePanelController.destroy();
   dmxGraph.destroy();
   undoManager.destroy();
 });
+
+// ── Dev debug handle ──────────────────────────────────────────────────────────
+// Exposes live runtime state on window so MCP-driven evaluation tools (Chrome
+// DevTools / Playwright) can inspect the graph without us writing one-shot
+// helpers per session. Audio graph is wrapped in a getter because it's created
+// on DSP start and nulled on stop.
+if (import.meta.env.DEV) {
+  Object.defineProperty(window, "__patchnet", {
+    value: {
+      graph,
+      vizGraph,
+      dmxGraph,
+      cables,
+      canvas,
+      objectInteraction,
+      subPatchManager,
+      undoManager,
+      get audioGraph() { return audioGraph; },
+      get dspOn() { return dspOn; },
+    },
+    configurable: false,
+    writable: false,
+  });
+}
 
 // Block cursor appearance is handled natively via caret-shape: block + caret-color
 

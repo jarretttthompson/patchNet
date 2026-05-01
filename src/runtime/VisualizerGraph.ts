@@ -2,7 +2,7 @@ import type { PatchGraph } from "../graph/PatchGraph";
 import type { PatchNode } from "../graph/PatchNode";
 import type { ObjectInteractionController } from "../canvas/ObjectInteractionController";
 import type { IRenderContext } from "./IRenderContext";
-import { OBJECT_DEFS, getVisibleArgs } from "../graph/objectDefs";
+import { OBJECT_DEFS, getVisibleArgs, getReaperVideoSideInletStart } from "../graph/objectDefs";
 import { VisualizerRuntime } from "./VisualizerRuntime";
 import { VisualizerNode } from "./VisualizerNode";
 import { LayerNode } from "./LayerNode";
@@ -11,11 +11,14 @@ import { MediaImageNode } from "./MediaImageNode";
 import { ImageFXNode } from "./ImageFXNode";
 import { VfxCrtNode } from "./VfxCrtNode";
 import { VfxBlurNode } from "./VfxBlurNode";
+import { ReaperVideoNode } from "./ReaperVideoNode";
 import { ShaderToyNode, SHADERTOY_PRESETS } from "./ShaderToyNode";
+import { FrameNode } from "./FrameNode";
 import { VideoStore } from "./VideoStore";
 import { ImageStore } from "./ImageStore";
 import { PatchVizNode } from "./PatchVizNode";
 import type { BrowserNode } from "./BrowserNode";
+import type { YouTubeNode } from "./YouTubeNode";
 import { LocalBus } from "../control/ControlBus";
 import { RenderDirector } from "../control/RenderDirector";
 
@@ -45,8 +48,10 @@ export class VisualizerGraph {
   private imageFXNodes    = new Map<string, ImageFXNode>();       // patchNodeId → ImageFXNode
   private vfxCrtNodes     = new Map<string, VfxCrtNode>();        // patchNodeId → VfxCrtNode
   private vfxBlurNodes    = new Map<string, VfxBlurNode>();       // patchNodeId → VfxBlurNode
+  private reaperVideoNodes = new Map<string, ReaperVideoNode>();  // patchNodeId → ReaperVideoNode
   private shaderToyNodes  = new Map<string, ShaderToyNode>();     // patchNodeId → ShaderToyNode
   private patchVizNodes   = new Map<string, PatchVizNode>();      // patchNodeId → PatchVizNode
+  private frameNodes      = new Map<string, FrameNode>();         // patchNodeId → FrameNode
   private videoIdbKeys    = new Map<string, string>();            // patchNodeId → idb key
   private imageIdbKeys    = new Map<string, string>();            // patchNodeId → idb key
   private imageFXBgKeys   = new Map<string, string>();            // patchNodeId → idb key
@@ -56,6 +61,7 @@ export class VisualizerGraph {
 
   private objectInteraction: ObjectInteractionController | null = null;
   private browserNodeLookup: ((id: string) => BrowserNode | null) | null = null;
+  private youtubeNodeLookup: ((id: string) => YouTubeNode | null) | null = null;
   private unsubscribe: () => void;
   private unsubscribeRuntime: () => void;
 
@@ -92,6 +98,24 @@ export class VisualizerGraph {
 
   private getBrowserNode(id: string): BrowserNode | null {
     return this.browserNodeLookup?.(id) ?? null;
+  }
+
+  /** Mirrors setBrowserNodeLookup — `youtube~` outlet-2 wiring resolves the
+   *  runtime node here. YouTubeNode extends BrowserNode, so the same
+   *  MediaVideoSource shape (.video / .isReady / .hasError) flows through. */
+  setYouTubeNodeLookup(lookup: ((id: string) => YouTubeNode | null) | null): void {
+    this.youtubeNodeLookup = lookup;
+    this.rewireMedia();
+  }
+
+  private getYouTubeNode(id: string): YouTubeNode | null {
+    return this.youtubeNodeLookup?.(id) ?? null;
+  }
+
+  /** Public accessor for FramePanel — runtime FrameNode is owned by this
+   *  class (frame~ has no audio side, so it doesn't live in AudioGraph). */
+  getFrameNode(id: string): FrameNode | null {
+    return this.frameNodes.get(id) ?? null;
   }
 
   // ── Message delivery ─────────────────────────────────────────────
@@ -186,8 +210,8 @@ export class VisualizerGraph {
     }
   }
 
-  deliverMediaMessage(nodeId: string, nodeType: "mediaVideo" | "mediaImage", selector: string, args: string[]): void {
-    if (nodeType === "mediaVideo") {
+  deliverMediaMessage(nodeId: string, nodeType: "mediaVideo*" | "mediaImage*", selector: string, args: string[]): void {
+    if (nodeType === "mediaVideo*") {
       const mvn = this.mediaVideoNodes.get(nodeId);
       if (!mvn) return;
       switch (selector) {
@@ -206,11 +230,11 @@ export class VisualizerGraph {
   }
 
   /** Called by VisualizerObjectUI after the user picks a file. */
-  loadFileForNode(nodeId: string, nodeType: "mediaVideo" | "mediaImage", file: File): void {
+  loadFileForNode(nodeId: string, nodeType: "mediaVideo*" | "mediaImage*", file: File): void {
     const patchNode = this.graph.nodes.get(nodeId);
     if (!patchNode) return;
 
-    if (nodeType === "mediaVideo") {
+    if (nodeType === "mediaVideo*") {
       const mvn = this.mediaVideoNodes.get(nodeId);
       if (!mvn) return;
       mvn.loadFile(file);
@@ -292,6 +316,9 @@ export class VisualizerGraph {
     for (const [id, vfx] of this.vfxBlurNodes) {
       if (!activeIds.has(id)) { vfx.destroy(); this.vfxBlurNodes.delete(id); }
     }
+    for (const [id, rv] of this.reaperVideoNodes) {
+      if (!activeIds.has(id)) { rv.destroy(); this.reaperVideoNodes.delete(id); }
+    }
     for (const [id, stn] of this.shaderToyNodes) {
       if (!activeIds.has(id)) { stn.destroy(); this.shaderToyNodes.delete(id); }
     }
@@ -303,10 +330,13 @@ export class VisualizerGraph {
         this.patchVizNodes.delete(id);
       }
     }
+    for (const [id, fn] of this.frameNodes) {
+      if (!activeIds.has(id)) { fn.destroy(); this.frameNodes.delete(id); }
+    }
 
     // ── Create new nodes ────────────────────────────────────────────
     for (const node of this.graph.getNodes()) {
-      if (node.type === "visualizer" && !this.vizNodes.has(node.id)) {
+      if (node.type === "visualizer*" && !this.vizNodes.has(node.id)) {
         const contextName = node.args[0] ?? "world1";
         const vn = new VisualizerNode(contextName);
         vn.onOpen  = () => {
@@ -323,7 +353,7 @@ export class VisualizerGraph {
           let pn = this.graph.nodes.get(node.id);
           if (!pn) {
             for (const n of this.graph.getNodes()) {
-              if (n.type === "visualizer" && (n.args[0] ?? "world1") === vn.name) { pn = n; break; }
+              if (n.type === "visualizer*" && (n.args[0] ?? "world1") === vn.name) { pn = n; break; }
             }
           }
           if (pn) { pn.args[2] = "0"; this.graph.emit("change"); }
@@ -357,7 +387,7 @@ export class VisualizerGraph {
         }
       }
 
-      if (node.type === "layer" && !this.layerNodes.has(node.id)) {
+      if (node.type === "layer*" && !this.layerNodes.has(node.id)) {
         const priority = parseInt(node.args[1] ?? "0", 10);
         const scaleX   = parseFloat(node.args[2] ?? "1");
         const scaleY   = parseFloat(node.args[3] ?? "1");
@@ -373,7 +403,7 @@ export class VisualizerGraph {
         ));
       }
 
-      if (node.type === "mediaVideo" && !this.mediaVideoNodes.has(node.id)) {
+      if (node.type === "mediaVideo*" && !this.mediaVideoNodes.has(node.id)) {
         const mvn = new MediaVideoNode();
         if (node.args[2] === undefined || node.args[2] === "") {
           node.args[2] = "stop";
@@ -410,7 +440,7 @@ export class VisualizerGraph {
         }
       }
 
-      if (node.type === "mediaImage" && !this.mediaImageNodes.has(node.id)) {
+      if (node.type === "mediaImage*" && !this.mediaImageNodes.has(node.id)) {
         const min = new MediaImageNode();
         // onReady fires from image.onload — guaranteed to run with isReady===true,
         // regardless of the async path (IDB, URL, or file picker).
@@ -451,7 +481,7 @@ export class VisualizerGraph {
         }
       }
 
-      if (node.type === "imageFX" && !this.imageFXNodes.has(node.id)) {
+      if (node.type === "imageFX*" && !this.imageFXNodes.has(node.id)) {
         const fx = new ImageFXNode();
         this.syncFXParams(fx, node);
         this.imageFXNodes.set(node.id, fx);
@@ -467,19 +497,25 @@ export class VisualizerGraph {
         }
       }
 
-      if (node.type === "vfxCRT" && !this.vfxCrtNodes.has(node.id)) {
+      if (node.type === "vfxCRT*" && !this.vfxCrtNodes.has(node.id)) {
         const vfx = new VfxCrtNode();
         this.syncVfxCrtParams(vfx, node);
         this.vfxCrtNodes.set(node.id, vfx);
       }
 
-      if (node.type === "vfxBlur" && !this.vfxBlurNodes.has(node.id)) {
+      if (node.type === "vfxBlur*" && !this.vfxBlurNodes.has(node.id)) {
         const vfx = new VfxBlurNode();
         this.syncVfxBlurParams(vfx, node);
         this.vfxBlurNodes.set(node.id, vfx);
       }
 
-      if (node.type === "shaderToy" && !this.shaderToyNodes.has(node.id)) {
+      if (node.type === "reaperVideo*" && !this.reaperVideoNodes.has(node.id)) {
+        const rv = new ReaperVideoNode();
+        rv.compile(node.args[0] ?? "");
+        this.reaperVideoNodes.set(node.id, rv);
+      }
+
+      if (node.type === "shaderToy*" && !this.shaderToyNodes.has(node.id)) {
         try {
           const w = parseInt(node.args[2] ?? "512", 10);
           const h = parseInt(node.args[3] ?? "512", 10);
@@ -493,6 +529,10 @@ export class VisualizerGraph {
         } catch (e) {
           console.warn("[VisualizerGraph] ShaderToyNode init failed:", e);
         }
+      }
+
+      if (node.type === "frame*" && !this.frameNodes.has(node.id)) {
+        this.frameNodes.set(node.id, new FrameNode());
       }
 
       if (node.type === "patchViz" && !this.patchVizNodes.has(node.id)) {
@@ -535,6 +575,16 @@ export class VisualizerGraph {
     for (const [id, vfx] of this.vfxBlurNodes) {
       const pn = this.graph.nodes.get(id);
       if (pn) this.syncVfxBlurParams(vfx, pn);
+    }
+    // reaperVideo: code arg is the only persisted state. The panel owns the
+    // authoritative source and pushes compile() on every edit, so re-sync
+    // here would be redundant. Creation path (above) seeds from args[0].
+    // One tunable *does* live in args (maxRenderDim) — push that each sync.
+    for (const [id, rv] of this.reaperVideoNodes) {
+      const pn = this.graph.nodes.get(id);
+      if (!pn) continue;
+      const mrd = parseInt(pn.args[4] ?? "360", 10);
+      if (!isNaN(mrd)) rv.setMaxRenderDim(mrd);
     }
     for (const [id, stn] of this.shaderToyNodes) {
       const pn = this.graph.nodes.get(id);
@@ -606,7 +656,7 @@ export class VisualizerGraph {
       for (const edge of this.graph.getEdges()) {
         if (edge.toNodeId !== patchId) continue;
         const fromNode = this.graph.nodes.get(edge.fromNodeId);
-        if (fromNode?.type === "mediaImage") {
+        if (fromNode?.type === "mediaImage*") {
           const min = this.mediaImageNodes.get(edge.fromNodeId);
           if (min) { fx.setInput(min); break; }
         }
@@ -622,17 +672,26 @@ export class VisualizerGraph {
         if (edge.toNodeId !== patchId) continue;
         const fromNode = this.graph.nodes.get(edge.fromNodeId);
         if (!fromNode) continue;
-        if (fromNode.type === "mediaVideo") {
+        if (fromNode.type === "mediaVideo*") {
           const mvn = this.mediaVideoNodes.get(edge.fromNodeId);
           if (mvn) { vfx.setInput(mvn.video); break; }
-        } else if (fromNode.type === "browser~" && edge.fromOutlet === 2) {
+        } else if (fromNode.type === "browser~*" && edge.fromOutlet === 2) {
           const bn = this.getBrowserNode(edge.fromNodeId);
           if (bn) { vfx.setInput(bn.video); break; }
-        } else if (fromNode.type === "vfxCRT") {
+        } else if (fromNode.type === "youtube~*" && edge.fromOutlet === 2) {
+          const yt = this.getYouTubeNode(edge.fromNodeId);
+          if (yt) { vfx.setInput(yt.video); break; }
+        } else if (fromNode.type === "frame*") {
+          const fn = this.frameNodes.get(edge.fromNodeId);
+          if (fn) { vfx.setInput(fn.video); break; }
+        } else if (fromNode.type === "vfxCRT*") {
           const up = this.vfxCrtNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
-        } else if (fromNode.type === "vfxBlur") {
+        } else if (fromNode.type === "vfxBlur*") {
           const up = this.vfxBlurNodes.get(edge.fromNodeId);
+          if (up) { vfx.setVfxInput(up); break; }
+        } else if (fromNode.type === "reaperVideo*") {
+          const up = this.reaperVideoNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
         }
       }
@@ -646,18 +705,69 @@ export class VisualizerGraph {
         if (edge.toNodeId !== patchId) continue;
         const fromNode = this.graph.nodes.get(edge.fromNodeId);
         if (!fromNode) continue;
-        if (fromNode.type === "mediaVideo") {
+        if (fromNode.type === "mediaVideo*") {
           const mvn = this.mediaVideoNodes.get(edge.fromNodeId);
           if (mvn) { vfx.setInput(mvn.video); break; }
-        } else if (fromNode.type === "browser~" && edge.fromOutlet === 2) {
+        } else if (fromNode.type === "browser~*" && edge.fromOutlet === 2) {
           const bn = this.getBrowserNode(edge.fromNodeId);
           if (bn) { vfx.setInput(bn.video); break; }
-        } else if (fromNode.type === "vfxCRT") {
+        } else if (fromNode.type === "youtube~*" && edge.fromOutlet === 2) {
+          const yt = this.getYouTubeNode(edge.fromNodeId);
+          if (yt) { vfx.setInput(yt.video); break; }
+        } else if (fromNode.type === "frame*") {
+          const fn = this.frameNodes.get(edge.fromNodeId);
+          if (fn) { vfx.setInput(fn.video); break; }
+        } else if (fromNode.type === "vfxCRT*") {
           const up = this.vfxCrtNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
-        } else if (fromNode.type === "vfxBlur") {
+        } else if (fromNode.type === "vfxBlur*") {
           const up = this.vfxBlurNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
+        } else if (fromNode.type === "reaperVideo*") {
+          const up = this.reaperVideoNodes.get(edge.fromNodeId);
+          if (up) { vfx.setVfxInput(up); break; }
+        }
+      }
+    }
+
+    // ── Wire reaperVideo inputs from upstream mediaVideo or vFX chain ──
+    // Multi-input (Phase C): each edge routes to its own `edge.toInlet` slot
+    // on the reaperVideo node. Presets using `input_info(N>0, …)` get those
+    // secondary inlets auto-derived by objectDefs; layer-0 primary input is
+    // always inlet 0.
+    for (const [patchId, rv] of this.reaperVideoNodes) {
+      const patchNode = this.graph.nodes.get(patchId);
+      const sideStart = getReaperVideoSideInletStart(patchNode?.args[0]);
+      rv.clearInputs();
+      for (const edge of this.graph.getEdges()) {
+        if (edge.toNodeId !== patchId) continue;
+        // Side inlets (param control) are handled by ObjectInteractionController's
+        // value-forwarding path — media wiring only covers inlet 0..sideStart-1.
+        const inletIdx = edge.toInlet;
+        if (inletIdx >= sideStart) continue;
+        const fromNode = this.graph.nodes.get(edge.fromNodeId);
+        if (!fromNode) continue;
+        if (fromNode.type === "mediaVideo*") {
+          const mvn = this.mediaVideoNodes.get(edge.fromNodeId);
+          if (mvn) rv.setInputAt(inletIdx, mvn.video, null);
+        } else if (fromNode.type === "browser~*" && edge.fromOutlet === 2) {
+          const bn = this.getBrowserNode(edge.fromNodeId);
+          if (bn) rv.setInputAt(inletIdx, bn.video, null);
+        } else if (fromNode.type === "youtube~*" && edge.fromOutlet === 2) {
+          const yt = this.getYouTubeNode(edge.fromNodeId);
+          if (yt) rv.setInputAt(inletIdx, yt.video, null);
+        } else if (fromNode.type === "frame*") {
+          const fn = this.frameNodes.get(edge.fromNodeId);
+          if (fn) rv.setInputAt(inletIdx, fn.video, null);
+        } else if (fromNode.type === "vfxCRT*") {
+          const up = this.vfxCrtNodes.get(edge.fromNodeId);
+          if (up) rv.setInputAt(inletIdx, null, up);
+        } else if (fromNode.type === "vfxBlur*") {
+          const up = this.vfxBlurNodes.get(edge.fromNodeId);
+          if (up) rv.setInputAt(inletIdx, null, up);
+        } else if (fromNode.type === "reaperVideo*") {
+          const up = this.reaperVideoNodes.get(edge.fromNodeId);
+          if (up) rv.setInputAt(inletIdx, null, up);
         }
       }
     }
@@ -673,25 +783,34 @@ export class VisualizerGraph {
         if (edge.toNodeId !== patchId) continue;
         const fromNode = this.graph.nodes.get(edge.fromNodeId);
         if (!fromNode) continue;
-        if (fromNode.type === "mediaVideo") {
+        if (fromNode.type === "mediaVideo*") {
           const mvn = this.mediaVideoNodes.get(edge.fromNodeId);
           if (mvn) layer.setMediaVideo(mvn);
-        } else if (fromNode.type === "browser~" && edge.fromOutlet === 2) {
+        } else if (fromNode.type === "browser~*" && edge.fromOutlet === 2) {
           const bn = this.getBrowserNode(edge.fromNodeId);
           if (bn) layer.setMediaVideo(bn);
-        } else if (fromNode.type === "vfxCRT") {
+        } else if (fromNode.type === "youtube~*" && edge.fromOutlet === 2) {
+          const yt = this.getYouTubeNode(edge.fromNodeId);
+          if (yt) layer.setMediaVideo(yt);
+        } else if (fromNode.type === "frame*") {
+          const fn = this.frameNodes.get(edge.fromNodeId);
+          if (fn) layer.setMediaVideo(fn);
+        } else if (fromNode.type === "vfxCRT*") {
           const vfx = this.vfxCrtNodes.get(edge.fromNodeId);
           if (vfx) layer.setVideoFX(vfx);
-        } else if (fromNode.type === "vfxBlur") {
+        } else if (fromNode.type === "vfxBlur*") {
           const vfx = this.vfxBlurNodes.get(edge.fromNodeId);
           if (vfx) layer.setVideoFX(vfx);
-        } else if (fromNode.type === "imageFX") {
+        } else if (fromNode.type === "reaperVideo*") {
+          const rv = this.reaperVideoNodes.get(edge.fromNodeId);
+          if (rv) layer.setVideoFX(rv);
+        } else if (fromNode.type === "imageFX*") {
           const fxn = this.imageFXNodes.get(edge.fromNodeId);
           if (fxn) layer.setMediaFX(fxn);
-        } else if (fromNode.type === "shaderToy") {
+        } else if (fromNode.type === "shaderToy*") {
           const stn = this.shaderToyNodes.get(edge.fromNodeId);
           if (stn) layer.setVideoFX(stn);
-        } else if (fromNode.type === "mediaImage") {
+        } else if (fromNode.type === "mediaImage*") {
           const min = this.mediaImageNodes.get(edge.fromNodeId);
           if (min) layer.setMediaImage(min);
         }
@@ -804,6 +923,12 @@ export class VisualizerGraph {
     return this.imageFXNodes.get(nodeId);
   }
 
+  /** Exposes the runtime node to ReaperVideoPanel so it can push compiled
+   *  code and knob values directly. */
+  getReaperVideoNode(nodeId: string): ReaperVideoNode | undefined {
+    return this.reaperVideoNodes.get(nodeId);
+  }
+
   /**
    * Re-parent each PatchVizNode canvas into its DOM mount slot.
    * Call this after every render() pass (same pattern as CodeboxController).
@@ -819,12 +944,12 @@ export class VisualizerGraph {
     }
   }
 
-  deliverVfxMessage(nodeId: string, nodeType: "vfxCRT" | "vfxBlur", selector: string, args: string[]): void {
+  deliverVfxMessage(nodeId: string, nodeType: "vfxCRT*" | "vfxBlur*", selector: string, args: string[]): void {
     const pn  = this.graph.nodes.get(nodeId);
     if (!pn) return;
     const val = parseFloat(args[0] ?? "0");
 
-    if (nodeType === "vfxCRT") {
+    if (nodeType === "vfxCRT*") {
       const vfx = this.vfxCrtNodes.get(nodeId);
       if (!vfx) return;
       switch (selector) {
@@ -1098,14 +1223,14 @@ export class VisualizerGraph {
    */
   private notifyAttributeSliders(vizNodeId: string, argName: string, value: string): void {
     if (!this.objectInteraction) return;
-    const def = OBJECT_DEFS["visualizer"];
+    const def = OBJECT_DEFS["visualizer*"];
     if (!def) return;
     const visible = getVisibleArgs(def);
     const argIdx = visible.findIndex(a => a.name === argName);
     if (argIdx < 0) return;
 
     for (const node of this.graph.getNodes()) {
-      if (node.type !== "attribute" || node.args[0] !== "visualizer") continue;
+      if (node.type !== "attribute" || node.args[0] !== "visualizer*") continue;
       const connected = this.graph.getEdges().some(
         e => e.fromNodeId === node.id && e.fromOutlet === 0 && e.toNodeId === vizNodeId,
       );
@@ -1131,6 +1256,7 @@ export class VisualizerGraph {
     for (const fx  of this.imageFXNodes.values())    fx.destroy();
     for (const vfx of this.vfxCrtNodes.values())     vfx.destroy();
     for (const vfx of this.vfxBlurNodes.values())    vfx.destroy();
+    for (const rv  of this.reaperVideoNodes.values()) rv.destroy();
     for (const stn of this.shaderToyNodes.values()) stn.destroy();
 
     for (const vn of this.vizNodes.values()) {
@@ -1145,6 +1271,7 @@ export class VisualizerGraph {
     this.imageFXNodes.clear();
     this.vfxCrtNodes.clear();
     this.vfxBlurNodes.clear();
+    this.reaperVideoNodes.clear();
     this.shaderToyNodes.clear();
     this.videoIdbKeys.clear();
     this.imageFXBgKeys.clear();

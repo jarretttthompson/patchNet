@@ -3,5 +3,7 @@ dist/
 errorScreenshots/
 patchNet-Vault/
 /cursors/
+autosaves/
+.claude/
 .DS_Store
 *.local

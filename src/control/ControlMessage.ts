@@ -16,7 +16,7 @@ export const CONTROL_PROTOCOL_VERSION = 1;
 export interface SceneAdd {
   t: "SceneAdd";
   id: string;
-  kind: "layer" | "fx" | "media";
+  kind: "layer*" | "fx" | "media";
   priority?: number;
 }
 
@@ -29,7 +29,7 @@ export interface SceneWire {
   t: "SceneWire";
   layerId: string;
   source:
-    | { kind: "mediaVideo" | "mediaImage" | "imageFX" | "vfxCRT" | "vfxBlur"; id: string }
+    | { kind: "mediaVideo*" | "mediaImage*" | "imageFX*" | "vfxCRT*" | "vfxBlur*"; id: string }
     | null;
 }
 

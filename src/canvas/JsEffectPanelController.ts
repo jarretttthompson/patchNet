@@ -28,6 +28,11 @@ export class JsEffectPanelController {
     }
   }
 
+  /** Returns the mounted panel for a js~ node, or undefined if not present. */
+  getPanel(nodeId: string): JsEffectPanel | undefined {
+    return this.panels.get(nodeId);
+  }
+
   /** Ensure every js~ node has an attached panel. Called after each
    *  render() pass. */
   mount(panGroup: HTMLElement): void {

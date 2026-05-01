@@ -32,18 +32,18 @@ export class VisualizerObjectUI {
     const node = this.graph.nodes.get(nodeId);
     if (!node) return;
 
-    if (node.type === "mediaVideo") {
+    if (node.type === "mediaVideo*") {
       e.preventDefault();
       e.stopImmediatePropagation();
-      this.openFilePicker("video/*", nodeId, "mediaVideo");
-    } else if (node.type === "mediaImage") {
+      this.openFilePicker("video/*", nodeId, "mediaVideo*");
+    } else if (node.type === "mediaImage*") {
       e.preventDefault();
       e.stopImmediatePropagation();
-      this.openFilePicker("image/*", nodeId, "mediaImage");
+      this.openFilePicker("image/*", nodeId, "mediaImage*");
     }
   }
 
-  private openFilePicker(accept: string, nodeId: string, nodeType: "mediaVideo" | "mediaImage"): void {
+  private openFilePicker(accept: string, nodeId: string, nodeType: "mediaVideo*" | "mediaImage*"): void {
     const input = document.createElement("input");
     input.type   = "file";
     input.accept = accept;
