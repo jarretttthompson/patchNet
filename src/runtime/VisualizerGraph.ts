@@ -14,6 +14,9 @@ import { VfxBlurNode } from "./VfxBlurNode";
 import { ReaperVideoNode } from "./ReaperVideoNode";
 import { ShaderToyNode, SHADERTOY_PRESETS } from "./ShaderToyNode";
 import { FrameNode } from "./FrameNode";
+import { WebcamNode } from "./WebcamNode";
+import { VideoBufferNode } from "./VideoBufferNode";
+import { videoBufferMaxLen } from "../graph/objectDefs";
 import { VideoStore } from "./VideoStore";
 import { ImageStore } from "./ImageStore";
 import { PatchVizNode } from "./PatchVizNode";
@@ -52,6 +55,10 @@ export class VisualizerGraph {
   private shaderToyNodes  = new Map<string, ShaderToyNode>();     // patchNodeId → ShaderToyNode
   private patchVizNodes   = new Map<string, PatchVizNode>();      // patchNodeId → PatchVizNode
   private frameNodes      = new Map<string, FrameNode>();         // patchNodeId → FrameNode
+  private webcamNodes     = new Map<string, WebcamNode>();        // patchNodeId → WebcamNode
+  private videoBufferNodes = new Map<string, VideoBufferNode>();  // patchNodeId → VideoBufferNode
+  private videoBufferStateChangeCallback: ((nodeId: string) => void) | null = null;
+  private videoBufferStateListeners = new Map<string, () => void>();
   private videoIdbKeys    = new Map<string, string>();            // patchNodeId → idb key
   private imageIdbKeys    = new Map<string, string>();            // patchNodeId → idb key
   private imageFXBgKeys   = new Map<string, string>();            // patchNodeId → idb key
@@ -116,6 +123,38 @@ export class VisualizerGraph {
    *  class (frame~ has no audio side, so it doesn't live in AudioGraph). */
   getFrameNode(id: string): FrameNode | null {
     return this.frameNodes.get(id) ?? null;
+  }
+
+  /** Public accessor for CamPanel — runtime WebcamNode owned here. */
+  getWebcamNode(id: string): WebcamNode | null {
+    return this.webcamNodes.get(id) ?? null;
+  }
+
+  /** Access vbuf* runtime — used by ObjectInteractionController to dispatch
+   *  transport / range / rate messages, and by main.ts to read state. */
+  getVideoBufferNode(id: string): VideoBufferNode | null {
+    return this.videoBufferNodes.get(id) ?? null;
+  }
+
+  /** Subscribe to vbuf* transport changes (used by main.ts to write args
+   *  back into the patch text and trigger redraw). */
+  setVideoBufferStateChangeCallback(cb: ((nodeId: string) => void) | null): void {
+    this.videoBufferStateChangeCallback = cb;
+  }
+
+  /** Mount each vbuf* node's playback <video> into its panel preview slot.
+   *  Called from main.ts after every render. Safe to call repeatedly — the
+   *  same element is reused; we just re-parent it after a DOM rebuild. */
+  mountVideoBufferPreviews(panGroup: HTMLElement): void {
+    for (const [id, vbn] of this.videoBufferNodes) {
+      const slot = panGroup.querySelector<HTMLElement>(
+        `.pn-vbuf-preview[data-vbuf-node-id="${id}"]`,
+      );
+      if (!slot) continue;
+      if (slot.contains(vbn.video)) continue;
+      slot.innerHTML = "";
+      slot.appendChild(vbn.video);
+    }
   }
 
   // ── Message delivery ─────────────────────────────────────────────
@@ -333,6 +372,17 @@ export class VisualizerGraph {
     for (const [id, fn] of this.frameNodes) {
       if (!activeIds.has(id)) { fn.destroy(); this.frameNodes.delete(id); }
     }
+    for (const [id, wn] of this.webcamNodes) {
+      if (!activeIds.has(id)) { wn.destroy(); this.webcamNodes.delete(id); }
+    }
+    for (const [id, vbn] of this.videoBufferNodes) {
+      if (!activeIds.has(id)) {
+        this.videoBufferStateListeners.get(id)?.();
+        this.videoBufferStateListeners.delete(id);
+        vbn.destroy();
+        this.videoBufferNodes.delete(id);
+      }
+    }
 
     // ── Create new nodes ────────────────────────────────────────────
     for (const node of this.graph.getNodes()) {
@@ -535,6 +585,22 @@ export class VisualizerGraph {
         this.frameNodes.set(node.id, new FrameNode());
       }
 
+      if (node.type === "cam*" && !this.webcamNodes.has(node.id)) {
+        this.webcamNodes.set(node.id, new WebcamNode());
+      }
+
+      if (node.type === "vbuf*" && !this.videoBufferNodes.has(node.id)) {
+        const vbn = new VideoBufferNode({
+          maxSeconds: videoBufferMaxLen(node.args),
+          nodeId:     node.id,
+        });
+        this.videoBufferNodes.set(node.id, vbn);
+        const unsub = vbn.onStateChange(() => {
+          this.videoBufferStateChangeCallback?.(node.id);
+        });
+        this.videoBufferStateListeners.set(node.id, unsub);
+      }
+
       if (node.type === "patchViz" && !this.patchVizNodes.has(node.id)) {
         const contextName = node.args[0] ?? "world1";
         const pvn = new PatchVizNode(contextName);
@@ -684,6 +750,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "frame*") {
           const fn = this.frameNodes.get(edge.fromNodeId);
           if (fn) { vfx.setInput(fn.video); break; }
+        } else if (fromNode.type === "cam*") {
+          const wn = this.webcamNodes.get(edge.fromNodeId);
+          if (wn) { vfx.setInput(wn.video); break; }
         } else if (fromNode.type === "vfxCRT*") {
           const up = this.vfxCrtNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
@@ -693,6 +762,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "reaperVideo*") {
           const up = this.reaperVideoNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
+        } else if (fromNode.type === "vbuf*") {
+          const vbn = this.videoBufferNodes.get(edge.fromNodeId);
+          if (vbn) { vfx.setInput(vbn.video); break; }
         }
       }
     }
@@ -717,6 +789,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "frame*") {
           const fn = this.frameNodes.get(edge.fromNodeId);
           if (fn) { vfx.setInput(fn.video); break; }
+        } else if (fromNode.type === "cam*") {
+          const wn = this.webcamNodes.get(edge.fromNodeId);
+          if (wn) { vfx.setInput(wn.video); break; }
         } else if (fromNode.type === "vfxCRT*") {
           const up = this.vfxCrtNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
@@ -726,6 +801,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "reaperVideo*") {
           const up = this.reaperVideoNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
+        } else if (fromNode.type === "vbuf*") {
+          const vbn = this.videoBufferNodes.get(edge.fromNodeId);
+          if (vbn) { vfx.setInput(vbn.video); break; }
         }
       }
     }
@@ -759,6 +837,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "frame*") {
           const fn = this.frameNodes.get(edge.fromNodeId);
           if (fn) rv.setInputAt(inletIdx, fn.video, null);
+        } else if (fromNode.type === "cam*") {
+          const wn = this.webcamNodes.get(edge.fromNodeId);
+          if (wn) rv.setInputAt(inletIdx, wn.video, null);
         } else if (fromNode.type === "vfxCRT*") {
           const up = this.vfxCrtNodes.get(edge.fromNodeId);
           if (up) rv.setInputAt(inletIdx, null, up);
@@ -768,6 +849,36 @@ export class VisualizerGraph {
         } else if (fromNode.type === "reaperVideo*") {
           const up = this.reaperVideoNodes.get(edge.fromNodeId);
           if (up) rv.setInputAt(inletIdx, null, up);
+        } else if (fromNode.type === "vbuf*") {
+          const vbn = this.videoBufferNodes.get(edge.fromNodeId);
+          if (vbn) rv.setInputAt(inletIdx, vbn.video, null);
+        }
+      }
+    }
+
+    // ── Wire vbuf* inputs from upstream video sources ─────────────────
+    // The connected source feeds captureStream() when record() fires.
+    for (const [patchId, vbn] of this.videoBufferNodes) {
+      vbn.setSource(null);
+      for (const edge of this.graph.getEdges()) {
+        if (edge.toNodeId !== patchId || edge.toInlet !== 0) continue;
+        const fromNode = this.graph.nodes.get(edge.fromNodeId);
+        if (!fromNode) continue;
+        if (fromNode.type === "mediaVideo*") {
+          const mvn = this.mediaVideoNodes.get(edge.fromNodeId);
+          if (mvn) { vbn.setSource(mvn.video); break; }
+        } else if (fromNode.type === "browser~*" && edge.fromOutlet === 2) {
+          const bn = this.getBrowserNode(edge.fromNodeId);
+          if (bn) { vbn.setSource(bn.video); break; }
+        } else if (fromNode.type === "youtube~*" && edge.fromOutlet === 2) {
+          const yt = this.getYouTubeNode(edge.fromNodeId);
+          if (yt) { vbn.setSource(yt.video); break; }
+        } else if (fromNode.type === "frame*") {
+          const fn = this.frameNodes.get(edge.fromNodeId);
+          if (fn) { vbn.setSource(fn.video); break; }
+        } else if (fromNode.type === "cam*") {
+          const wn = this.webcamNodes.get(edge.fromNodeId);
+          if (wn) { vbn.setSource(wn.video); break; }
         }
       }
     }
@@ -795,6 +906,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "frame*") {
           const fn = this.frameNodes.get(edge.fromNodeId);
           if (fn) layer.setMediaVideo(fn);
+        } else if (fromNode.type === "cam*") {
+          const wn = this.webcamNodes.get(edge.fromNodeId);
+          if (wn) layer.setMediaVideo(wn);
         } else if (fromNode.type === "vfxCRT*") {
           const vfx = this.vfxCrtNodes.get(edge.fromNodeId);
           if (vfx) layer.setVideoFX(vfx);
@@ -813,6 +927,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "mediaImage*") {
           const min = this.mediaImageNodes.get(edge.fromNodeId);
           if (min) layer.setMediaImage(min);
+        } else if (fromNode.type === "vbuf*") {
+          const vbn = this.videoBufferNodes.get(edge.fromNodeId);
+          if (vbn) layer.setMediaVideo(vbn);
         }
       }
 

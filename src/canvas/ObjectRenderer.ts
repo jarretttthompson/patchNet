@@ -1,5 +1,6 @@
 import { renderPorts } from "./PortRenderer";
-import { getObjectDef, OBJECT_DEFS, getVisibleArgs, getSequencerCells, sequencerCols, sequencerRows, fftBandCount, bufferMode, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
+import { getObjectDef, OBJECT_DEFS, getVisibleArgs, getSequencerCells, sequencerCols, sequencerRows, fftBandCount, bufferMode, videoBufferLoop, videoBufferMaxLen, videoBufferRate, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
+import { renderLocalPluginBody, hasLocalPlugin } from "../graph/localPlugins";
 import type { PatchNode } from "../graph/PatchNode";
 
 const LOCK_ICON_SVG = `
@@ -175,7 +176,103 @@ function buildAttributeBody(node: PatchNode): HTMLDivElement {
   return wrap;
 }
 
+/**
+ * Build the ezScale body: 4 editable text fields (inMin/inMax/outMin/outMax)
+ * and a dual-handle range slider whose handles span [outMin, outMax] and
+ * pinch the active output sub-range.
+ */
+function buildEzScaleBody(node: PatchNode): HTMLDivElement {
+  const wrap = document.createElement("div");
+  wrap.className = "pn-ezscale";
+
+  // Fields display whatever is in args; blank by default on a freshly-created
+  // ezScale (the user fills the bounds before the slider becomes interactive).
+  const inMinStr  = node.args[0] ?? "";
+  const inMaxStr  = node.args[1] ?? "";
+  const outMinStr = node.args[2] ?? "";
+  const outMaxStr = node.args[3] ?? "";
+
+  const mkField = (label: string, fieldKey: string, valueStr: string) => {
+    const cell = document.createElement("label");
+    cell.className = "pn-ezscale__cell";
+    const lab = document.createElement("span");
+    lab.className = "pn-ezscale__label";
+    lab.textContent = label;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "pn-ezscale__field";
+    input.value = valueStr;
+    input.dataset.ezscaleField = fieldKey;
+    input.spellcheck = false;
+    cell.append(lab, input);
+    return cell;
+  };
+
+  const fields = document.createElement("div");
+  fields.className = "pn-ezscale__fields";
+  fields.appendChild(mkField("in min",  "inMin",  inMinStr));
+  fields.appendChild(mkField("in max",  "inMax",  inMaxStr));
+  fields.appendChild(mkField("out min", "outMin", outMinStr));
+  fields.appendChild(mkField("out max", "outMax", outMaxStr));
+  wrap.appendChild(fields);
+
+  // Range slider — only interactive once outMin/outMax are both valid numbers.
+  // Until then, render a flat empty track with no handles.
+  const outMin = parseFloat(outMinStr);
+  const outMax = parseFloat(outMaxStr);
+  const boundsReady = isFinite(outMin) && isFinite(outMax) && outMin !== outMax;
+
+  const slider = document.createElement("div");
+  slider.className = "pn-ezscale__range";
+  if (!boundsReady) slider.classList.add("pn-ezscale__range--inert");
+
+  const track = document.createElement("div");
+  track.className = "pn-ezscale__track";
+
+  if (boundsReady) {
+    // Active range falls back to full bounds when outLo/outHi are blank — the
+    // user hasn't pinched the slider yet.
+    const outLoNum = parseFloat(node.args[4] ?? "");
+    const outHiNum = parseFloat(node.args[5] ?? "");
+    const outLo = isFinite(outLoNum) ? outLoNum : outMin;
+    const outHi = isFinite(outHiNum) ? outHiNum : outMax;
+
+    const span = outMax - outMin;
+    const pct = (v: number) => Math.max(0, Math.min(1, (v - outMin) / span)) * 100;
+    const loPct = pct(outLo);
+    const hiPct = pct(outHi);
+
+    const fill = document.createElement("div");
+    fill.className = "pn-ezscale__fill";
+    fill.style.left  = `${Math.min(loPct, hiPct)}%`;
+    fill.style.right = `${100 - Math.max(loPct, hiPct)}%`;
+    track.appendChild(fill);
+
+    const thumbLo = document.createElement("div");
+    thumbLo.className = "pn-ezscale__thumb pn-ezscale__thumb--lo";
+    thumbLo.style.left = `${loPct}%`;
+    thumbLo.dataset.ezscaleThumb = "lo";
+    track.appendChild(thumbLo);
+
+    const thumbHi = document.createElement("div");
+    thumbHi.className = "pn-ezscale__thumb pn-ezscale__thumb--hi";
+    thumbHi.style.left = `${hiPct}%`;
+    thumbHi.dataset.ezscaleThumb = "hi";
+    track.appendChild(thumbHi);
+  }
+
+  slider.appendChild(track);
+  wrap.appendChild(slider);
+
+  return wrap;
+}
+
 function buildBody(node: PatchNode): HTMLDivElement {
+  // Local (gitignored) plugins claim the body fully — they own classes,
+  // layout, and any inline interactive controls.
+  const localBody = renderLocalPluginBody(node);
+  if (localBody) return localBody;
+
   const body = document.createElement("div");
   body.className = "patch-object-body";
 
@@ -249,6 +346,9 @@ function buildBody(node: PatchNode): HTMLDivElement {
     track.appendChild(thumb);
 
     body.appendChild(track);
+
+  } else if (node.type === "ezScale") {
+    body.appendChild(buildEzScaleBody(node));
 
   } else if (node.type === "codebox") {
     const codebox = document.createElement("div");
@@ -448,6 +548,15 @@ function buildBody(node: PatchNode): HTMLDivElement {
     host.dataset.framePanelHost = node.id;
     body.appendChild(host);
 
+  } else if (node.type === "cam*") {
+    // Inline panel host — CamPanelController mounts the live mirror +
+    // device picker after render().
+    body.classList.add("patch-object-cam-body");
+    const host = document.createElement("div");
+    host.className = "pn-cam-panel-host";
+    host.dataset.camPanelHost = node.id;
+    body.appendChild(host);
+
   } else if (node.type === "youtube~*") {
     body.classList.add("patch-object-youtube-body");
     const locked = (node.args[4] ?? "0") === "1";
@@ -482,6 +591,13 @@ function buildBody(node: PatchNode): HTMLDivElement {
     lockBtn.setAttribute("aria-label", locked ? "Unlock to use panel" : "Lock to move object");
     lockBtn.innerHTML = LOCK_ICON_SVG;
     body.appendChild(lockBtn);
+
+  } else if (node.type === "peer") {
+    body.classList.add("patch-object-peer-body");
+    const host = document.createElement("div");
+    host.className = "pn-peer-panel-host";
+    host.dataset.peerPanelHost = node.id;
+    body.appendChild(host);
 
   } else if (node.type === "s" || node.type === "r") {
     const row = document.createElement("div");
@@ -538,6 +654,58 @@ function buildBody(node: PatchNode): HTMLDivElement {
       <span class="pn-buf-loop${loop ? " pn-buf-loop-on" : ""}">loop:${loop ? "on" : "off"}</span>
       <span class="pn-buf-maxlen" data-buf-maxlen-display title="Max recording length (1s–60m) — click to edit">max:${formatMaxLen(maxLen)}</span>
       <button type="button" class="pn-buf-btn pn-buf-mode" data-buf-action="${mode === "stereo" ? "mono" : "stereo"}">${mode === "stereo" ? "STEREO" : "MONO"}</button>
+    `;
+    stage.appendChild(info);
+
+    body.appendChild(stage);
+
+  } else if (node.type === "vbuf*") {
+    body.classList.add("patch-object-vbuf-body");
+
+    const transport = node.args[3] ?? "stop";
+    const rate      = videoBufferRate(node.args);
+    const loop      = videoBufferLoop(node.args);
+    const maxLen    = videoBufferMaxLen(node.args);
+
+    const stage = document.createElement("div");
+    stage.className = "pn-vbuf-stage";
+
+    const title = document.createElement("div");
+    title.className = "pn-vbuf-title";
+    title.textContent = "vbuf*";
+    stage.appendChild(title);
+
+    const transportRow = document.createElement("div");
+    transportRow.className = "pn-vbuf-transport";
+    transportRow.innerHTML = `
+      <button type="button" class="pn-vbuf-btn pn-vbuf-rec${transport === "record" ? " pn-vbuf-active" : ""}"   data-vbuf-action="record" aria-label="Record">⏺</button>
+      <button type="button" class="pn-vbuf-btn pn-vbuf-play${transport === "play"   ? " pn-vbuf-active" : ""}"  data-vbuf-action="play"   aria-label="Play">▶</button>
+      <button type="button" class="pn-vbuf-btn pn-vbuf-pause${transport === "pause" ? " pn-vbuf-active" : ""}" data-vbuf-action="pause"  aria-label="Pause">❚❚</button>
+      <button type="button" class="pn-vbuf-btn pn-vbuf-stop${transport === "stop"   ? " pn-vbuf-active" : ""}" data-vbuf-action="stop"   aria-label="Stop">■</button>
+    `;
+    stage.appendChild(transportRow);
+
+    // Preview area — playback HTMLVideoElement gets mounted here at runtime.
+    // Until we have a recording, it's a dim placeholder. The thumbnail strip
+    // (range overlay surface) sits below.
+    const preview = document.createElement("div");
+    preview.className = "pn-vbuf-preview";
+    preview.dataset.vbufNodeId = node.id;
+    stage.appendChild(preview);
+
+    const strip = document.createElement("canvas");
+    strip.className = "pn-vbuf-strip";
+    strip.dataset.vbufNodeId = node.id;
+    strip.width  = 260;
+    strip.height = 28;
+    stage.appendChild(strip);
+
+    const info = document.createElement("div");
+    info.className = "pn-vbuf-info";
+    info.innerHTML = `
+      <span class="pn-vbuf-rate">×${rate.toFixed(2)}</span>
+      <span class="pn-vbuf-loop${loop ? " pn-vbuf-loop-on" : ""}">loop:${loop ? "on" : "off"}</span>
+      <span class="pn-vbuf-maxlen" data-vbuf-maxlen-display title="Max recording length (1s–10m) — click to edit">max:${formatMaxLen(maxLen)}</span>
     `;
     stage.appendChild(info);
 
@@ -720,8 +888,8 @@ function buildBody(node: PatchNode): HTMLDivElement {
   // Auto-wrap eligible types in a fixed-size .pn-stage so resizing the object
   // uniformly scales the body content. Excluded types either reflow naturally
   // (comment, message, sequencer) or own their own layout (panel-managed
-  // types + buffer~).
-  if (SCALE_ELIGIBLE_TYPES.has(node.type)) {
+  // types + buffer~). Local plugins own their own layout too.
+  if (SCALE_ELIGIBLE_TYPES.has(node.type) && !hasLocalPlugin(node.type)) {
     const def = getObjectDef(node.type);
     applyStage(body, def.defaultWidth, def.defaultHeight);
   }

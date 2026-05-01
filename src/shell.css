@@ -1407,6 +1407,112 @@ body {
   padding: 6px 4px;
 }
 
+/* ── ezScale ──────────────────────────────────────────────────────── */
+
+.patch-object-body:has(.pn-ezscale) {
+  padding: 4px 6px 6px;
+}
+
+.pn-ezscale {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  font-family: var(--pn-font-mono);
+}
+
+.pn-ezscale__fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 6px;
+}
+
+.pn-ezscale__cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--pn-type-object-label);
+  color: var(--pn-text-dim);
+  min-width: 0;
+}
+
+.pn-ezscale__label {
+  flex: 0 0 auto;
+  font-family: var(--pn-font-sans);
+  font-size: var(--pn-type-object-label);
+  color: var(--pn-muted);
+  user-select: none;
+}
+
+.pn-ezscale__field {
+  flex: 1 1 0;
+  min-width: 0;
+  background: var(--pn-object-bg);
+  border: 1px solid var(--pn-border-subtle);
+  border-radius: var(--pn-object-radius);
+  color: var(--pn-text);
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-object-name);
+  padding: 1px 4px;
+  outline: none;
+  cursor: var(--pn-cursor-text) !important;
+  caret-color: var(--pn-accent);
+}
+
+.pn-ezscale__field:focus {
+  border-color: var(--pn-accent);
+  box-shadow: 0 0 0 1px var(--pn-accent-glow);
+}
+
+.pn-ezscale__range {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  margin-top: auto;
+  padding: 0 6px;
+  box-sizing: border-box;
+}
+
+.patch-object-body .pn-ezscale__track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: color-mix(in srgb, var(--pn-accent) 8%, transparent);
+  border: 1px solid var(--pn-border-subtle);
+  border-radius: 2px;
+  cursor: var(--pn-cursor-col-resize) !important;
+}
+
+/* Inert state — bounds not yet typed: dim the track and revert to the body's
+   grab cursor so it's clear the slider isn't usable yet. Selector specificity
+   (0,3,0) wins over the active rule above. */
+.patch-object-body .pn-ezscale__range--inert .pn-ezscale__track {
+  opacity: 0.5;
+  cursor: var(--pn-cursor-grab) !important;
+}
+
+.patch-object-body .pn-ezscale__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--pn-accent) 32%, transparent);
+  pointer-events: none;
+  cursor: var(--pn-cursor-col-resize) !important;
+}
+
+.patch-object-body .pn-ezscale__thumb {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 6px;
+  background: var(--pn-accent);
+  box-shadow: 0 0 6px var(--pn-accent-glow);
+  border-radius: 2px;
+  transform: translateX(-50%);
+  cursor: var(--pn-cursor-col-resize) !important;
+}
+
 /* ── Message box ──────────────────────────────────────────────────── */
 
 /* Distinctive Max-style left accent border + bent-corner indicator */
@@ -5638,4 +5744,413 @@ body {
   flex: 0 0 auto;
   padding: 1px 6px;
   font-size: var(--pn-type-micro);
+}
+
+/* ── vbuf* ────────────────────────────────────────────────────────────── */
+
+/* Mirrors buffer~ stage layout. Fixed 280×220 design size, uniformly scaled. */
+.patch-object-vbuf-body {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  container-type: size;
+}
+
+.pn-vbuf-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 280px;
+  height: 220px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  font-family: var(--pn-font-mono);
+  color: var(--pn-text);
+  transform-origin: top left;
+  transform: scale(min(calc(100cqw / 280px), calc(100cqh / 220px)));
+}
+
+.pn-vbuf-title {
+  font-size: var(--pn-type-object-name);
+  color: var(--pn-muted);
+  letter-spacing: 0.04em;
+}
+
+.pn-vbuf-transport {
+  display: flex;
+  gap: 4px;
+}
+
+.pn-vbuf-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--pn-border);
+  color: var(--pn-text);
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-helper);
+  padding: 3px 0;
+  border-radius: var(--pn-radius-xs);
+  cursor: var(--pn-cursor-pointer) !important;
+  line-height: 1;
+}
+
+.pn-vbuf-btn:hover {
+  border-color: var(--pn-border-accent);
+  background: var(--pn-hover);
+}
+
+.pn-vbuf-btn.pn-vbuf-active {
+  background: var(--pn-active-accent);
+  border-color: var(--pn-accent);
+  color: var(--pn-accent);
+  text-shadow: 0 0 6px var(--pn-accent);
+}
+
+.pn-vbuf-preview {
+  position: relative;
+  width: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--pn-bg-deep);
+  border: 1px solid var(--pn-border-subtle);
+  border-radius: var(--pn-radius-xs);
+  overflow: hidden;
+}
+.pn-vbuf-preview > video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.pn-vbuf-strip {
+  display: block;
+  width: 100%;
+  height: 28px;
+  background: var(--pn-bg-deep);
+  border: 1px solid var(--pn-border-subtle);
+  border-radius: var(--pn-radius-xs);
+}
+
+.pn-vbuf-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pn-type-micro);
+  color: var(--pn-muted);
+  white-space: nowrap;
+}
+
+.pn-vbuf-rate { min-width: 40px; }
+.pn-vbuf-loop-on { color: var(--pn-accent); }
+.pn-vbuf-maxlen {
+  cursor: text;
+  padding: 1px 4px;
+  border: 1px dashed transparent;
+  border-radius: var(--pn-radius-xs);
+  user-select: none;
+}
+.pn-vbuf-maxlen:hover {
+  border-color: var(--pn-border-subtle);
+  color: var(--pn-accent);
+}
+.pn-vbuf-maxlen-input {
+  width: 3.2em;
+  font: inherit;
+  color: var(--pn-accent);
+  background: var(--pn-bg-deep);
+  border: 1px solid var(--pn-accent);
+  border-radius: var(--pn-radius-xs);
+  padding: 0 2px;
+  outline: none;
+}
+
+/* ── cam* ──────────────────────────────────────────────────────────────── */
+
+.patch-object-cam-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  border-radius: 5px;
+  background: #000;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--pn-accent) 40%, transparent),
+    inset 0 0 14px rgba(0, 0, 0, 0.9);
+  overflow: hidden;
+}
+
+.pn-cam-panel-host {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.pn-cam-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  font-family: var(--pn-font-mono);
+  color: var(--pn-text);
+  background: var(--pn-surface);
+  overflow: hidden;
+}
+
+.pn-cam-preview {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  background: var(--pn-bg);
+}
+
+.pn-cam-mirror {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.pn-cam-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  text-align: center;
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-micro);
+  color: color-mix(in srgb, var(--pn-text) 60%, transparent);
+  background: var(--pn-bg);
+}
+
+.pn-cam-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--pn-border);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.pn-cam-controls-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.pn-cam-btn {
+  background: var(--pn-bg);
+  color: var(--pn-text);
+  border: 1px solid var(--pn-border);
+  padding: 3px 10px;
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-chip);
+  cursor: pointer;
+}
+
+.pn-cam-btn:hover:not(:disabled) {
+  border-color: var(--pn-accent);
+  color: var(--pn-accent);
+}
+
+.pn-cam-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pn-cam-btn-primary {
+  border-color: var(--pn-accent);
+  color: var(--pn-accent);
+}
+
+.pn-cam-device {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  background: var(--pn-bg);
+  color: var(--pn-text);
+  border: 1px solid var(--pn-border);
+  padding: 2px 6px;
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-chip);
+  outline: none;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+
+.pn-cam-device:hover:not(:disabled) {
+  border-color: var(--pn-accent);
+}
+
+.pn-cam-device:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pn-cam-status {
+  flex: 0 1 auto;
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-micro);
+  color: color-mix(in srgb, var(--pn-text) 65%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: 60%;
+}
+
+/* Hide the status pill while idle/running — the start/stop button + the
+ * device dropdown already convey state. Only show for error or transitional
+ * messages, where the cm-data-state attribute is set. */
+.pn-cam-status:not([data-state]) {
+  display: none;
+}
+
+.pn-cam-status[data-state="err"] {
+  color: var(--pn-error, #ff6464);
+  flex: 1 1 auto;
+}
+
+.pn-cam-status[data-state="starting"] {
+  color: color-mix(in srgb, var(--pn-text) 80%, transparent);
+}
+
+/* Small live-indicator dot in the preview corner — replaces the redundant
+ * "● running" status text. Only present while capturing. */
+.pn-cam-preview[data-state="on"]::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pn-accent);
+  box-shadow: 0 0 6px var(--pn-accent);
+  pointer-events: none;
+}
+
+/* ── peer object panel (Phase 7A — manual SDP) ─────────────────────────── */
+
+.pn-peer-panel-host {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.pn-peer-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  min-height: 0;
+  min-width: 0;
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-chip);
+  color: var(--pn-text);
+  background: var(--pn-surface);
+  overflow: hidden;
+}
+
+.pn-peer-role {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.pn-peer-role label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pn-peer-role input[type="radio"] {
+  accent-color: var(--pn-accent);
+  margin: 0;
+}
+
+.pn-peer-status {
+  flex: 0 0 auto;
+  font-size: var(--pn-type-micro);
+  color: color-mix(in srgb, var(--pn-text) 65%, transparent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pn-peer-status[data-status="connected"] {
+  color: var(--pn-accent);
+}
+
+.pn-peer-status[data-status="connecting"],
+.pn-peer-status[data-status="creating-offer"],
+.pn-peer-status[data-status="awaiting-answer"],
+.pn-peer-status[data-status="accepting-offer"] {
+  color: color-mix(in srgb, var(--pn-text) 80%, transparent);
+}
+
+.pn-peer-status[data-status="failed"] {
+  color: var(--pn-error, #ff6464);
+}
+
+.pn-peer-sdp {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  background: var(--pn-bg);
+  color: var(--pn-text);
+  border: 1px solid var(--pn-border);
+  padding: 4px 6px;
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-micro);
+  outline: none;
+  word-break: break-all;
+}
+
+.pn-peer-sdp:focus {
+  border-color: var(--pn-accent);
+}
+
+.pn-peer-btnrow {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.pn-peer-btn {
+  flex: 1;
+  background: var(--pn-bg);
+  color: var(--pn-text);
+  border: 1px solid var(--pn-border);
+  padding: 3px 6px;
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-chip);
+  cursor: pointer;
+}
+
+.pn-peer-btn:hover {
+  border-color: var(--pn-accent);
+  color: var(--pn-accent);
 }

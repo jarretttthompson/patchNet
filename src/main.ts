@@ -18,6 +18,7 @@ import { CodeboxController } from "./canvas/CodeboxController";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvas/canvasSpace";
 import { getZoom } from "./canvas/zoomState";
 import { getObjectDef, bufferRange } from "./graph/objectDefs";
+import { mountLocalPlugins, pruneLocalPlugins } from "./graph/localPlugins";
 import { UndoManager } from "./graph/UndoManager";
 import { AudioRuntime } from "./runtime/AudioRuntime";
 import { AudioGraph } from "./runtime/AudioGraph";
@@ -31,8 +32,12 @@ import { BrowserPanelController } from "./canvas/BrowserPanelController";
 import { YouTubePanelController } from "./canvas/YouTubePanelController";
 import { MixerPanelController } from "./canvas/MixerPanelController";
 import { FramePanelController } from "./canvas/FramePanelController";
+import { CamPanelController } from "./canvas/CamPanelController";
+import { PeerPanelController } from "./canvas/PeerPanelController";
+import { PeerRegistry } from "./runtime/peer/PeerRegistry";
 import { SubPatchManager } from "./canvas/SubPatchManager";
 import { TabManager } from "./canvas/TabManager";
+import { buildShareUrl, loadFromShareUrl } from "./share/shareUrl";
 
 function requireElement<T extends Element>(
   selector: string,
@@ -177,6 +182,38 @@ const mixerPanelController = new MixerPanelController(graph);
 const reaperVideoPanelController = new ReaperVideoPanelController(graph, vizGraph);
 const framePanelController = new FramePanelController(graph);
 framePanelController.setVisualizerGraph(vizGraph);
+const camPanelController = new CamPanelController(graph);
+camPanelController.setVisualizerGraph(vizGraph);
+
+// ── Peer networking (Phase 7A — manual SDP) ───────────────────────────────
+const peerRegistry = new PeerRegistry();
+peerRegistry.setNetReceiveEmit((nodeId, payload) => {
+  // Format the payload for the existing string-based outlet plumbing.
+  // Bang → empty string handled by deliverBang; everything else fires through fireOutlet.
+  if (payload === null) {
+    // Bang: walk edges manually since fireOutlet only carries string values.
+    for (const edge of graph.getEdges()) {
+      if (edge.fromNodeId !== nodeId || edge.fromOutlet !== 0) continue;
+      const target = graph.nodes.get(edge.toNodeId);
+      if (!target) continue;
+      objectInteraction.deliverBang(target, edge.toInlet);
+    }
+    return;
+  }
+  const value = formatPayload(payload);
+  objectInteraction.fireOutlet(nodeId, 0, value);
+});
+function formatPayload(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return v.map(formatPayload).join(" ");
+  return String(v);
+}
+const peerPanelController = new PeerPanelController(graph, peerRegistry);
+objectInteraction.setPeerRegistry(peerRegistry);
+graph.on("change", () => {
+  peerRegistry.sync(graph);
+  peerRegistry.syncNetReceives(graph);
+});
 
 objectInteraction.setJsEffectPanelController(jsEffectPanelController);
 objectInteraction.setReaperVideoPanelController(reaperVideoPanelController);
@@ -360,6 +397,139 @@ function stopMeterLoop(): void {
  */
 const lastPersistedBufferLengths = new Map<string, number>();
 
+const lastVbufState = new Map<string, string>();
+
+function handleVideoBufferStateChange(nodeId: string): void {
+  const vbn = vizGraph.getVideoBufferNode(nodeId);
+  if (!vbn) return;
+  const node = graph.nodes.get(nodeId)
+    ?? subPatchManager.getSubPatchGraphs().flatMap(g => g.getNodes()).find(n => n.id === nodeId);
+  if (!node || node.type !== "vbuf*") return;
+
+  // args layout (vbuf*):
+  //   0 rate, 1 loop, 2 maxLen, 3 transport, 4 position,
+  //   5 thumb, 6 rangeStart, 7 rangeEnd, 8 storageKey
+  const prevState = lastVbufState.get(nodeId) ?? "";
+  const prevStorage = node.args[8] ?? "";
+  node.args[3] = vbn.state;
+  node.args[4] = vbn.position.toFixed(6);
+  const has = vbn.hasRecording ? nodeId : "";
+  node.args[8] = has;
+
+  // Rebuild DOM whenever state OR storage transitions, so the transport-button
+  // highlight follows the runtime. Position-only ticks emit display only.
+  if (prevState !== vbn.state || prevStorage !== has) {
+    lastVbufState.set(nodeId, vbn.state);
+    graph.emit("change");
+  } else {
+    graph.emit("display");
+  }
+  drawVbufStrip(nodeId);
+}
+
+function drawVbufStrip(nodeId: string): void {
+  const canvas = panGroup.querySelector<HTMLCanvasElement>(
+    `.pn-vbuf-strip[data-vbuf-node-id="${nodeId}"]`,
+  );
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const vbn = vizGraph.getVideoBufferNode(nodeId);
+  if (!vbn) return;
+  const node = graph.nodes.get(nodeId)
+    ?? subPatchManager.getSubPatchGraphs().flatMap(g => g.getNodes()).find(n => n.id === nodeId);
+  if (!node) return;
+
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const computed = getComputedStyle(canvas);
+  const accent = computed.getPropertyValue("--pn-accent").trim() || "#00ff00";
+  const dim    = computed.getPropertyValue("--pn-muted-deep").trim() || "rgba(0,255,0,0.3)";
+
+  // Range overlay first so the strip thumbnails draw on top. Live drag
+  // selection (vbufSelection dataset, written by ObjectInteractionController)
+  // takes precedence so the user sees their drag in real time.
+  const sel = canvas.dataset.vbufSelection;
+  let overlayStart = NaN, overlayEnd = NaN;
+  if (sel) {
+    const [a, b] = sel.split(",").map(parseFloat);
+    if (Number.isFinite(a) && Number.isFinite(b) && b > a) { overlayStart = a; overlayEnd = b; }
+  }
+  if (!Number.isFinite(overlayStart)) {
+    const rs = parseFloat(node.args[6] ?? "0");
+    const re = parseFloat(node.args[7] ?? "0");
+    if (Number.isFinite(rs) && Number.isFinite(re) && re > rs) { overlayStart = rs; overlayEnd = re; }
+  }
+  if (Number.isFinite(overlayStart) && Number.isFinite(overlayEnd)) {
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = 0.18;
+    ctx.fillRect(overlayStart * w, 0, (overlayEnd - overlayStart) * w, h);
+    ctx.globalAlpha = 1;
+  }
+
+  const { frames } = vbn.getStrip();
+  if (frames.length > 0) {
+    // Distribute frames evenly across the canvas. During record this fills
+    // left-to-right as new chunks arrive; after record the strip stays full
+    // for scrubbing reference.
+    const slotW = w / frames.length;
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      const x = i * slotW;
+      // drawImage with non-integer width can blur; round only the destination.
+      ctx.drawImage(f, 0, 0, f.width, f.height,
+                       Math.floor(x), 0, Math.ceil(slotW) + 1, h);
+    }
+  } else {
+    // Empty resting line.
+    ctx.strokeStyle = dim;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+  }
+
+  if (vbn.state === "record") {
+    // Progress cursor at the leading edge of the populated strip.
+    const recProgress = vbn.getStrip().frames.length / vbn.getStrip().max;
+    const cx = Math.min(1, recProgress) * w;
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, h);
+    ctx.stroke();
+  } else if (vbn.state === "play" || vbn.state === "pause") {
+    const cx = vbn.position * w;
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.5;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    ctx.moveTo(cx, 0);
+    ctx.lineTo(cx, h);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+// Lightweight rAF that polls every vbuf* and redraws its strip every frame.
+// We always redraw — DOM rebuilds during state transitions wipe the canvas, so
+// the previous "only redraw on record/play" filter caused frames to vanish on
+// stop/pause. Cost is trivial since each strip is just blitting cached frame
+// canvases.
+function vbufStripLoop(): void {
+  requestAnimationFrame(vbufStripLoop);
+  for (const node of graph.getNodes()) {
+    if (node.type !== "vbuf*") continue;
+    const vbn = vizGraph.getVideoBufferNode(node.id);
+    if (!vbn) continue;
+    drawVbufStrip(node.id);
+  }
+}
+requestAnimationFrame(vbufStripLoop);
+
 function handleBufferStateChange(nodeId: string): void {
   if (!audioGraph) return;
   const bn = audioGraph.getBufferNode(nodeId);
@@ -490,6 +660,9 @@ async function startAudio(): Promise<void> {
   mixerPanelController.setAudioGraph(audioGraph);
   audioGraph.setBufferStateChangeCallback((nodeId) => {
     handleBufferStateChange(nodeId);
+  });
+  vizGraph.setVideoBufferStateChangeCallback((nodeId) => {
+    handleVideoBufferStateChange(nodeId);
   });
   vizGraph.setBrowserNodeLookup((id) => audioGraph?.getBrowserNode(id) ?? null);
   vizGraph.setYouTubeNodeLookup((id) => audioGraph?.getYouTubeNode(id) ?? null);
@@ -665,6 +838,9 @@ function render(): void {
   // Mount patchViz live canvases into their DOM slots
   vizGraph.mountPatchViz(panGroup);
 
+  // Mount vbuf* playback <video>s into their preview slots
+  vizGraph.mountVideoBufferPreviews(panGroup);
+
   // Mount fft~ canvases into their screen slots
   audioGraph?.mountFftNodes(panGroup);
 
@@ -695,6 +871,18 @@ function render(): void {
   // Mount inline frame~ panels
   framePanelController.mount(panGroup);
   framePanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
+  // Mount inline cam* panels
+  camPanelController.mount(panGroup);
+  camPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
+  // Mount inline peer panels
+  peerPanelController.mount(panGroup);
+  peerPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
+  // Mount any private/local plugin objects (src/graph/localObjects/)
+  mountLocalPlugins(panGroup, { graph, vizGraph });
+  pruneLocalPlugins(new Set(graph.getNodes().map(n => n.id)));
 
   // Restore selection visual on re-render
   for (const id of canvas.getSelectedNodeIds()) {
@@ -870,6 +1058,39 @@ if (import.meta.env.DEV) {
   }
 }
 
+// ── Status flash ─────────────────────────────────────────────────────────────
+
+let statusFlashTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flashStatus(msg: string): void {
+  if (statusFlashTimer !== null) clearTimeout(statusFlashTimer);
+  statusMode.textContent = msg;
+  statusFlashTimer = setTimeout(() => {
+    statusMode.textContent = "EDIT";
+    statusFlashTimer = null;
+  }, 3000);
+}
+
+// ── Share ─────────────────────────────────────────────────────────────────────
+
+const shareBtn = document.getElementById("share-btn") as HTMLButtonElement | null;
+
+shareBtn?.addEventListener("click", async () => {
+  const result = await buildShareUrl(graph);
+  if ("error" in result) {
+    flashStatus(result.error);
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(result.url);
+    flashStatus("LINK COPIED");
+  } catch {
+    // Clipboard blocked (non-HTTPS / permissions) — show URL for manual copy
+    flashStatus("COPY FAILED — check console");
+    console.info("[patchNet] Share URL:", result.url);
+  }
+});
+
 // ── File save / load ─────────────────────────────────────────────────────────
 
 function savePatchToFile(): void {
@@ -917,34 +1138,45 @@ loadFileInput?.addEventListener("change", () => {
   if (file) loadPatchFromFile(file);
 });
 
-// Restore saved patch, or seed with a starter object on first load
-if (!loadPatch()) {
-  graph.addNode("button", 96, 88);
-}
-
-requestAnimationFrame(() => {
-  const nodes = graph.getNodes();
-  let centerX = 0;
-  let centerY = 0;
-
-  if (nodes.length > 0) {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const node of nodes) {
-      const def = getObjectDef(node.type);
-      const w   = node.width  ?? def.defaultWidth  ?? 100;
-      const h   = node.height ?? def.defaultHeight ?? 30;
-      minX = Math.min(minX, node.x);
-      minY = Math.min(minY, node.y);
-      maxX = Math.max(maxX, node.x + w);
-      maxY = Math.max(maxY, node.y + h);
+// Restore saved patch — prefer a shared URL, then localStorage, then blank slate.
+(async () => {
+  const sharedText = await loadFromShareUrl();
+  if (sharedText) {
+    history.replaceState({}, "", window.location.pathname);
+    try {
+      graph.deserialize(sharedText);
+      flashStatus("PATCH LOADED FROM LINK");
+    } catch {
+      flashStatus("SHARED PATCH FAILED TO LOAD");
     }
-    centerX = (minX + maxX) / 2;
-    centerY = (minY + maxY) / 2;
+  } else if (!loadPatch()) {
+    graph.addNode("button", 96, 88);
   }
 
-  canvasArea.scrollLeft = Math.max(0, Math.round(centerX + CANVAS_LEFT_GUTTER_PX - canvasArea.clientWidth  / 2));
-  canvasArea.scrollTop  = Math.max(0, Math.round(centerY + CANVAS_TOP_GUTTER_PX  - canvasArea.clientHeight / 2));
-});
+  requestAnimationFrame(() => {
+    const nodes = graph.getNodes();
+    let centerX = 0;
+    let centerY = 0;
+
+    if (nodes.length > 0) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const node of nodes) {
+        const def = getObjectDef(node.type);
+        const w   = node.width  ?? def.defaultWidth  ?? 100;
+        const h   = node.height ?? def.defaultHeight ?? 30;
+        minX = Math.min(minX, node.x);
+        minY = Math.min(minY, node.y);
+        maxX = Math.max(maxX, node.x + w);
+        maxY = Math.max(maxY, node.y + h);
+      }
+      centerX = (minX + maxX) / 2;
+      centerY = (minY + maxY) / 2;
+    }
+
+    canvasArea.scrollLeft = Math.max(0, Math.round(centerX + CANVAS_LEFT_GUTTER_PX - canvasArea.clientWidth  / 2));
+    canvasArea.scrollTop  = Math.max(0, Math.round(centerY + CANVAS_TOP_GUTTER_PX  - canvasArea.clientHeight / 2));
+  });
+})();
 
 // ── Scroll bounds ────────────────────────────────────────────────────────────
 // Prevent the user from scrolling more than SCROLL_PAD pixels (screen-space)
@@ -1011,6 +1243,9 @@ window.addEventListener("beforeunload", () => {
   browserPanelController.destroy();
   youtubePanelController.destroy();
   framePanelController.destroy();
+  camPanelController.destroy();
+  peerPanelController.destroy();
+  peerRegistry.destroyAll();
   dmxGraph.destroy();
   undoManager.destroy();
 });

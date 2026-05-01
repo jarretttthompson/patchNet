@@ -42,6 +42,128 @@ Agents: append here when making a decision that affects the whole project.
 Older entries archived to `AGENTS-archive.md`.
 
 ---
+## [2026-05-01] COMPLETED | Add `ezScale` object + int-form output rule (also applies to `scale`)
+**Agent:** Claude Code
+**Phase:** Object suite — control objects
+
+**Done:**
+- New `ezScale` object: GUI variant of `scale`. Four typed bound fields (inMin, inMax, outMin, outMax) plus a dual-handle range slider that pinches the **active** output sub-range within `[outMin, outMax]`. Hot inlet maps `inMin..inMax → outLo..outHi` (slider handles), so live tuning happens with the slider, not the typed bounds.
+- Field commit: focus → type → blur/Enter to commit; Escape reverts. Invalid input reverts. When typed bounds change, `outLo`/`outHi` are clamped back into the new bounds and re-canonicalized (int vs float string form).
+- Slider drag: each thumb clamps against the other and against `[outMin, outMax]`. Inverted ranges (`outMin > outMax`) follow `scale`'s sign-flipped interpolation.
+- **Int-form output convention** introduced and applied to **both** `ezScale` *and* the existing `scale`: if both output bounds are written without a decimal point (e.g. `0` and `10`), the output is rounded to the nearest integer; if either has a dot (e.g. `0.`), output stays float. The rule is controlled by lexical form, so it round-trips through the text panel cleanly.
+- Six args (incl. hidden `outLo`/`outHi`) round-trip via the default serializer branch — bidirectional canvas↔text bond preserved.
+
+**Changed files:**
+- `src/graph/objectDefs.ts` — new `ezScale` def; `scale` description updated to mention int-form rule
+- `src/canvas/ObjectRenderer.ts` — new `buildEzScaleBody` (4 fields + dual-handle range slider)
+- `src/shell.css` — `.pn-ezscale*` styles using `--pn-*` tokens
+- `src/canvas/ObjectInteractionController.ts` — `ezScaleDrag` state, mousedown branch, drag move/up handlers, field commit on focusout/Enter, Escape revert; new `case "ezScale"` in dispatchMessage; existing `case "scale"` updated to use new `isIntForm` / `formatScaled` helpers
+- `patchNet-Vault/wiki/entities/object-ezscale.md` — new entity page
+- `patchNet-Vault/wiki/index.md` — added entry under Entities
+- `patchNet-Vault/wiki/log.md` — log entry
+
+**Notes / decisions:**
+- **Back-compat call:** `scale 0 1 0 127` (the default args) now emits integers. Patches that relied on fractional output from default-arg `scale` should switch to `scale 0. 1. 0. 127.`. The convention matches Pure Data / Max user expectations and the cost of opting back into float is one keystroke per bound.
+- No `outLo` / `outHi` inlets on `ezScale` — those are GUI-only by design (the "ez" framing). Cold inlets 1–4 cover the typed bounds.
+- `outLo` / `outHi` stored as hidden args, persisted as int-form strings in int mode and float-form strings otherwise. No new `BLOB_ARG_SCHEMA` entry needed (no large blobs).
+- Scientific notation on bounds (`1e2`) is treated as float — `isIntForm` uses `/^-?\d+$/` strictly.
+
+**Next needed:**
+- Manual UI smoke test in dev server (visual layout, field tab order, slider drag feel) — typecheck and `npm run build` already pass and existing vitest suite (11 tests) is green.
+
+---
+## [2026-05-01] COMPLETED | Phase 7A — peer / netsend / netreceive (manual-SDP MVP)
+**Agent:** Claude Code
+**Phase:** Phase 7A — Peer Networking, manual-SDP MVP
+
+**Done:**
+- Three new objects registered: `peer` (WebRTC session host), `netsend` (control-rate send), `netreceive` (control-rate receive). Topic-routed atop the peer's single ordered+reliable data channel.
+- `PeerSession` wraps `RTCPeerConnection` with role-aware lifecycle (offerer/answerer), self-contained SDP blobs (waits for ICE gathering before exporting), status state machine (`idle | creating-offer | awaiting-answer | accepting-offer | connecting | connected | disconnected | failed`).
+- `PeerRegistry` reconciles per-`peer`-node sessions on graph change, holds netreceive subscriptions, exposes `sendFromNetSend` / `syncNetReceives`. Default-peer resolution picks the lowest-id `peer` node when netsend/netreceive omit an explicit peer arg (Phase 7A always uses default; second arg reserved for 7B).
+- Inline `PeerPanel` mirrors the CamPanel pattern: role radio buttons, status pill, SDP textarea, generate / accept / reset buttons. SDP exchange flow documented in the panel's title attributes and JSDoc.
+- `topicRouter` frame/parse helpers (JSON `{t, p}` for 7A; MessagePack swap deferred to 7B per concept doc).
+- Vitest unit tests for `topicRouter` (8 cases, all green).
+
+**Changed files:**
+- `src/runtime/peer/PeerSession.ts` — new
+- `src/runtime/peer/PeerRegistry.ts` — new
+- `src/runtime/peer/topicRouter.ts` — new
+- `src/canvas/PeerPanel.ts` — new
+- `src/canvas/PeerPanelController.ts` — new
+- `tests/peer/topicRouter.test.ts` — new
+- `src/graph/objectDefs.ts` — `peer`, `netsend`, `netreceive` specs appended before closing brace
+- `src/canvas/ObjectInteractionController.ts` — `peerRegistry` field + setter, `parseNetPayload` helper, cases in `deliverBang` and `deliverMessageValue` for `netsend` / `netreceive` / `peer`
+- `src/canvas/ObjectRenderer.ts` — `peer` body slot (`pn-peer-panel-host`)
+- `src/main.ts` — instantiates `PeerRegistry` + `PeerPanelController`, wires `setNetReceiveEmit` to fire bangs / values into the existing outlet plumbing, mounts panels per render, destroys on teardown
+- `src/shell.css` — `.pn-peer-*` styles appended at EOF (status colors keyed off `data-status`)
+
+**Notes / decisions:**
+- **Manual SDP only.** No signaling server. The textarea is the wire — generate on offerer, paste on answerer, paste back to offerer. `iceCompletePromise` ensures each blob is self-contained (no separate trickle exchange needed at this scale).
+- **Role swap rebuilds the session.** RTCPeerConnection roles bake at creation, so flipping offerer↔answerer tears down + rebuilds. `PeerRegistry.recreateSession` preserves topic listeners across the rebuild so existing netsend/netreceive bindings auto-rebind.
+- **Bang propagation deviates from `fireOutlet`.** `fireOutlet` is string-typed, but a bang has no string representation distinct from "empty value." Solution: `setNetReceiveEmit` checks for `payload === null` and walks edges manually to call `objectInteraction.deliverBang(target, edge.toInlet)` — same shape as the codebox controller's bang dispatch.
+- **No deps added.** JSON over the data channel is enough for control-rate. MessagePack will land in Phase 7B alongside binary buffer~ chunks.
+- **Tests are router-only.** RTCPeerConnection isn't available in node, and faking it well enough to verify the SDP state machine is more work than the manual two-tab integration test (which is the spec'd 7A completion signal anyway).
+
+**Next needed:**
+- Manual integration test: open the app in two browser tabs, drop a `peer` in each (one offerer, one answerer), copy SDPs back and forth, drop matching `netsend "foo"` / `netreceive "foo"` pairs, verify bangs/floats/lists round-trip.
+- Phase 7B: hosted rendezvous server with room codes (replaces the manual SDP textarea with auto-connect).
+- Phase 7C: `netsend~` / `netreceive~` audio + `netsend*` / `netreceive*` video variants.
+
+---
+## [2026-04-30] COMPLETED | Add drunk — random walk number generator
+**Agent:** Claude Code
+**Phase:** Control objects
+
+**Done:**
+- New `drunk` object matching Max/MSP behavior: each bang steps ±step (random integer in [0, step)) from the current position, wrapping in [0, max). Integers only.
+- Left inlet (hot): bang → step and output; number → set current position and output; `set <n>` → store without outputting.
+- Right inlet (cold): set step size.
+- Current position stored in hidden `args[2]` for save/load persistence, mirrored in `drunkPositions` Map for runtime access.
+
+**Changed files:**
+- `src/graph/objectDefs.ts` — `drunk` definition (2 visible args + 1 hidden, 6 messages, 2 inlets, 1 outlet)
+- `src/canvas/ObjectInteractionController.ts` — `drunkPositions` Map, `case "drunk"` in both `deliverBang` and `deliverMessageValue`
+
+**Notes / decisions:**
+- Wrapping (not clamping) at boundaries: `((cur + delta) % max + max) % max` — matches Max/MSP behavior.
+- Step draw: `Math.floor(Math.random() * step) * ±1` — uniform in [0, step), random sign.
+
+**Next needed:**
+- Nothing — self-contained.
+
+---
+
+## [2026-04-30] COMPLETED | Add cam* — webcam / capture-device source
+**Agent:** Claude Code
+**Phase:** Visual sources
+
+**Done:**
+- New `cam*` object that wraps a videoinput device (`getUserMedia({video})`) as a `MediaVideoSource`. Outputs into every existing video sink (layer*, vfxCRT*, vfxBlur*, reaperVideo*, vbuf*, shaderToy*) — no sink changes needed since they all consume the same `.video / .isReady / .hasError` shape.
+- Live preview on the canvas: panel mirrors the WebcamNode stream in a second `<video>` while the runtime element stays hidden for sinks. Device picker dropdown lists `enumerateDevices()` videoinputs; labels populate after the first start grants origin permission.
+- Persistence: `deviceId` (per-origin stable) plus `deviceLabel` fallback so saved patches reload onto the correct device across machines where ids differ.
+- Audio explicitly dropped: `audio:false` in the constraint, plus a defensive sweep over any returned audio tracks. If the user wants the cam's mic, they should use `adc~` (which has its own picker).
+
+**Changed files:**
+- `src/graph/objectDefs.ts` — `cam*` definition (5 args, 5 messages, 1 inlet, 1 media outlet)
+- `src/runtime/WebcamNode.ts` — new MediaVideoSource implementation with start/stop/setDevice + static enumerate()
+- `src/runtime/VisualizerGraph.ts` — webcamNodes map, create/destroy in sync(), routing through all five sink-wiring blocks (vfxCRT, vfxBlur, reaperVideo, vbuf, layer), getWebcamNode accessor
+- `src/canvas/CamPanel.ts` — new inline panel: live mirror + device select + status pill
+- `src/canvas/CamPanelController.ts` — lifecycle manager (mount/prune/destroy parity with FramePanelController)
+- `src/canvas/ObjectRenderer.ts` — `cam*` body host
+- `src/canvas/ObjectInteractionController.ts` — `cam*` message routing (bang/start/stop/device)
+- `src/main.ts` — controller wired into render/destroy pipeline
+- `src/shell.css` — `.pn-cam-*` styles + `.patch-object-cam-body` chrome
+
+**Notes / decisions:**
+- Reused the FramePanel/BrowserPanel pattern over inventing a new one. The MediaVideoSource interface was already the seam; cam* is just one more implementation behind it.
+- The mirror element is a separate `<video>` from the runtime source: assigning the same `srcObject` to both renders an extra view without forking the stream. Keeps the runtime element off the canvas so layout doesn't fight rAF readers.
+- Cable-driven `start`/`stop` works (no user-gesture requirement once permission is granted, unlike `getDisplayMedia`); cable-driven `open` is a no-op since the picker lives in the panel.
+
+**Next needed:**
+- Optional: an attribute-panel preview thumbnail when the panel is collapsed.
+- Optional: surface a 'mirror' (horizontal flip) toggle as an attr — selfie-cam users will want this.
+
+---
 ## [2026-04-30] COMPLETED | buffer~ Phase 3b — streaming PCM (worklet ring + OPFS pull)
 **Agent:** Claude Code
 **Phase:** buffer~ Phase 3b — true streaming model

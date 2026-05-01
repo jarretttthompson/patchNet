@@ -6,4 +6,11 @@ patchNet-Vault/
 autosaves/
 .claude/
 .DS_Store
+.playwright-mcp/
 *.local
+
+# Private/local-only object plugins — see src/graph/localPlugins.ts.
+# The folder itself is tracked (.gitkeep) so the eager glob always resolves;
+# every other file inside stays local to the developer's machine.
+src/graph/localObjects/*
+!src/graph/localObjects/.gitkeep

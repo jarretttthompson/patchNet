@@ -56,11 +56,49 @@ function splitOnComma(content: string): string[] {
   return content.split(",").map((segment) => segment.trim()).filter(Boolean);
 }
 
+/** Coerce a string-on-the-wire value into the typed payload shape that
+ *  netsend forwards. A bare token may be a number, symbol, or empty (treated
+ *  as bang); whitespace-separated tokens become a list. */
+function parseNetPayload(raw: string): import("../runtime/peer/topicRouter").TopicPayload {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const tokens = trimmed.split(/\s+/);
+  if (tokens.length === 1) return coerceToken(tokens[0]);
+  return tokens.map(coerceToken);
+}
+function coerceToken(tok: string): import("../runtime/peer/topicRouter").TopicPayload {
+  if (tok === "") return null;
+  const n = Number(tok);
+  return Number.isNaN(n) ? tok : n;
+}
+
 /** UTF-8 safe base64 JSON encode for dmx profile/patch persistence. */
 function encodeDmxBase64Json(value: unknown): string {
   const json = JSON.stringify(value);
   if (!json || json === "[]") return "";
   return btoa(unescape(encodeURIComponent(json)));
+}
+
+/** Lexical "int form" — a string like "0", "-7", "127" with no dot or exponent.
+ *  Used by `scale` and `ezScale` to decide whether output should be rounded. */
+function isIntForm(s: string): boolean {
+  return /^-?\d+$/.test(s.trim());
+}
+
+/** Format a scaled number as a string. In int mode, round to nearest int and
+ *  drop the decimal entirely so the wire value is "7" not "7.0". */
+function formatScaled(n: number, intMode: boolean): string {
+  return intMode ? String(Math.round(n)) : String(n);
+}
+
+/** Re-canonicalize a stored bound-value to match the current int/float mode.
+ *  If we just flipped from float→int (user removed the dot), drop fractional
+ *  part. If we flipped int→float, add a `.0` so the form is consistent. */
+function canonicalizeBound(s: string, intMode: boolean): string {
+  const n = parseFloat(s);
+  if (!isFinite(n)) return s;
+  if (intMode) return String(Math.round(n));
+  return isIntForm(s) ? `${n}.0` : s;
 }
 
 /**
@@ -101,6 +139,20 @@ export class ObjectInteractionController {
     shift: boolean;
   } | null = null;
 
+  private vbufStripDrag: {
+    node: PatchNode;
+    canvas: HTMLCanvasElement;
+    startNorm: number;
+    endNorm: number;
+    shift: boolean;
+  } | null = null;
+
+  private ezScaleDrag: {
+    node: PatchNode;
+    trackEl: HTMLElement;
+    which: "lo" | "hi";
+  } | null = null;
+
   private readonly onDocMouseMove: (e: MouseEvent) => void;
   private readonly onDocMouseUp: (e: MouseEvent) => void;
   private readonly onAttrInput: (e: Event) => void;
@@ -111,11 +163,13 @@ export class ObjectInteractionController {
   private readonly metroTimers = new Map<string, ReturnType<typeof setInterval>>();
   private readonly oscTimers = new Map<string, { rafId: number; startT: number }>();
   private readonly mathLeftOps = new Map<string, number>();
+  private readonly drunkPositions = new Map<string, number>();
   private codeboxController?: CodeboxController;
   private jsEffectPanelController?: JsEffectPanelController;
   private reaperVideoPanelController?: ReaperVideoPanelController;
   private visualizerGraph?: VisualizerGraph;
   private dmxGraph?: DmxGraph;
+  private peerRegistry?: import("../runtime/peer/PeerRegistry").PeerRegistry;
   private outletCallback?: (outletIndex: number, value: string | null) => void;
   private subPatchManager?: SubPatchManager;
   /** Repaint a single buffer~ waveform without going through the audio rAF
@@ -182,6 +236,10 @@ export class ObjectInteractionController {
 
   setDmxGraph(dg: DmxGraph): void {
     this.dmxGraph = dg;
+  }
+
+  setPeerRegistry(pr: import("../runtime/peer/PeerRegistry").PeerRegistry): void {
+    this.peerRegistry = pr;
   }
 
   setOutletCallback(cb: (outletIndex: number, value: string | null) => void): void {
@@ -287,6 +345,73 @@ export class ObjectInteractionController {
       }
     }
 
+    // vbuf* timeline strip — same plain-drag / shift-drag / click-inside /
+    // click-outside semantics as buffer~. The strip is redrawn every rAF so we
+    // don't need a redraw callback; the canvas dataset selection overlay is
+    // picked up by the rAF tick automatically (see drawVbufStrip).
+    if (node.type === "vbuf*") {
+      const stripEl = (e.target as Element).closest<HTMLCanvasElement>(".pn-vbuf-strip");
+      if (stripEl) {
+        e.preventDefault();
+        e.stopPropagation();
+        const rect = stripEl.getBoundingClientRect();
+        const norm = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        this.vbufStripDrag = {
+          node,
+          canvas: stripEl,
+          startNorm: norm,
+          endNorm:   norm,
+          shift:     e.shiftKey,
+        };
+        document.addEventListener("mousemove", this.onDocMouseMove);
+        document.addEventListener("mouseup",   this.onDocMouseUp);
+        return;
+      }
+    }
+
+    if (node.type === "ezScale") {
+      const trackEl = objectEl.querySelector<HTMLElement>(".pn-ezscale__track");
+      if (trackEl && (e.target as Element).closest(".pn-ezscale__range")) {
+        // Bounds must be set before the slider becomes interactive.
+        const outMin = parseFloat(node.args[2] ?? "");
+        const outMax = parseFloat(node.args[3] ?? "");
+        if (!isFinite(outMin) || !isFinite(outMax) || outMin === outMax) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+
+        let which: "lo" | "hi";
+        const thumbEl = (e.target as Element).closest<HTMLElement>(".pn-ezscale__thumb");
+        if (thumbEl) {
+          which = thumbEl.dataset.ezscaleThumb === "hi" ? "hi" : "lo";
+        } else {
+          // Click on the track — grab whichever handle is nearer to the click.
+          const rect = trackEl.getBoundingClientRect();
+          const t = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+          const outLoNum = parseFloat(node.args[4] ?? "");
+          const outHiNum = parseFloat(node.args[5] ?? "");
+          const outLo = isFinite(outLoNum) ? outLoNum : outMin;
+          const outHi = isFinite(outHiNum) ? outHiNum : outMax;
+          const span = outMax - outMin;
+          const loT = (outLo - outMin) / span;
+          const hiT = (outHi - outMin) / span;
+          which = Math.abs(t - loT) <= Math.abs(t - hiT) ? "lo" : "hi";
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        this.ezScaleDrag = { node, trackEl, which };
+        document.body.classList.add("pn-state-slider-drag");
+        document.addEventListener("mousemove", this.onDocMouseMove);
+        document.addEventListener("mouseup", this.onDocMouseUp);
+        this.updateEzScaleFromEvent(e);
+        return;
+      }
+      // Field clicks: native <input> handles focus/caret. DragController already
+      // excludes INPUT from move drags.
+    }
+
     if (node.type === "slider") {
       const trackEl = objectEl.querySelector<HTMLElement>(".patch-object-slider-track");
       const thumbEl = objectEl.querySelector<HTMLElement>(".patch-object-slider-thumb");
@@ -384,6 +509,19 @@ export class ObjectInteractionController {
       if (bufNode?.type === "buffer~") {
         const action = bufBtn.dataset.bufAction ?? "";
         this.deliverBufferMessage(bufNode, action, []);
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    // vbuf* transport buttons — match by data-vbuf-action.
+    const vbufBtn = (e.target as Element).closest<HTMLElement>(".pn-vbuf-btn[data-vbuf-action]");
+    if (vbufBtn) {
+      const objectElForBtn = vbufBtn.closest<HTMLElement>(".patch-object");
+      const vbufNode = objectElForBtn ? this.getNode(objectElForBtn) : null;
+      if (vbufNode?.type === "vbuf*") {
+        const action = vbufBtn.dataset.vbufAction ?? "";
+        this.deliverVideoBufferMessage(vbufNode, action, []);
         e.stopPropagation();
         return;
       }
@@ -555,7 +693,8 @@ export class ObjectInteractionController {
         break;
 
       case "scale":
-        break; // bang has no effect on scale
+      case "ezScale":
+        break; // bang has no effect on scale / ezScale
 
       case "t": {
         if (inlet !== 0) break;
@@ -616,6 +755,35 @@ export class ObjectInteractionController {
         this.dispatchValue(node.id, 0, elapsed.toFixed(3));
         break;
       }
+
+      case "drunk": {
+        if (inlet === 0) {
+          const max  = Math.max(1, Math.floor(Number(node.args[0] ?? "128")));
+          const step = Math.max(1, Math.floor(Number(node.args[1] ?? "10")));
+          const cur  = this.drunkPositions.get(node.id) ?? Math.floor(Number(node.args[2] ?? "0"));
+          const delta = Math.floor(Math.random() * step) * (Math.random() < 0.5 ? 1 : -1);
+          const next  = ((cur + delta) % max + max) % max;
+          this.drunkPositions.set(node.id, next);
+          node.args[2] = String(next);
+          this.dispatchValue(node.id, 0, String(next));
+        }
+        break;
+      }
+
+      case "netsend":
+        if (inlet === 0) {
+          const topic = (node.args[0] ?? "").trim();
+          this.peerRegistry?.sendFromNetSend(this.graph, topic, null);
+        }
+        break;
+
+      case "netreceive":
+        // Input-only on the wire; no inlets to handle locally.
+        break;
+
+      case "peer":
+        // Phase 7A: connect/disconnect happens through the panel UI.
+        break;
 
       default:
         break;
@@ -832,11 +1000,61 @@ export class ObjectInteractionController {
             const outHigh = f(3, 127);
             const t = inHigh === inLow ? 0 : (input - inLow) / (inHigh - inLow);
             const result = outLow + t * (outHigh - outLow);
-            this.dispatchValue(node.id, 0, String(result));
+            const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
+            this.dispatchValue(node.id, 0, formatScaled(result, intMode));
           }
         } else if (inlet >= 1 && inlet <= 4) {
-          const v = parseFloat(value);
-          if (!isNaN(v)) { node.args[inlet - 1] = String(v); this.graph.emit("display"); }
+          // Preserve int/float form of incoming string so the int-mode rule is
+          // controlled by however the cold-inlet source formatted the value.
+          if (parseFloat(value) === parseFloat(value) /* not NaN */) {
+            node.args[inlet - 1] = value.trim();
+            this.graph.emit("display");
+          }
+        }
+        break;
+      }
+
+      case "ezScale": {
+        const f = (i: number, def: number) => { const n = parseFloat(node.args[i] ?? ""); return isNaN(n) ? def : n; };
+        if (inlet === 0) {
+          const input = parseFloat(value);
+          // All four bounds must be present and numeric — until the user fills
+          // them in, the object stays silent (no NaN dispatches).
+          const inMinRaw  = parseFloat(node.args[0] ?? "");
+          const inMaxRaw  = parseFloat(node.args[1] ?? "");
+          const outMinRaw = parseFloat(node.args[2] ?? "");
+          const outMaxRaw = parseFloat(node.args[3] ?? "");
+          if (!isNaN(input) && isFinite(inMinRaw) && isFinite(inMaxRaw)
+              && isFinite(outMinRaw) && isFinite(outMaxRaw)) {
+            const inMin = inMinRaw, inMax = inMaxRaw;
+            const outMin = outMinRaw, outMax = outMaxRaw;
+            // Active sub-range falls back to full bounds when outLo/outHi are blank.
+            const outLo = f(4, outMin);
+            const outHi = f(5, outMax);
+            const t = inMax === inMin ? 0 : (input - inMin) / (inMax - inMin);
+            const result = outLo + t * (outHi - outLo);
+            const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
+            this.dispatchValue(node.id, 0, formatScaled(result, intMode));
+          }
+        } else if (inlet >= 1 && inlet <= 4) {
+          if (parseFloat(value) === parseFloat(value) /* not NaN */) {
+            node.args[inlet - 1] = value.trim();
+            // Bounds changed → re-clamp/canonicalize active range
+            if (inlet === 3 || inlet === 4) {
+              const outMin = f(2, 0);
+              const outMax = f(3, 127);
+              const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
+              const lowSide  = Math.min(outMin, outMax);
+              const highSide = Math.max(outMin, outMax);
+              let lo = f(4, outMin);
+              let hi = f(5, outMax);
+              lo = Math.max(lowSide, Math.min(highSide, lo));
+              hi = Math.max(lowSide, Math.min(highSide, hi));
+              node.args[4] = intMode ? String(Math.round(lo)) : canonicalizeBound(String(lo), false);
+              node.args[5] = intMode ? String(Math.round(hi)) : canonicalizeBound(String(hi), false);
+            }
+            this.graph.emit("display");
+          }
         }
         break;
       }
@@ -1015,6 +1233,25 @@ export class ObjectInteractionController {
         return;
       }
 
+      case "vbuf*": {
+        const VBUF_PARAMS = new Set(["rate", "loop", "maxLen", "range"]);
+        const tokens = value.trim().split(/\s+/);
+        const head   = tokens[0] ?? "";
+        const rest   = tokens.slice(1);
+        if (VBUF_PARAMS.has(head)) {
+          this.deliverVideoBufferMessage(node, head, rest);
+          return;
+        }
+        // Control inlet (1) handles transport selectors (record/play/...)
+        if (inlet !== 1) return;
+        if (tokens.length === 1 && head !== "" && !isNaN(parseFloat(head))) {
+          this.deliverVideoBufferMessage(node, "float", [head]);
+        } else {
+          this.deliverVideoBufferMessage(node, head, rest);
+        }
+        return;
+      }
+
       case "frame*":
         if (inlet === 0) {
           const selector = value.trim().split(/\s+/)[0] ?? "";
@@ -1029,6 +1266,79 @@ export class ObjectInteractionController {
           }
           return;
         }
+        break;
+
+      case "cam*":
+        if (inlet === 0) {
+          const tokens = value.trim().split(/\s+/);
+          const selector = tokens[0] ?? "";
+          const wn = this.visualizerGraph?.getWebcamNode(node.id);
+          if (wn) {
+            if (selector === "stop") {
+              wn.stop();
+              if ((node.args[4] ?? "0") !== "0") { node.args[4] = "0"; this.graph.emit("change"); }
+            } else if (selector === "start" || selector === "bang") {
+              if (selector === "bang" && wn.isStarted) {
+                wn.stop();
+                if ((node.args[4] ?? "0") !== "0") { node.args[4] = "0"; this.graph.emit("change"); }
+              } else {
+                const deviceId = node.args[0] ?? "";
+                const w = parseInt(node.args[2] ?? "0", 10) || 0;
+                const h = parseInt(node.args[3] ?? "0", 10) || 0;
+                void wn.start(deviceId, w, h).then(() => {
+                  if (wn.isStarted && (node.args[4] ?? "0") !== "1") {
+                    node.args[4] = "1"; this.graph.emit("change");
+                  }
+                });
+              }
+            } else if (selector === "device") {
+              const id = tokens.slice(1).join(" ");
+              if ((node.args[0] ?? "") !== id) { node.args[0] = id; this.graph.emit("change"); }
+              void wn.setDevice(id);
+            }
+            // 'open' is a UI-only action — the panel owns the device picker.
+          }
+          return;
+        }
+        break;
+
+      case "drunk": {
+        if (inlet === 0) {
+          const tokens = value.trim().split(/\s+/);
+          if (tokens[0] === "set") {
+            const v = Math.floor(Number(tokens[1] ?? "0"));
+            if (!Number.isNaN(v)) {
+              this.drunkPositions.set(node.id, v);
+              node.args[2] = String(v);
+              this.graph.emit("display");
+            }
+          } else {
+            const v = Math.floor(Number(value));
+            if (!Number.isNaN(v)) {
+              this.drunkPositions.set(node.id, v);
+              node.args[2] = String(v);
+              this.dispatchValue(node.id, 0, String(v));
+            }
+          }
+        } else if (inlet === 1) {
+          const s = Math.max(1, Math.floor(Number(value)));
+          if (!Number.isNaN(s)) {
+            node.args[1] = String(s);
+            this.graph.emit("display");
+          }
+        }
+        break;
+      }
+
+      case "netsend":
+        if (inlet === 0) {
+          const topic = (node.args[0] ?? "").trim();
+          this.peerRegistry?.sendFromNetSend(this.graph, topic, parseNetPayload(value));
+        }
+        break;
+
+      case "netreceive":
+      case "peer":
         break;
 
       default:
@@ -1385,14 +1695,121 @@ export class ObjectInteractionController {
     thumbEl.style.left = `${t * 100}%`;
   }
 
+  private updateEzScaleFromEvent(e: MouseEvent): void {
+    if (!this.ezScaleDrag) return;
+    const { node, trackEl, which } = this.ezScaleDrag;
+
+    const outMin = parseFloat(node.args[2] ?? "0");
+    const outMax = parseFloat(node.args[3] ?? "127");
+    if (!isFinite(outMin) || !isFinite(outMax) || outMin === outMax) return;
+
+    const rect = trackEl.getBoundingClientRect();
+    const t = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    let raw = outMin + t * (outMax - outMin);
+
+    const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
+    if (intMode) raw = Math.round(raw);
+
+    // Clamp lo ≤ hi (and respect min/max ordering: outMin may exceed outMax)
+    const otherIdx = which === "lo" ? 5 : 4;
+    const otherVal = parseFloat(node.args[otherIdx] ?? (which === "lo" ? String(outMax) : String(outMin)));
+    const lowSide  = Math.min(outMin, outMax);
+    const highSide = Math.max(outMin, outMax);
+    const clampedToBounds = Math.max(lowSide, Math.min(highSide, raw));
+
+    let next: number;
+    if (which === "lo") {
+      // outMin → outMax order: if outMin < outMax, lo handle stays ≤ hi handle
+      if (outMin <= outMax) next = Math.min(clampedToBounds, otherVal);
+      else                  next = Math.max(clampedToBounds, otherVal);
+    } else {
+      if (outMin <= outMax) next = Math.max(clampedToBounds, otherVal);
+      else                  next = Math.min(clampedToBounds, otherVal);
+    }
+
+    const argIdx = which === "lo" ? 4 : 5;
+    node.args[argIdx] = intMode ? String(Math.round(next)) : String(next);
+
+    // Update DOM in-place for snappy drag (full re-render fires on mouseup via emit("change"))
+    const objectEl = trackEl.closest<HTMLElement>(".patch-object");
+    const fillEl   = objectEl?.querySelector<HTMLElement>(".pn-ezscale__fill");
+    const thumbLo  = objectEl?.querySelector<HTMLElement>('.pn-ezscale__thumb[data-ezscale-thumb="lo"]');
+    const thumbHi  = objectEl?.querySelector<HTMLElement>('.pn-ezscale__thumb[data-ezscale-thumb="hi"]');
+    const span = outMax - outMin;
+    const pctOf = (v: number) => Math.max(0, Math.min(1, (v - outMin) / span)) * 100;
+    const loPct = pctOf(parseFloat(node.args[4] ?? String(outMin)));
+    const hiPct = pctOf(parseFloat(node.args[5] ?? String(outMax)));
+    if (thumbLo) thumbLo.style.left = `${loPct}%`;
+    if (thumbHi) thumbHi.style.left = `${hiPct}%`;
+    if (fillEl) {
+      fillEl.style.left  = `${Math.min(loPct, hiPct)}%`;
+      fillEl.style.right = `${100 - Math.max(loPct, hiPct)}%`;
+    }
+    this.graph.emit("display");
+  }
+
+  /** Commit an ezScale field edit (called from focusout / Enter). Validates the
+   *  parsed value, writes it to args, and clamps the active range when bounds
+   *  shrink or the int/float mode flips. */
+  private commitEzScaleField(input: HTMLInputElement): void {
+    const objectEl = input.closest<HTMLElement>(".patch-object");
+    const node = objectEl ? this.getNode(objectEl) : null;
+    if (!node || node.type !== "ezScale") return;
+
+    const fieldKey = input.dataset.ezscaleField ?? "";
+    const argIdx = ({ inMin: 0, inMax: 1, outMin: 2, outMax: 3 } as Record<string, number>)[fieldKey];
+    if (argIdx === undefined) return;
+
+    const raw = input.value.trim();
+    const parsed = parseFloat(raw);
+    if (!isFinite(parsed)) {
+      // Invalid → revert to stored value
+      input.value = node.args[argIdx] ?? "";
+      return;
+    }
+
+    // Preserve int-form vs float-form: respect what the user typed.
+    const newStr = raw;
+    const prev = node.args[argIdx];
+    if (prev === newStr) return;
+    node.args[argIdx] = newStr;
+
+    // If output bounds changed, re-canonicalize outLo/outHi to match the new
+    // mode and clamp them back inside [outMin, outMax].
+    if (argIdx === 2 || argIdx === 3) {
+      const outMin = parseFloat(node.args[2] ?? "0");
+      const outMax = parseFloat(node.args[3] ?? "127");
+      const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
+      const lowSide  = Math.min(outMin, outMax);
+      const highSide = Math.max(outMin, outMax);
+      const clampSide = (v: number) => Math.max(lowSide, Math.min(highSide, v));
+
+      let lo = parseFloat(node.args[4] ?? String(outMin));
+      let hi = parseFloat(node.args[5] ?? String(outMax));
+      if (!isFinite(lo)) lo = outMin;
+      if (!isFinite(hi)) hi = outMax;
+      lo = clampSide(lo);
+      hi = clampSide(hi);
+
+      node.args[4] = intMode ? String(Math.round(lo)) : canonicalizeBound(String(lo), false);
+      node.args[5] = intMode ? String(Math.round(hi)) : canonicalizeBound(String(hi), false);
+    }
+
+    this.graph.emit("change");
+  }
+
   private handleSliderMove(e: MouseEvent): void {
     if (this.sliderDrag) {
       this.updateSliderFromEvent(e);
       this.dispatchValue(this.sliderDrag.node.id, 0, this.getSliderValue(this.sliderDrag.node));
+    } else if (this.ezScaleDrag) {
+      this.updateEzScaleFromEvent(e);
     } else if (this.numboxDrag) {
       this.updateNumboxFromEvent(e);
     } else if (this.bufWaveDrag) {
       this.updateBufWaveDragFromEvent(e);
+    } else if (this.vbufStripDrag) {
+      this.updateVbufStripDragFromEvent(e);
     }
   }
 
@@ -1408,6 +1825,13 @@ export class ObjectInteractionController {
       document.body.classList.remove("pn-state-slider-drag");
       document.removeEventListener("mousemove", this.onDocMouseMove);
       document.removeEventListener("mouseup", this.onDocMouseUp);
+    } else if (this.ezScaleDrag) {
+      this.updateEzScaleFromEvent(e);
+      this.graph.emit("change");
+      this.ezScaleDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
+      document.removeEventListener("mousemove", this.onDocMouseMove);
+      document.removeEventListener("mouseup", this.onDocMouseUp);
     } else if (this.numboxDrag) {
       const { node } = this.numboxDrag;
       this.updateNumboxFromEvent(e);
@@ -1419,6 +1843,10 @@ export class ObjectInteractionController {
       document.removeEventListener("mouseup", this.onDocMouseUp);
     } else if (this.bufWaveDrag) {
       this.completeBufWaveDrag(e);
+      document.removeEventListener("mousemove", this.onDocMouseMove);
+      document.removeEventListener("mouseup",   this.onDocMouseUp);
+    } else if (this.vbufStripDrag) {
+      this.completeVbufStripDrag(e);
       document.removeEventListener("mousemove", this.onDocMouseMove);
       document.removeEventListener("mouseup",   this.onDocMouseUp);
     }
@@ -1470,6 +1898,49 @@ export class ObjectInteractionController {
     // playback within that range; shift-drag is range-only (no play).
     this.deliverBufferMessage(node, "range", [String(a), String(b)]);
     if (!shift) this.deliverBufferMessage(node, "play", [String(a), String(b)]);
+  }
+
+  private updateVbufStripDragFromEvent(e: MouseEvent): void {
+    if (!this.vbufStripDrag) return;
+    const { canvas } = this.vbufStripDrag;
+    const rect = canvas.getBoundingClientRect();
+    const norm = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    this.vbufStripDrag.endNorm = norm;
+    // Live overlay — drawVbufStrip's rAF loop will read this on the next tick.
+    const a = Math.min(this.vbufStripDrag.startNorm, norm);
+    const b = Math.max(this.vbufStripDrag.startNorm, norm);
+    canvas.dataset.vbufSelection = `${a},${b}`;
+  }
+
+  private completeVbufStripDrag(_e: MouseEvent): void {
+    if (!this.vbufStripDrag) return;
+    const { node, canvas, startNorm, endNorm, shift } = this.vbufStripDrag;
+    this.vbufStripDrag = null;
+    const a = Math.min(startNorm, endNorm);
+    const b = Math.max(startNorm, endNorm);
+    const span = b - a;
+    delete canvas.dataset.vbufSelection;
+
+    const rs = parseFloat(node.args[6] ?? "");
+    const re = parseFloat(node.args[7] ?? "");
+    const hasRange = Number.isFinite(rs) && Number.isFinite(re) && re > rs;
+
+    // Click (no real drag): inside existing highlight → play from click to
+    // range end (highlight stays); outside → clear highlight + play from click.
+    if (span < 0.005) {
+      if (hasRange && a >= rs && a < re) {
+        this.deliverVideoBufferMessage(node, "play", [String(a), String(re)]);
+      } else {
+        if (hasRange) this.deliverVideoBufferMessage(node, "range", ["0", "0"]);
+        this.deliverVideoBufferMessage(node, "play", [String(a)]);
+      }
+      return;
+    }
+
+    // Drag: commit persistent range. Plain drag also plays within the range;
+    // shift-drag is range-only.
+    this.deliverVideoBufferMessage(node, "range", [String(a), String(b)]);
+    if (!shift) this.deliverVideoBufferMessage(node, "play", [String(a), String(b)]);
   }
 
   private updateNumboxFromEvent(e: MouseEvent): void {
@@ -2167,6 +2638,114 @@ export class ObjectInteractionController {
     }
   }
 
+  /**
+   * Route a vbuf* message (from cable, body button, or attribute panel) to
+   * the runtime VideoBufferNode. Args layout (vbuf*):
+   *   args[0] rate, args[1] loop, args[2] maxLen,
+   *   args[3] transport, args[4] position, args[5] thumb,
+   *   args[6] rangeStart, args[7] rangeEnd, args[8] storageKey
+   */
+  private deliverVideoBufferMessage(node: PatchNode, selector: string, args: string[]): void {
+    if (node.type !== "vbuf*") return;
+    const vbn = this.visualizerGraph?.getVideoBufferNode(node.id);
+
+    switch (selector) {
+      case "record":
+        void vbn?.record();
+        node.args[3] = "record";
+        this.graph.emit("change");
+        break;
+
+      case "play": {
+        // Fire-and-forget — vbn.play() is async (it awaits OPFS open + the
+        // <video> element's loadedmetadata). Do NOT eagerly mutate args[3]
+        // or emit "change" here; that would rebuild the DOM mid-load and
+        // re-parent the <video> element while it's still resolving src.
+        // The runtime's emitState ➜ handleVideoBufferStateChange will drive
+        // the UI update once playback is actually live.
+        const startArg = parseFloat(args[0] ?? "");
+        const endArg   = parseFloat(args[1] ?? "");
+        if (Number.isFinite(startArg)) {
+          void vbn?.playFrom(startArg, Number.isFinite(endArg) ? endArg : undefined);
+        } else {
+          void vbn?.play();
+        }
+        break;
+      }
+
+      case "pause":
+        vbn?.pause();
+        break;
+
+      case "stop":
+        vbn?.stop();
+        break;
+
+      case "rate":
+      case "float": {
+        const v = parseFloat(args[0] ?? "");
+        if (!Number.isFinite(v)) break;
+        const effective = Math.abs(v);
+        vbn?.setRate(effective);
+        node.args[0] = String(effective);
+        this.graph.emit("display");
+        break;
+      }
+
+      case "loop": {
+        const v = (args[0] ?? "1") !== "0";
+        vbn?.setLoop(v);
+        node.args[1] = v ? "1" : "0";
+        this.graph.emit("display");
+        break;
+      }
+
+      case "maxLen": {
+        const v = parseFloat(args[0] ?? "");
+        if (!Number.isFinite(v)) break;
+        const clamped = Math.max(1, Math.min(600, v));
+        if (clamped === parseFloat(node.args[2] ?? "")) break;
+        vbn?.setMaxSeconds(clamped);
+        node.args[2] = String(clamped);
+        node.args[3] = "stop";
+        node.args[4] = "0";
+        this.graph.emit("change");
+        break;
+      }
+
+      case "seek": {
+        const v = parseFloat(args[0] ?? "");
+        if (!Number.isFinite(v)) break;
+        vbn?.seek(v);
+        break;
+      }
+
+      case "range": {
+        const s = parseFloat(args[0] ?? "");
+        const e = parseFloat(args[1] ?? "");
+        if (!Number.isFinite(s) || !Number.isFinite(e)) break;
+        const cs = Math.max(0, Math.min(1, s));
+        const ce = Math.max(0, Math.min(1, e));
+        node.args[6] = String(cs);
+        node.args[7] = String(ce);
+        vbn?.setRange(cs, ce);
+        this.graph.emit("display");
+        break;
+      }
+
+      case "clear":
+        void vbn?.clear();
+        node.args[3] = "stop";
+        node.args[4] = "0";
+        node.args[8] = "";
+        this.graph.emit("change");
+        break;
+
+      default:
+        break;
+    }
+  }
+
   /** Switch buffer~ between mono and stereo. Rebuilds ports, drops orphaned
    *  edges, and emits "change" so the renderer + text panel re-paint. */
   private setBufferMode(node: PatchNode, mode: "stereo" | "mono"): void {
@@ -2612,33 +3191,60 @@ export class ObjectInteractionController {
 
   private handleCellFocusOut(e: FocusEvent): void {
     const target = e.target as HTMLElement | null;
-    if (!target || !target.classList.contains("pn-seq-cell")) return;
-    this.commitSequencerCell(target);
+    if (!target) return;
+    if (target.classList.contains("pn-seq-cell")) {
+      this.commitSequencerCell(target);
+      return;
+    }
+    if (target instanceof HTMLInputElement && target.classList.contains("pn-ezscale__field")) {
+      this.commitEzScaleField(target);
+      return;
+    }
   }
 
   private handleCellKeyDown(e: KeyboardEvent): void {
     const target = e.target as HTMLElement | null;
-    if (!target || !target.classList.contains("pn-seq-cell")) return;
+    if (!target) return;
 
-    // Stop propagation so canvas shortcuts (Delete, `b`, `t`, etc.) don't fire
-    // while the user is typing into a cell.
-    e.stopPropagation();
+    if (target.classList.contains("pn-seq-cell")) {
+      // Stop propagation so canvas shortcuts (Delete, `b`, `t`, etc.) don't fire
+      // while the user is typing into a cell.
+      e.stopPropagation();
 
-    if (e.key === "Enter") {
-      e.preventDefault();
-      target.blur(); // triggers focusout → commitSequencerCell
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      // Revert to stored value and blur without committing a new one.
-      const objectEl = target.closest<HTMLElement>(".patch-object");
-      const node = objectEl ? this.getNode(objectEl) : null;
-      if (node?.type === "sequencer") {
-        const r = Number(target.dataset.seqRow);
-        const c = Number(target.dataset.seqCol);
-        const cells = getSequencerCells(node);
-        target.textContent = cells[r]?.[c] ?? "";
+      if (e.key === "Enter") {
+        e.preventDefault();
+        target.blur(); // triggers focusout → commitSequencerCell
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        // Revert to stored value and blur without committing a new one.
+        const objectEl = target.closest<HTMLElement>(".patch-object");
+        const node = objectEl ? this.getNode(objectEl) : null;
+        if (node?.type === "sequencer") {
+          const r = Number(target.dataset.seqRow);
+          const c = Number(target.dataset.seqCol);
+          const cells = getSequencerCells(node);
+          target.textContent = cells[r]?.[c] ?? "";
+        }
+        target.blur();
       }
-      target.blur();
+      return;
+    }
+
+    if (target instanceof HTMLInputElement && target.classList.contains("pn-ezscale__field")) {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        target.blur(); // triggers focusout → commitEzScaleField
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        const objectEl = target.closest<HTMLElement>(".patch-object");
+        const node = objectEl ? this.getNode(objectEl) : null;
+        const key = target.dataset.ezscaleField ?? "";
+        const argIdx = ({ inMin: 0, inMax: 1, outMin: 2, outMax: 3 } as Record<string, number>)[key];
+        if (node && argIdx !== undefined) target.value = node.args[argIdx] ?? "";
+        target.blur();
+      }
+      return;
     }
   }
 }

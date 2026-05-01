@@ -113,6 +113,10 @@ export class DragController {
     // its border or any area outside the panel host.
     if (target.closest(".pn-dmx-panel-host")) return;
     if (target.closest(".pn-mixer-panel-host")) return;
+    // Local (gitignored) plugin bodies opt in by tagging their host with
+    // [data-localplugin-host]. Inline INPUT/SELECT/BUTTON are already excluded
+    // above; this catches clicks on the plugin's own interactive surface.
+    if (target.closest("[data-localplugin-host]")) return;
     // youtube~ panel — interior is URL input + iframe + buttons. Buttons/
     // inputs are already excluded above; this catches clicks on the iframe
     // body (which we never want to convert into an object drag).
@@ -144,7 +148,12 @@ export class DragController {
     // buffer~ transport buttons + waveform canvas: never start drag.
     if (target.closest(".pn-buf-btn")) return;
     if (target.closest(".pn-buf-wave")) return;
+    // vbuf* transport buttons + timeline strip + preview video: same.
+    if (target.closest(".pn-vbuf-btn")) return;
+    if (target.closest(".pn-vbuf-strip")) return;
+    if (target.closest(".pn-vbuf-preview")) return;
     if (target.closest(".patch-object-slider-track")) return;
+    if (target.closest(".pn-ezscale__range")) return;
     if (target.closest(".patch-object-face-button")) return;
     if (target.closest(".patch-object-toggle-rocker")) return;
     if (target.closest(".patch-object-message-content")) return;

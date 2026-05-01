@@ -3,6 +3,7 @@ import type { PatchNode } from "./PatchNode";
 import { getUserDefaultSize } from "./userObjectDefaults";
 import { parseJsfx } from "../runtime/jsfx/parser";
 import { parseRVideo } from "../runtime/rvideo/parser";
+import { getLocalPluginSpecs } from "./localPlugins";
 
 /** Height of the attribute panel header — must match --pn-attrui-header-h in shell.css */
 export const ATTR_SIDE_INLET_HEADER_H = 22;
@@ -252,13 +253,13 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
   },
 
   scale: {
-    description: "Maps a number from one range to another (linear interpolation).",
+    description: "Maps a number from one range to another (linear interpolation). If both output bounds are written without a decimal point (e.g. 0 and 127), the output is rounded to an integer; if either has a dot (e.g. 0. or 1.0), the output is float.",
     category: "control",
     args: [
       { name: "inLow",  type: "float", default: "0",   description: "Input range low." },
       { name: "inHigh", type: "float", default: "1",   description: "Input range high." },
-      { name: "outLow", type: "float", default: "0",   description: "Output range low." },
-      { name: "outHigh",type: "float", default: "127", description: "Output range high." },
+      { name: "outLow", type: "float", default: "0",   description: "Output range low. Int-form (no dot) makes output integer." },
+      { name: "outHigh",type: "float", default: "127", description: "Output range high. Int-form (no dot) makes output integer." },
     ],
     messages: [
       { inlet: 0, selector: "float", description: "map value and output result" },
@@ -279,6 +280,36 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
+  ezScale: {
+    description: "GUI scale object: type input/output bounds in the four fields, then drag the dual-handle range slider to pinch the active output sub-range. Input/output mapping is linear. Int-form output bounds (no dot) round the output to integers.",
+    category: "ui",
+    args: [
+      { name: "inMin",  type: "float", default: "0",   description: "Input range low." },
+      { name: "inMax",  type: "float", default: "1",   description: "Input range high." },
+      { name: "outMin", type: "float", default: "0",   description: "Output bound low. Int-form (no dot) rounds output to int." },
+      { name: "outMax", type: "float", default: "127", description: "Output bound high. Int-form (no dot) rounds output to int." },
+      { name: "outLo",  type: "float", default: "0",   hidden: true, description: "Active output range low (slider lo handle)." },
+      { name: "outHi",  type: "float", default: "127", hidden: true, description: "Active output range high (slider hi handle)." },
+    ],
+    messages: [
+      { inlet: 0, selector: "float", description: "map value (using active slider sub-range) and output result" },
+      { inlet: 1, selector: "float", description: "set input min" },
+      { inlet: 2, selector: "float", description: "set input max" },
+      { inlet: 3, selector: "float", description: "set output bound min (clamps active range)" },
+      { inlet: 4, selector: "float", description: "set output bound max (clamps active range)" },
+    ],
+    inlets: [
+      { index: 0, type: "float", label: "value to scale",   temperature: "hot" },
+      { index: 1, type: "float", label: "input min",        temperature: "cold" },
+      { index: 2, type: "float", label: "input max",        temperature: "cold" },
+      { index: 3, type: "float", label: "output bound min", temperature: "cold" },
+      { index: 4, type: "float", label: "output bound max", temperature: "cold" },
+    ],
+    outlets: [{ index: 0, type: "float", label: "scaled value (active sub-range)" }],
+    defaultWidth: 220,
+    defaultHeight: 96,
+  },
+
   timer: {
     description: "Measures elapsed milliseconds between successive bangs. First bang stores the clock; each subsequent bang outputs the delta and resets.",
     category: "control",
@@ -289,6 +320,31 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     inlets:  [{ index: 0, type: "bang", label: "bang: output elapsed ms and reset" }],
     outlets: [{ index: 0, type: "float", label: "elapsed ms" }],
     defaultWidth: 80,
+    defaultHeight: 40,
+  },
+
+  drunk: {
+    description: "Random walk (drunk walk) — each bang steps ±step from current, wrapping in [0, max).",
+    category: "control",
+    args: [
+      { name: "max",     type: "int", default: "128", min: 1, max: 32767, step: 1, description: "Upper bound (exclusive); output range 0 to max−1." },
+      { name: "step",    type: "int", default: "10",  min: 1, max: 1000,  step: 1, description: "Maximum step size per bang." },
+      { name: "current", type: "int", default: "0",   hidden: true,                description: "Current walk position." },
+    ],
+    messages: [
+      { inlet: 0, selector: "bang",  description: "step and output" },
+      { inlet: 0, selector: "int",   description: "set current value and output" },
+      { inlet: 0, selector: "float", description: "set current value (truncated) and output" },
+      { inlet: 0, selector: "set",   description: "store without outputting: set <n>" },
+      { inlet: 1, selector: "int",   description: "set step size" },
+      { inlet: 1, selector: "float", description: "set step size (truncated to int)" },
+    ],
+    inlets: [
+      { index: 0, type: "any",   label: "bang: step | int: set + output | set <n>: store only", temperature: "hot"  },
+      { index: 1, type: "any",   label: "step size",                                              temperature: "cold" },
+    ],
+    outlets: [{ index: 0, type: "float", label: "current walk value" }],
+    defaultWidth: 100,
     defaultHeight: 40,
   },
 
@@ -451,6 +507,54 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     defaultWidth: 180,
     defaultHeight: 140,
+  },
+
+  "vbuf*": {
+    description: "Video tape-recorder buffer. Records the upstream video source to a local OPFS file (WebM), plays it back at variable rate, with loop and a sub-range window. Same transport / range / loop / maxLen UX as buffer~.",
+    category: "visual",
+    args: [
+      { name: "rate",   type: "float",  default: "1", min: 0, max: 4, step: 0.01,
+        description: "Playback rate. 1.0 = normal, 2.0 = double speed. 0 = paused playhead. Forward only for now." },
+      { name: "loop",   type: "int",    default: "0", min: 0, max: 1, step: 1,
+        description: "Loop mode: 1 = loop, 0 = stop at end." },
+      { name: "maxLen", type: "float",  default: "60", min: 1, max: 600, step: 1,
+        description: "Maximum recording length in seconds (1–600). Default 1 min, max 10 min." },
+      { name: "transport", type: "symbol", default: "stop", hidden: true,
+        description: "Persisted transport state: record | play | pause | stop." },
+      { name: "position",  type: "float",  default: "0",  hidden: true,
+        description: "Persisted playback position (0.0–1.0)." },
+      { name: "thumb",     type: "symbol", default: "", hidden: true,
+        description: "Base64 micro-thumbnail of the first frame (≤4 KB). Lets the panel paint something useful before OPFS is opened." },
+      { name: "rangeStart", type: "float", default: "0", hidden: true,
+        description: "Persistent playback window start (normalized 0–1)." },
+      { name: "rangeEnd",   type: "float", default: "0", hidden: true,
+        description: "Persistent playback window end (normalized 0–1). end ≤ start ⇒ no range." },
+      { name: "storageKey", type: "symbol", default: "", hidden: true,
+        description: "OPFS storage key (= node id) pointing to the persisted WebM. Empty ⇒ no recording." },
+    ],
+    messages: [
+      { inlet:  0, selector: "rate",   description: "set playback rate: rate <float>" },
+      { inlet:  0, selector: "loop",   description: "set loop mode: loop 0|1" },
+      { inlet:  0, selector: "maxLen", description: "set max recording length in seconds (clears buffer)" },
+      { inlet: -1, selector: "record", description: "begin recording from the upstream video source" },
+      { inlet: -1, selector: "play",   description: "begin playback; play <pos> starts at norm position; play <start> <end> plays a sub-range" },
+      { inlet: -1, selector: "pause",  description: "pause transport (preserves position)" },
+      { inlet: -1, selector: "stop",   description: "stop and rewind position to 0" },
+      { inlet: -1, selector: "clear",  description: "erase the recording" },
+      { inlet: -1, selector: "seek",   description: "jump to normalized position: seek <0.0–1.0>" },
+      { inlet: -1, selector: "range",  description: "restrict playback (and looping) to a window: range <start> <end> in 0.0–1.0" },
+      { inlet: -1, selector: "float",  description: "shorthand for rate: incoming float sets rate directly" },
+    ],
+    inlets: [
+      { index: 0, type: "media", label: "video in (record source)" },
+      { index: 1, type: "any",   label: "record | play | pause | stop | rate f | loop 0|1 | range s e", temperature: "hot" },
+    ],
+    outlets: [
+      { index: 0, type: "media", label: "video out (playback)" },
+      { index: 1, type: "float", label: "position (0.0–1.0)" },
+    ],
+    defaultWidth:  280,
+    defaultHeight: 220,
   },
 
   "buffer~": {
@@ -648,6 +752,34 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [{ index: 0, type: "media", label: "video out (→ layer / vFX / reaperVideo)" }],
     defaultWidth:  320,
     defaultHeight: 240,
+  },
+
+  "cam*": {
+    description: "Camera / capture-device source. Outputs the selected videoinput device as live video, ready for vFX / reaperVideo / layer / vbuf. Click the object body to start; double-click to pick a device. Granted via getUserMedia (one OS prompt per origin).",
+    category: "visual",
+    args: [
+      { name: "deviceId",    type: "symbol", default: "", hidden: true,
+        description: "videoinput deviceId (per-origin stable). Restored on reload before deviceLabel." },
+      { name: "deviceLabel", type: "symbol", default: "",
+        description: "Human-readable device name shown in the text panel. Used as a fallback match when deviceId is missing or has changed." },
+      { name: "width",       type: "int",    default: "0", min: 0, max: 7680, step: 1,
+        description: "Requested capture width in pixels. 0 = let the browser/device pick." },
+      { name: "height",      type: "int",    default: "0", min: 0, max: 4320, step: 1,
+        description: "Requested capture height in pixels. 0 = let the browser/device pick." },
+      { name: "active",      type: "int",    default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Reserved: set when the cam was running at save time." },
+    ],
+    messages: [
+      { inlet: 0, selector: "bang",   description: "toggle capture on/off" },
+      { inlet: 0, selector: "start",  description: "start capturing the selected device" },
+      { inlet: 0, selector: "stop",   description: "stop capturing and release the device" },
+      { inlet: 0, selector: "device", description: "switch device: device <id-or-label>" },
+      { inlet: 0, selector: "open",   description: "open the device picker" },
+    ],
+    inlets:  [{ index: 0, type: "any",   label: "bang | start | stop | device <id|label> | open" }],
+    outlets: [{ index: 0, type: "media", label: "video out (→ layer / vFX / reaperVideo / vbuf)" }],
+    defaultWidth:  240,
+    defaultHeight: 180,
   },
 
   "mediaVideo*": {
@@ -1022,6 +1154,63 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultWidth:  120,
     defaultHeight: 40,
   },
+
+  peer: {
+    description: "WebRTC session to a remote patchNet instance. Phase 7A: manual SDP copy/paste — toggle Offer/Answer in the panel and exchange the blobs with the other side. Hosts netsend / netreceive topic routing.",
+    category: "control",
+    args: [
+      { name: "room",     type: "symbol", default: "", hidden: true,
+        description: "Reserved for Phase 7B rendezvous. Phase 7A ignores this." },
+      { name: "role",     type: "symbol", default: "offerer",
+        description: "offerer | answerer — which side initiates the SDP exchange." },
+      { name: "autoConnect", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Reserved for Phase 7B. Phase 7A is always manual." },
+    ],
+    messages: [
+      { inlet: 0, selector: "connect",    description: "create offer (offerer) or wait for offer (answerer)" },
+      { inlet: 0, selector: "disconnect", description: "tear down the session" },
+    ],
+    inlets:  [{ index: 0, type: "any",     label: "connect | disconnect" }],
+    outlets: [{ index: 0, type: "message", label: "status: connecting | connected | disconnected | failed" }],
+    defaultWidth:  240,
+    defaultHeight: 120,
+  },
+
+  netsend: {
+    description: "Send a control-rate message to every netreceive with the same topic on the connected peer. Pd-style topic routing across the network.",
+    category: "control",
+    args: [
+      { name: "topic", type: "symbol", default: "",
+        description: "Routing key. Sender and receiver must agree." },
+    ],
+    messages: [
+      { inlet: 0, selector: "bang",   description: "send a bang on this topic" },
+      { inlet: 0, selector: "float",  description: "send a float on this topic" },
+      { inlet: 0, selector: "symbol", description: "send a symbol on this topic" },
+      { inlet: 0, selector: "list",   description: "send a list on this topic" },
+    ],
+    inlets:  [{ index: 0, type: "any",     label: "any (bang | float | symbol | list)" }],
+    outlets: [{ index: 0, type: "message", label: "status: bound | unbound | dropped" }],
+    defaultWidth:  120,
+    defaultHeight: 40,
+  },
+
+  netreceive: {
+    description: "Receive control-rate messages from every netsend with the same topic on the connected peer.",
+    category: "control",
+    args: [
+      { name: "topic", type: "symbol", default: "",
+        description: "Routing key. Must match the sender's topic." },
+    ],
+    messages: [],
+    inlets:  [],
+    outlets: [
+      { index: 0, type: "any",     label: "received payload (bang | float | symbol | list)" },
+      { index: 1, type: "message", label: "status: bound | unbound | disconnected" },
+    ],
+    defaultWidth:  120,
+    defaultHeight: 40,
+  },
 };
 
 /**
@@ -1331,6 +1520,34 @@ export function bufferControlInlet(args: string[]): number {
   return bufferMode(args) === "stereo" ? 2 : 1;
 }
 
+// ── vbuf* helpers ──────────────────────────────────────────────────────
+
+export function videoBufferRate(args: string[]): number {
+  const r = parseFloat(args[0] ?? "1");
+  return Number.isFinite(r) ? Math.max(0, r) : 1;
+}
+
+export function videoBufferLoop(args: string[]): boolean {
+  return (args[1] ?? "0") !== "0";
+}
+
+export function videoBufferMaxLen(args: string[]): number {
+  const n = parseFloat(args[2] ?? "60");
+  if (!Number.isFinite(n) || n <= 0) return 60;
+  return Math.max(1, Math.min(600, n));
+}
+
+/** Returns `[start, end]` normalized range, or `null` when no range is set. */
+export function videoBufferRange(args: string[]): [number, number] | null {
+  const s = parseFloat(args[6] ?? "0");
+  const e = parseFloat(args[7] ?? "0");
+  if (!isFinite(s) || !isFinite(e) || e <= s) return null;
+  return [Math.max(0, Math.min(1, s)), Math.max(0, Math.min(1, e))];
+}
+
+/** Control inlet for vbuf* (always 1 — inlet 0 is the media input). */
+export const VBUF_CONTROL_INLET = 1;
+
 /** Phase A constant kept as a legacy alias for single-input presets. Callers
  *  that depend on the real side-inlet start should use
  *  `getReaperVideoSideInletStart(source)` — the value shifts when the source
@@ -1514,4 +1731,10 @@ export function buildArgMessage(targetType: string, argIndex: number, value: str
   );
 
   return hasNamedSelector ? `${arg.name} ${value}` : value;
+}
+
+// Merge gitignored local plugin specs into OBJECT_DEFS at module init so
+// autocomplete (ObjectEntryBox) and renderer dispatch see them on first read.
+for (const [type, spec] of getLocalPluginSpecs()) {
+  OBJECT_DEFS[type] = spec;
 }
