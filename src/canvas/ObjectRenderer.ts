@@ -704,7 +704,7 @@ function buildBody(node: PatchNode): HTMLDivElement {
     info.className = "pn-vbuf-info";
     info.innerHTML = `
       <span class="pn-vbuf-rate">×${rate.toFixed(2)}</span>
-      <span class="pn-vbuf-loop${loop ? " pn-vbuf-loop-on" : ""}">loop:${loop ? "on" : "off"}</span>
+      <button type="button" class="pn-vbuf-loop-btn${loop ? " pn-vbuf-loop-on" : ""}" data-vbuf-action="${loop ? "loop-off" : "loop-on"}" title="Toggle loop">loop:${loop ? "on" : "off"}</button>
       <span class="pn-vbuf-maxlen" data-vbuf-maxlen-display title="Max recording length (1s–10m) — click to edit">max:${formatMaxLen(maxLen)}</span>
     `;
     stage.appendChild(info);

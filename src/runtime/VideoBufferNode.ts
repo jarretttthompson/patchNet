@@ -40,6 +40,10 @@ export class VideoBufferNode {
   private _recorder:    MediaRecorder | null = null;
   private _writeHandle: VideoWriteHandle | null = null;
   private _recordTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  /** Wall-clock timestamp (performance.now ms) when recorder.start() fired.
+   *  Used to compute the recording's actual duration without relying on the
+   *  WebM container's missing Duration element. */
+  private _recordStartedAt: number = 0;
 
   /** Playback state. */
   private _playEl:     HTMLVideoElement;
@@ -65,6 +69,7 @@ export class VideoBufferNode {
    *  so it doesn't race past the OPFS file close. */
   private _finishRecordPromise: Promise<void> | null = null;
 
+
   private readonly _stateListeners = new Set<() => void>();
 
   constructor(config: VideoBufferConfig) {
@@ -78,8 +83,16 @@ export class VideoBufferNode {
     // Mute is required for autoplay-without-user-gesture in modern browsers.
     // Audio playback for recordings is out of scope for v1 anyway.
     this._playEl.addEventListener("loadedmetadata", () => {
-      this._duration = isFinite(this._playEl.duration) ? this._playEl.duration : 0;
-      this.emitState();
+      // Only trust loadedmetadata's duration when it's a finite real number.
+      // MediaRecorder WebM lacks a Duration element ⇒ duration is Infinity;
+      // we'll set _duration from wall-clock in finishRecord, or via the
+      // seek-trick on patch reload (adoptStorage). Don't overwrite a valid
+      // wall-clock duration with the Infinity sentinel.
+      const d = this._playEl.duration;
+      if (isFinite(d) && d > 0) {
+        this._duration = d;
+        this.emitState();
+      }
     });
     this._playEl.addEventListener("ended", () => {
       // Native ended fires only when there's no range. With a range, our
@@ -228,6 +241,7 @@ export class VideoBufferNode {
     this._recorder = recorder;
     this._state = "record";
     this._stripFrames = [];
+    this._recordStartedAt = performance.now();
     recorder.start(250);
 
     // Live preview: pipe the same stream into the playback element so the
@@ -338,6 +352,11 @@ export class VideoBufferNode {
     const exists = await videoBufferStorage.exists(this._nodeId);
     if (!exists) return false;
     await this.ensurePlaybackLoaded();
+    // On patch reload there's no wall-clock recording duration to fall back
+    // on, so resolve duration via the seek-past-end trick.
+    if (this._duration <= 0) {
+      try { await this.resolveDuration(); } catch { /* ignore */ }
+    }
     return this._duration > 0;
   }
 
@@ -394,13 +413,26 @@ export class VideoBufferNode {
       this._recordTimeoutId = null;
     }
     this._recorder = null;
-    // Detach the live-preview MediaStream — the next play() will set src
-    // to the freshly-written OPFS file's blob URL.
+    // Capture the recording's actual duration from wall-clock — MediaRecorder
+    // WebM has no Duration element in its container, so videoEl.duration
+    // reports Infinity until a full file scan completes. The wall-clock
+    // measurement is accurate to within one chunk timeslice (~250ms).
+    const wallClockDur = this._recordStartedAt > 0
+      ? (performance.now() - this._recordStartedAt) / 1000
+      : 0;
+    // Detach the live-preview MediaStream and reset cached playback state so
+    // ensurePlaybackLoaded re-opens the freshly-written OPFS file.
     this._playEl.pause();
     this._playEl.srcObject = null;
     if (this._blobUrl) { URL.revokeObjectURL(this._blobUrl); this._blobUrl = null; }
     if (this._readHandle) { await this._readHandle.close(); this._readHandle = null; }
     this._duration = 0;
+    // Eagerly load the OPFS recording so the preview shows the first frame
+    // immediately after stop instead of going black until the user hits play.
+    try { await this.ensurePlaybackLoaded(); } catch { /* ignore */ }
+    // Wall-clock takes precedence over whatever loadedmetadata wrote (which
+    // is 0 for MediaRecorder WebM). Without this, play() bails on _duration<=0.
+    if (wallClockDur > 0) this._duration = wallClockDur;
     this._state = "stop";
     this.emitState();
   }
@@ -423,14 +455,14 @@ export class VideoBufferNode {
 
     // Detach any leftover live-preview MediaStream binding before rebinding
     // src — the spec is fuzzy on src-after-srcObject ordering, so be explicit.
+    // Detach any prior MediaStream binding before src — assigning src while
+    // srcObject is still set is undefined behavior per spec.
     this._playEl.srcObject = null;
-    this._playEl.removeAttribute("src");
-    this._playEl.load();
+    // Single src assignment + load(). Wait for loadedmetadata of THIS load
+    // (not relying on readyState — which may be stale from a previous src).
     this._playEl.src = this._blobUrl;
     this._playEl.load();
 
-    // Always wait for metadata of THIS load — readyState may still be HAVE_METADATA
-    // from the previous src, which would falsely satisfy a readyState shortcut.
     await new Promise<void>((resolve) => {
       const onMeta = () => {
         this._playEl.removeEventListener("loadedmetadata", onMeta);
@@ -488,13 +520,20 @@ export class VideoBufferNode {
 
   /** Per-frame check: if currentTime is outside the active window, wrap or
    *  stop. Active window is the intersection of the persistent range and
-   *  the one-shot play window (if any). */
+   *  the one-shot play window (if any).
+   *
+   *  Loop wrap fires slightly *before* tEnd to absorb decode latency — by the
+   *  time the seek-back actually paints a frame, the playhead has typically
+   *  advanced ~1 frame past where we initiated the seek. Without preroll,
+   *  short loops drift forward each cycle. */
+  private static readonly LOOP_PREROLL_S = 1 / 30;  // ~one 30fps frame
+
   private checkRange(): void {
     if (this._state !== "play" || this._duration <= 0) return;
     const dur = this._duration;
 
     // Compose active window in normalized space.
-    let s = this._rangeEndNorm > this._rangeStartNorm ? this._rangeStartNorm : 0;
+    const s = this._rangeEndNorm > this._rangeStartNorm ? this._rangeStartNorm : 0;
     let e = this._rangeEndNorm > this._rangeStartNorm ? this._rangeEndNorm : 1;
     if (this._oneShotEnd > 0 && this._oneShotEnd <= 1 && this._oneShotEnd > s) {
       e = Math.min(e, this._oneShotEnd);
@@ -503,10 +542,11 @@ export class VideoBufferNode {
     const t    = this._playEl.currentTime;
     const tEnd = e * dur;
     const tStart = s * dur;
-    if (t >= tEnd - 1e-3) {
+    const preroll = VideoBufferNode.LOOP_PREROLL_S;
+    if (t >= tEnd - preroll) {
       if (this._loop) {
-        this._playEl.currentTime = tStart;
-      } else {
+        this.precisionSeek(tStart);
+      } else if (t >= tEnd - 1e-3) {
         this._playEl.pause();
         this._playEl.currentTime = tEnd;
         this._oneShotEnd = -1;
@@ -515,8 +555,58 @@ export class VideoBufferNode {
         this.emitState();
       }
     } else if (t < tStart - 1e-3) {
-      this._playEl.currentTime = tStart;
+      this.precisionSeek(tStart);
     }
+  }
+
+  /** WebM-from-MediaRecorder reports duration=Infinity (no Cues element to
+   *  derive duration from at metadata time). Standard workaround: seek past
+   *  the end of the file — the browser clamps currentTime to the actual end,
+   *  and the resulting `seeked` event hands us a real duration to read. We
+   *  then seek back to 0 so playback starts from the beginning. */
+  private resolveDuration(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const v = this._playEl;
+      let done = false;
+      const finish = () => {
+        if (done) return; done = true;
+        v.removeEventListener("seeked", onSeeked);
+        v.removeEventListener("error", onErr);
+        const t = v.currentTime;
+        if (isFinite(t) && t > 0) {
+          this._duration = t;
+        }
+        // Snap back to 0 so subsequent play() starts at the beginning. Use
+        // a try/catch — currentTime assignment can throw if src is gone.
+        try { v.currentTime = 0; } catch { /* ignore */ }
+        this.emitState();
+        resolve();
+      };
+      const onSeeked = () => finish();
+      const onErr = () => { this._duration = 0; finish(); };
+      v.addEventListener("seeked", onSeeked);
+      v.addEventListener("error", onErr);
+      try {
+        v.currentTime = 1e9;  // anything past the end; browser clamps to real end
+      } catch {
+        finish();
+      }
+      // Defensive timeout in case neither event fires (shouldn't happen on a
+      // valid file, but leaving a stuck Promise would freeze play() forever).
+      setTimeout(finish, 3000);
+    });
+  }
+
+  /** Seek as precisely as possible. Uses fastSeek when available (Chrome —
+   *  closest-keyframe shortcut) for low-latency wraps; falls back to direct
+   *  currentTime assignment otherwise. */
+  private precisionSeek(t: number): void {
+    type SeekableVideo = HTMLVideoElement & { fastSeek?: (t: number) => void };
+    const v = this._playEl as SeekableVideo;
+    if (typeof v.fastSeek === "function") {
+      try { v.fastSeek(Math.max(0, t)); return; } catch { /* fall through */ }
+    }
+    this._playEl.currentTime = Math.max(0, t);
   }
 
   private emitState(): void {

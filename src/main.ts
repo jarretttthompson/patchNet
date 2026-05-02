@@ -448,42 +448,30 @@ function drawVbufStrip(nodeId: string): void {
   const accent = computed.getPropertyValue("--pn-accent").trim() || "#00ff00";
   const dim    = computed.getPropertyValue("--pn-muted-deep").trim() || "rgba(0,255,0,0.3)";
 
-  // Range overlay first so the strip thumbnails draw on top. Live drag
-  // selection (vbufSelection dataset, written by ObjectInteractionController)
-  // takes precedence so the user sees their drag in real time.
-  const sel = canvas.dataset.vbufSelection;
+  // Compute selection band first (live drag overrides persisted range).
+  const live = objectInteraction.getVbufLiveSelection(nodeId);
   let overlayStart = NaN, overlayEnd = NaN;
-  if (sel) {
-    const [a, b] = sel.split(",").map(parseFloat);
-    if (Number.isFinite(a) && Number.isFinite(b) && b > a) { overlayStart = a; overlayEnd = b; }
-  }
-  if (!Number.isFinite(overlayStart)) {
+  let isLive = false;
+  if (live && live[1] > live[0]) {
+    overlayStart = live[0]; overlayEnd = live[1]; isLive = true;
+  } else {
     const rs = parseFloat(node.args[6] ?? "0");
     const re = parseFloat(node.args[7] ?? "0");
     if (Number.isFinite(rs) && Number.isFinite(re) && re > rs) { overlayStart = rs; overlayEnd = re; }
   }
-  if (Number.isFinite(overlayStart) && Number.isFinite(overlayEnd)) {
-    ctx.fillStyle = accent;
-    ctx.globalAlpha = 0.18;
-    ctx.fillRect(overlayStart * w, 0, (overlayEnd - overlayStart) * w, h);
-    ctx.globalAlpha = 1;
-  }
 
+  // 1) Thumbnails go down first. They're opaque rectangles, so anything
+  //    drawn UNDER them is invisible — the selection band has to ride on top.
   const { frames } = vbn.getStrip();
   if (frames.length > 0) {
-    // Distribute frames evenly across the canvas. During record this fills
-    // left-to-right as new chunks arrive; after record the strip stays full
-    // for scrubbing reference.
     const slotW = w / frames.length;
     for (let i = 0; i < frames.length; i++) {
       const f = frames[i];
       const x = i * slotW;
-      // drawImage with non-integer width can blur; round only the destination.
       ctx.drawImage(f, 0, 0, f.width, f.height,
                        Math.floor(x), 0, Math.ceil(slotW) + 1, h);
     }
   } else {
-    // Empty resting line.
     ctx.strokeStyle = dim;
     ctx.beginPath();
     ctx.moveTo(0, h / 2);
@@ -491,9 +479,26 @@ function drawVbufStrip(nodeId: string): void {
     ctx.stroke();
   }
 
+  // 2) Selection band on top of the thumbnails. Translucent fill + bright
+  //    edges so the band reads as a discrete region without hiding content.
+  if (Number.isFinite(overlayStart) && Number.isFinite(overlayEnd)) {
+    const ox = overlayStart * w;
+    const ow = (overlayEnd - overlayStart) * w;
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = isLive ? 0.45 : 0.32;
+    ctx.fillRect(ox, 0, ow, h);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(ox + 0.5, 0);          ctx.lineTo(ox + 0.5, h);
+    ctx.moveTo(ox + ow - 0.5, 0);     ctx.lineTo(ox + ow - 0.5, h);
+    ctx.stroke();
+  }
+
+  // 3) Position / progress cursor on top of everything.
   if (vbn.state === "record") {
-    // Progress cursor at the leading edge of the populated strip.
-    const recProgress = vbn.getStrip().frames.length / vbn.getStrip().max;
+    const recProgress = frames.length / vbn.getStrip().max;
     const cx = Math.min(1, recProgress) * w;
     ctx.strokeStyle = accent;
     ctx.lineWidth = 1.5;

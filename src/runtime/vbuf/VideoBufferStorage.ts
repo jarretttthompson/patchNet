@@ -9,6 +9,10 @@
  *     each Blob is appended to the OPFS file via a streaming writer.
  *   * Reading just hands back the OPFS File reference; the caller wraps it
  *     in URL.createObjectURL.
+ *
+ * After write close we run injectWebmCues() to rewrite the file with a
+ * SeekHead + Cues element. MediaRecorder doesn't emit Cues, which makes
+ * tight-loop seeking unreliable. The injector adds them in place.
  */
 
 interface FsAccessFile {
@@ -69,14 +73,63 @@ class OpfsBackend implements VideoBufferBackend {
     const file = await dir.getFileHandle(FILENAME(key), { create: true });
     const writable = await file.createWritable({ keepExistingData: false });
     let bytesWritten = 0;
+    const self = this;
     return {
       get bytesWritten() { return bytesWritten; },
       async appendBlob(blob: Blob) {
         await writable.write(blob);
         bytesWritten += blob.size;
       },
-      async close() { try { await writable.close(); } catch { /* ignore */ } },
+      async close() {
+        try { await writable.close(); } catch { /* ignore */ }
+        // Cue injection — rewrites the file with a SeekHead+Cues so seeking
+        // is precise. Off by default until validated end-to-end (the parser
+        // can produce a file that loads metadata but fails decode, which is
+        // worse than the un-cued original). Failures are swallowed.
+        try { await self.injectCues(key); } catch { /* ignore */ }
+      },
     };
+  }
+
+  private async injectCues(key: string): Promise<void> {
+    if (!this.cueInjectionEnabled) return;
+    const { injectWebmCues } = await import("./webmCues");
+    const dir  = await this.dir();
+    const fh   = await dir.getFileHandle(FILENAME(key), { create: false });
+    const file = await fh.getFile();
+    if (file.size === 0) return;
+    const cued = await injectWebmCues(file);
+    if (!cued) return;
+    // Verify the rewritten file actually decodes before overwriting the
+    // working original — no point trading a slow seek for a broken file.
+    if (!await this.canDecode(cued)) return;
+    const w = await fh.createWritable({ keepExistingData: false });
+    await w.write(cued);
+    await w.close();
+  }
+
+  private cueInjectionEnabled = false;
+
+  private canDecode(blob: Blob): Promise<boolean> {
+    return new Promise((resolve) => {
+      const v = document.createElement("video");
+      v.muted = true;
+      v.preload = "metadata";
+      const url = URL.createObjectURL(blob);
+      const cleanup = (ok: boolean) => {
+        v.removeEventListener("loadeddata", onOk);
+        v.removeEventListener("error", onErr);
+        URL.revokeObjectURL(url);
+        resolve(ok);
+      };
+      const onOk  = () => cleanup(true);
+      const onErr = () => cleanup(false);
+      v.addEventListener("loadeddata", onOk);
+      v.addEventListener("error", onErr);
+      v.src = url;
+      // Timeout in case neither event fires (defensively).
+      setTimeout(() => cleanup(false), 2000);
+    });
   }
 
   async openRead(key: string): Promise<VideoReadHandle | null> {

@@ -16,7 +16,7 @@ import { ShaderToyNode, SHADERTOY_PRESETS } from "./ShaderToyNode";
 import { FrameNode } from "./FrameNode";
 import { WebcamNode } from "./WebcamNode";
 import { VideoBufferNode } from "./VideoBufferNode";
-import { videoBufferMaxLen } from "../graph/objectDefs";
+import { videoBufferMaxLen, videoBufferRate, videoBufferLoop, videoBufferRange } from "../graph/objectDefs";
 import { VideoStore } from "./VideoStore";
 import { ImageStore } from "./ImageStore";
 import { PatchVizNode } from "./PatchVizNode";
@@ -642,6 +642,19 @@ export class VisualizerGraph {
       const pn = this.graph.nodes.get(id);
       if (pn) this.syncVfxBlurParams(vfx, pn);
     }
+    // vbuf*: rate / loop / range / maxSeconds live in args and must be pushed
+    // to the runtime each sync — patch reload, drag-commit, message-routing,
+    // and inline arg edits all reach the runtime through here.
+    for (const [id, vbn] of this.videoBufferNodes) {
+      const pn = this.graph.nodes.get(id);
+      if (!pn) continue;
+      vbn.setRate(videoBufferRate(pn.args));
+      vbn.setLoop(videoBufferLoop(pn.args));
+      vbn.setMaxSeconds(videoBufferMaxLen(pn.args));
+      const r = videoBufferRange(pn.args);
+      if (r) vbn.setRange(r[0], r[1]); else vbn.setRange(0, 0);
+    }
+
     // reaperVideo: code arg is the only persisted state. The panel owns the
     // authoritative source and pushes compile() on every edit, so re-sync
     // here would be redundant. Creation path (above) seeds from args[0].

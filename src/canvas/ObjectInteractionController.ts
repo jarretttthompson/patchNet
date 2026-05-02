@@ -147,6 +147,11 @@ export class ObjectInteractionController {
     shift: boolean;
   } | null = null;
 
+  /** Live drag-selection overlays for vbuf* — keyed by node id so they
+   *  survive the DOM rebuilds that happen on emit("change"). drawVbufStrip
+   *  reads this on every rAF tick. */
+  private readonly vbufLiveSelection = new Map<string, [number, number]>();
+
   private ezScaleDrag: {
     node: PatchNode;
     trackEl: HTMLElement;
@@ -252,6 +257,14 @@ export class ObjectInteractionController {
 
   setBufferRedrawCallback(cb: (nodeId: string) => void): void {
     this.bufferRedraw = cb;
+  }
+
+  /** Live drag-selection on a vbuf* timeline strip, normalized [a,b]. Returns
+   *  null when no drag is in progress for this node. main.ts's drawVbufStrip
+   *  reads this each rAF tick to render the highlight without depending on
+   *  the canvas DOM (which is rebuilt on emit("change")). */
+  getVbufLiveSelection(nodeId: string): [number, number] | null {
+    return this.vbufLiveSelection.get(nodeId) ?? null;
   }
 
   destroy(): void {
@@ -514,14 +527,17 @@ export class ObjectInteractionController {
       }
     }
 
-    // vbuf* transport buttons — match by data-vbuf-action.
-    const vbufBtn = (e.target as Element).closest<HTMLElement>(".pn-vbuf-btn[data-vbuf-action]");
+    // vbuf* transport buttons + loop toggle — match any .pn-vbuf-* control
+    // that carries a data-vbuf-action attribute.
+    const vbufBtn = (e.target as Element).closest<HTMLElement>("[data-vbuf-action]");
     if (vbufBtn) {
       const objectElForBtn = vbufBtn.closest<HTMLElement>(".patch-object");
       const vbufNode = objectElForBtn ? this.getNode(objectElForBtn) : null;
       if (vbufNode?.type === "vbuf*") {
         const action = vbufBtn.dataset.vbufAction ?? "";
-        this.deliverVideoBufferMessage(vbufNode, action, []);
+        if (action === "loop-on")       this.deliverVideoBufferMessage(vbufNode, "loop", ["1"]);
+        else if (action === "loop-off") this.deliverVideoBufferMessage(vbufNode, "loop", ["0"]);
+        else                            this.deliverVideoBufferMessage(vbufNode, action, []);
         e.stopPropagation();
         return;
       }
@@ -1902,24 +1918,25 @@ export class ObjectInteractionController {
 
   private updateVbufStripDragFromEvent(e: MouseEvent): void {
     if (!this.vbufStripDrag) return;
-    const { canvas } = this.vbufStripDrag;
+    const { node, canvas } = this.vbufStripDrag;
     const rect = canvas.getBoundingClientRect();
     const norm = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     this.vbufStripDrag.endNorm = norm;
-    // Live overlay — drawVbufStrip's rAF loop will read this on the next tick.
+    // Live overlay — drawVbufStrip's rAF loop reads from the controller-owned
+    // map on every tick, so it survives DOM rebuilds caused by emit("change").
     const a = Math.min(this.vbufStripDrag.startNorm, norm);
     const b = Math.max(this.vbufStripDrag.startNorm, norm);
-    canvas.dataset.vbufSelection = `${a},${b}`;
+    this.vbufLiveSelection.set(node.id, [a, b]);
   }
 
   private completeVbufStripDrag(_e: MouseEvent): void {
     if (!this.vbufStripDrag) return;
-    const { node, canvas, startNorm, endNorm, shift } = this.vbufStripDrag;
+    const { node, startNorm, endNorm, shift } = this.vbufStripDrag;
     this.vbufStripDrag = null;
     const a = Math.min(startNorm, endNorm);
     const b = Math.max(startNorm, endNorm);
     const span = b - a;
-    delete canvas.dataset.vbufSelection;
+    this.vbufLiveSelection.delete(node.id);
 
     const rs = parseFloat(node.args[6] ?? "");
     const re = parseFloat(node.args[7] ?? "");
@@ -2696,7 +2713,9 @@ export class ObjectInteractionController {
         const v = (args[0] ?? "1") !== "0";
         vbn?.setLoop(v);
         node.args[1] = v ? "1" : "0";
-        this.graph.emit("display");
+        // emit "change" so the loop-toggle button re-renders with the
+        // correct active class + flips its data-vbuf-action target.
+        this.graph.emit("change");
         break;
       }
 
