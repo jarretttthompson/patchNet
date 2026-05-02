@@ -14,11 +14,15 @@ interface DragState {
   mouseStartX: number;
   mouseStartY: number;
   moved: boolean;
-  /** Last (x,y) at which the no-overlap guard accepted the move. Used to
-   *  snap back when a frame would cause a collision. Updated only on
-   *  successful frames; stays stuck when blocked. */
+  /** Last (x,y) at which the no-overlap guard accepted the position. The
+   *  object follows the cursor freely during drag, but on mouseup it snaps
+   *  back here if the release point would collide. Updated only on
+   *  overlap-free frames. */
   lastValidX: number;
   lastValidY: number;
+  /** Whether the most recent frame was overlap-free. Drives the
+   *  drop-blocked visual state and the mouseup commit decision. */
+  lastFrameValid: boolean;
   /** True once the user has triggered a blocked-flash during this drag.
    *  Subsequent blocked frames are silent so the pulse plays once per
    *  drag rather than re-triggering on every contact event. Reset on
@@ -148,8 +152,9 @@ export class DragController {
     // buffer~ transport buttons + waveform canvas: never start drag.
     if (target.closest(".pn-buf-btn")) return;
     if (target.closest(".pn-buf-wave")) return;
-    // vbuf* transport buttons + timeline strip + preview video: same.
+    // vbuf* transport buttons + loop toggle + timeline strip + preview video.
     if (target.closest(".pn-vbuf-btn")) return;
+    if (target.closest(".pn-vbuf-loop-btn")) return;
     if (target.closest(".pn-vbuf-strip")) return;
     if (target.closest(".pn-vbuf-preview")) return;
     if (target.closest(".patch-object-slider-track")) return;
@@ -220,6 +225,7 @@ export class DragController {
         moved: false,
         lastValidX: newPrimX,
         lastValidY: newPrimY,
+        lastFrameValid: true,
         flashed: false,
       };
       newEl.classList.add("patch-object--dragging");
@@ -266,6 +272,7 @@ export class DragController {
       moved: false,
       lastValidX: primX,
       lastValidY: primY,
+      lastFrameValid: true,
       flashed: false,
     };
 
@@ -367,32 +374,39 @@ export class DragController {
     }
     const result = checkOverlap(this.graph, movingIds, proposed);
 
+    // Follow the cursor freely — even when the proposed position would
+    // overlap another object. The no-overlap rule is enforced on drop, not
+    // mid-drag, so the user can route an object across a busy patch without
+    // getting stuck against intermediate obstacles.
     const el = this.drag.el;
+    el.style.left = `${nx}px`;
+    el.style.top = `${ny}px`;
+    this.drag.moved = true;
+    this.onMove?.(this.drag.nodeId, nx, ny);
+
+    for (const cm of this.coMovers) {
+      const cnx = Math.round(cm.startX + dx);
+      const cny = Math.round(cm.startY + dy);
+      cm.el.style.left = `${cnx}px`;
+      cm.el.style.top = `${cny}px`;
+      this.onMove?.(cm.nodeId, cnx, cny);
+    }
+
     if (result.ok) {
-      el.style.left = `${nx}px`;
-      el.style.top = `${ny}px`;
       this.drag.lastValidX = nx;
       this.drag.lastValidY = ny;
-      this.drag.moved = true;
-      this.onMove?.(this.drag.nodeId, nx, ny);
-
+      this.drag.lastFrameValid = true;
+      el.classList.remove("patch-object--drop-blocked");
       for (const cm of this.coMovers) {
-        const cnx = Math.round(cm.startX + dx);
-        const cny = Math.round(cm.startY + dy);
-        cm.el.style.left = `${cnx}px`;
-        cm.el.style.top = `${cny}px`;
-        cm.lastValidX = cnx;
-        cm.lastValidY = cny;
-        this.onMove?.(cm.nodeId, cnx, cny);
+        cm.lastValidX = Math.round(cm.startX + dx);
+        cm.lastValidY = Math.round(cm.startY + dy);
+        cm.el.classList.remove("patch-object--drop-blocked");
       }
     } else {
-      // Snap back to the last valid spot. Don't update lastValid; don't fire
-      // onMove (graph state already reflects last valid via the prior frame).
-      el.style.left = `${this.drag.lastValidX}px`;
-      el.style.top = `${this.drag.lastValidY}px`;
+      this.drag.lastFrameValid = false;
+      el.classList.add("patch-object--drop-blocked");
       for (const cm of this.coMovers) {
-        cm.el.style.left = `${cm.lastValidX}px`;
-        cm.el.style.top = `${cm.lastValidY}px`;
+        cm.el.classList.add("patch-object--drop-blocked");
       }
       if (result.obstacleId && !this.drag.flashed) {
         this.drag.flashed = true;
@@ -405,9 +419,23 @@ export class DragController {
     if (!this.drag) return;
     if (e.button !== 0) return;
 
-    const { nodeId, el, moved } = this.drag;
+    const { nodeId, el, moved, lastFrameValid, lastValidX, lastValidY } = this.drag;
 
     if (moved) {
+      // If the release point would collide, snap back to the last overlap-free
+      // position observed during this drag. Free movement mid-drag lets the
+      // user route across busy patches; the no-overlap rule is enforced here.
+      if (!lastFrameValid) {
+        el.style.left = `${lastValidX}px`;
+        el.style.top = `${lastValidY}px`;
+        this.onMove?.(nodeId, lastValidX, lastValidY);
+        for (const cm of this.coMovers) {
+          cm.el.style.left = `${cm.lastValidX}px`;
+          cm.el.style.top = `${cm.lastValidY}px`;
+          this.onMove?.(cm.nodeId, cm.lastValidX, cm.lastValidY);
+        }
+      }
+
       const x = parseFloat(el.style.left || "0");
       const y = parseFloat(el.style.top || "0");
       this.graph.setNodePosition(nodeId, x, y);
@@ -432,10 +460,12 @@ export class DragController {
   private endDrag(): void {
     if (this.drag) {
       this.drag.el.classList.remove("patch-object--dragging");
+      this.drag.el.classList.remove("patch-object--drop-blocked");
       this.drag = null;
     }
     for (const cm of this.coMovers) {
       cm.el.classList.remove("patch-object--dragging");
+      cm.el.classList.remove("patch-object--drop-blocked");
     }
     this.coMovers = [];
     document.removeEventListener("mousemove", this.onMouseMove);

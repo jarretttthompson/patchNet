@@ -1102,6 +1102,15 @@ body {
   z-index: 10;
 }
 
+/* Drop-blocked state — applied while a dragged object is hovering over a
+   forbidden drop position. The drag still follows the cursor freely; this
+   is just a visual hint that releasing here will snap back to the last
+   valid spot. */
+.patch-object--drop-blocked {
+  outline: 1px dashed var(--pn-danger);
+  outline-offset: 2px;
+}
+
 /* Grouped objects */
 .patch-object--grouped {
   outline: 1px dashed var(--pn-group);
@@ -5847,7 +5856,22 @@ body {
 }
 
 .pn-vbuf-rate { min-width: 40px; }
-.pn-vbuf-loop-on { color: var(--pn-accent); }
+.pn-vbuf-loop-btn {
+  font: inherit;
+  color: var(--pn-muted);
+  background: transparent;
+  border: 1px dashed var(--pn-border-subtle);
+  border-radius: var(--pn-radius-xs);
+  padding: 1px 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.pn-vbuf-loop-btn:hover { color: var(--pn-accent); border-color: var(--pn-accent); }
+.pn-vbuf-loop-btn.pn-vbuf-loop-on {
+  color: var(--pn-accent);
+  border-style: solid;
+  border-color: var(--pn-accent);
+}
 .pn-vbuf-maxlen {
   cursor: text;
   padding: 1px 4px;
