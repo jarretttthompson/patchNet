@@ -2,6 +2,7 @@ import type { ImageFXNode } from "../runtime/ImageFXNode";
 import type { PatchNode }   from "../graph/PatchNode";
 import type { PatchGraph }  from "../graph/PatchGraph";
 import { buildFilter, floodFillTransparent, floodRemoveEdgeBg } from "../runtime/ImageFXNode";
+import { startDragSession } from "./dragSession";
 
 /**
  * ImageFXPanel — modal editor for imageFX nodes.
@@ -484,24 +485,23 @@ export class ImageFXPanel {
     this._panDrag = { active: true, sx: e.clientX, sy: e.clientY, px: this.panX, py: this.panY };
     this.previewCanvas.style.cursor = "grabbing";
 
-    const onMove = (me: MouseEvent) => {
-      if (!this._panDrag.active) return;
-      const dx = (me.clientX - this._panDrag.sx) * scaleX;
-      const dy = (me.clientY - this._panDrag.sy) * scaleY;
-      this.panX = this._panDrag.px - dx / this.zoom;
-      this.panY = this._panDrag.py - dy / this.zoom;
-      this.renderPreview();
-    };
-
-    const onUp = () => {
+    const endPan = () => {
       this._panDrag.active = false;
       this.updatePreviewCursor();
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup",   onUp);
     };
 
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup",   onUp);
+    startDragSession({
+      onMove: (me) => {
+        if (!this._panDrag.active) return;
+        const dx = (me.clientX - this._panDrag.sx) * scaleX;
+        const dy = (me.clientY - this._panDrag.sy) * scaleY;
+        this.panX = this._panDrag.px - dx / this.zoom;
+        this.panY = this._panDrag.py - dy / this.zoom;
+        this.renderPreview();
+      },
+      onUp:     endPan,
+      onCancel: endPan,
+    });
   }
 
   /** Map a mouse event on the preview canvas to full-resolution image pixel coords. */

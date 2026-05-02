@@ -15,6 +15,25 @@ const LOCK_ICON_SVG = `
 
 const MATH_OPS = new Set(["+", "-", "*", "/", "%", "==", "!=", ">", "<", ">=", "<="]);
 
+/** Perimeter move-handle variants. BR is intentionally absent — that corner
+ *  belongs to the resize handle. CSS in shell.css positions each variant. */
+const MOVE_HANDLE_VARIANTS = ["tl", "tr", "bl", "top", "bottom", "left", "right"] as const;
+
+/** "0" / "-7" / "127" → true. "0.0" / "1." → false. Mirrors the int-form rule
+ *  used by the scale/ezScale runtime. */
+function isIntForm(s: string): boolean {
+  return /^-?\d+$/.test(s.trim());
+}
+
+/** Compact numeric label for a slider thumb. Int mode shows the whole number;
+ *  float mode trims to ≤3 decimals and strips trailing zeros for tidiness. */
+export function formatThumbValue(n: number, intMode: boolean): string {
+  if (!Number.isFinite(n)) return "";
+  if (intMode) return String(Math.round(n));
+  const fixed = n.toFixed(3);
+  return fixed.replace(/\.?0+$/, "") || "0";
+}
+
 /**
  * Object types whose body content has a fixed "design size" and should be
  * uniformly transform-scaled when the user resizes the object. Excluded:
@@ -208,13 +227,60 @@ function buildEzScaleBody(node: PatchNode): HTMLDivElement {
     return cell;
   };
 
-  const fields = document.createElement("div");
-  fields.className = "pn-ezscale__fields";
-  fields.appendChild(mkField("in min",  "inMin",  inMinStr));
-  fields.appendChild(mkField("in max",  "inMax",  inMaxStr));
-  fields.appendChild(mkField("out min", "outMin", outMinStr));
-  fields.appendChild(mkField("out max", "outMax", outMaxStr));
-  wrap.appendChild(fields);
+  const autoOn    = (node.args[6] ?? "1") !== "0";
+  const collapsed = (node.args[8] ?? "0") === "1";
+  const inverted  = (node.args[10] ?? "0") === "1";
+
+  if (collapsed) wrap.classList.add("pn-ezscale--collapsed");
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "pn-ezscale__toolbar";
+
+  const invertBtn = document.createElement("button");
+  invertBtn.type = "button";
+  invertBtn.className = "pn-ezscale__invert-btn";
+  invertBtn.dataset.ezscaleAction = "toggle-invert";
+  invertBtn.setAttribute("aria-pressed", inverted ? "true" : "false");
+  invertBtn.textContent = "⇅";
+  invertBtn.title = inverted ? "Output is inverted (high → low). Click to restore." : "Invert output direction (low → high becomes high → low).";
+  toolbar.appendChild(invertBtn);
+
+  const autoBtn = document.createElement("button");
+  autoBtn.type = "button";
+  autoBtn.className = "pn-ezscale__auto-btn";
+  autoBtn.dataset.ezscaleAction = "toggle-auto";
+  autoBtn.setAttribute("aria-pressed", autoOn ? "true" : "false");
+  autoBtn.textContent = "auto";
+  autoBtn.title = "Auto-detect input range from incoming values and output range from connected target.";
+  toolbar.appendChild(autoBtn);
+
+  const collapseBtn = document.createElement("button");
+  collapseBtn.type = "button";
+  collapseBtn.className = "pn-ezscale__collapse-btn";
+  collapseBtn.dataset.ezscaleAction = "toggle-collapse";
+  collapseBtn.setAttribute("aria-pressed", collapsed ? "true" : "false");
+  collapseBtn.textContent = collapsed ? "▸" : "▾";
+  collapseBtn.title = collapsed ? "Expand controls" : "Collapse to slider";
+  toolbar.appendChild(collapseBtn);
+
+  wrap.appendChild(toolbar);
+
+  if (!collapsed) {
+    const fields = document.createElement("div");
+    fields.className = "pn-ezscale__fields";
+    fields.appendChild(mkField("in min",  "inMin",  inMinStr));
+    fields.appendChild(mkField("in max",  "inMax",  inMaxStr));
+    fields.appendChild(mkField("out min", "outMin", outMinStr));
+    fields.appendChild(mkField("out max", "outMax", outMaxStr));
+    wrap.appendChild(fields);
+  }
+
+  // Pre-scale multiplier — visible whether expanded or collapsed.
+  const multStr = node.args[7] ?? "1";
+  const multRow = document.createElement("div");
+  multRow.className = "pn-ezscale__mult-row";
+  multRow.appendChild(mkField("× mult", "mult", multStr));
+  wrap.appendChild(multRow);
 
   // Range slider — only interactive once outMin/outMax are both valid numbers.
   // Until then, render a flat empty track with no handles.
@@ -262,7 +328,77 @@ function buildEzScaleBody(node: PatchNode): HTMLDivElement {
   }
 
   slider.appendChild(track);
+
+  if (boundsReady) {
+    // Edge-pinned value labels — stay at the slider's left/right edges so the
+    // user can read the active range bounds without the labels riding the thumbs.
+    const outLoNum = parseFloat(node.args[4] ?? "");
+    const outHiNum = parseFloat(node.args[5] ?? "");
+    const outLo = isFinite(outLoNum) ? outLoNum : outMin;
+    const outHi = isFinite(outHiNum) ? outHiNum : outMax;
+    const intMode = isIntForm(outMinStr) && isIntForm(outMaxStr);
+
+    const edgeLo = document.createElement("span");
+    edgeLo.className = "pn-ezscale__edge-label pn-ezscale__edge-label--lo";
+    edgeLo.textContent = formatThumbValue(outLo, intMode);
+    slider.appendChild(edgeLo);
+
+    const edgeHi = document.createElement("span");
+    edgeHi.className = "pn-ezscale__edge-label pn-ezscale__edge-label--hi";
+    edgeHi.textContent = formatThumbValue(outHi, intMode);
+    slider.appendChild(edgeHi);
+  }
+
   wrap.appendChild(slider);
+
+  return wrap;
+}
+
+/**
+ * Build the ezSlider body: two text fields pinned above each end of a single-
+ * thumb slider. Dragging the thumb interpolates between lo and hi.
+ */
+function buildEzSliderBody(node: PatchNode): HTMLDivElement {
+  const wrap = document.createElement("div");
+  wrap.className = "pn-ezslider";
+
+  const loStr = node.args[0] ?? "0";
+  const hiStr = node.args[1] ?? "1";
+  const value = parseFloat(node.args[2] ?? "0.5");
+  const thumbPct = Math.max(0, Math.min(1, isNaN(value) ? 0.5 : value)) * 100;
+
+  const fields = document.createElement("div");
+  fields.className = "pn-ezslider__fields";
+
+  const mkInput = (fieldKey: string, val: string) => {
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "pn-ezslider__field";
+    input.value = val;
+    input.dataset.ezsliderField = fieldKey;
+    input.spellcheck = false;
+    return input;
+  };
+
+  fields.appendChild(mkInput("lo", loStr));
+  fields.appendChild(mkInput("hi", hiStr));
+  wrap.appendChild(fields);
+
+  const lo = parseFloat(loStr);
+  const hi = parseFloat(hiStr);
+  const boundsReady = isFinite(lo) && isFinite(hi);
+
+  const track = document.createElement("div");
+  track.className = "pn-ezslider__track";
+  if (!boundsReady) track.classList.add("pn-ezslider__track--inert");
+
+  const thumb = document.createElement("div");
+  thumb.className = "pn-ezslider__thumb";
+  thumb.style.left = `${thumbPct}%`;
+  if (!boundsReady) thumb.style.display = "none";
+  track.appendChild(thumb);
+
+  wrap.appendChild(track);
 
   return wrap;
 }
@@ -349,6 +485,9 @@ function buildBody(node: PatchNode): HTMLDivElement {
 
   } else if (node.type === "ezScale") {
     body.appendChild(buildEzScaleBody(node));
+
+  } else if (node.type === "ezSlider") {
+    body.appendChild(buildEzSliderBody(node));
 
   } else if (node.type === "codebox") {
     const codebox = document.createElement("div");
@@ -705,6 +844,7 @@ function buildBody(node: PatchNode): HTMLDivElement {
     info.innerHTML = `
       <span class="pn-vbuf-rate">×${rate.toFixed(2)}</span>
       <button type="button" class="pn-vbuf-loop-btn${loop ? " pn-vbuf-loop-on" : ""}" data-vbuf-action="${loop ? "loop-off" : "loop-on"}" title="Toggle loop">loop:${loop ? "on" : "off"}</button>
+      <button type="button" class="pn-vbuf-loop-btn" data-vbuf-action="load" title="Load a local video file into this buffer">load video</button>
       <span class="pn-vbuf-maxlen" data-vbuf-maxlen-display title="Max recording length (1s–10m) — click to edit">max:${formatMaxLen(maxLen)}</span>
     `;
     stage.appendChild(info);
@@ -867,8 +1007,37 @@ function buildBody(node: PatchNode): HTMLDivElement {
       const letters = node.args.length > 0 ? node.args.join(" ") : "i i";
       title.textContent = `t ${letters}`;
       body.classList.add("patch-object-body--args-inline");
+    } else if (node.type === "f") {
+      const val = parseFloat(node.args[0] ?? "0");
+      title.textContent = `f ${isNaN(val) ? "0" : String(parseFloat(val.toFixed(4)))}`;
     } else {
-      title.textContent = node.type;
+      // Generic: show non-hidden creation args inline so users can see what
+      // values an object was created with. Skipped for types that render
+      // their args via a dedicated meta row (metro, click~).
+      const def = OBJECT_DEFS[node.type];
+      const hasOwnMeta = node.type === "metro" || node.type === "click~";
+      const parts: string[] = [];
+      if (def && !hasOwnMeta) {
+        for (let i = 0; i < def.args.length; i++) {
+          if (def.args[i].hidden) continue;
+          if (def.args[i].type === "list") {
+            // Variadic: consume all remaining node args from this index
+            for (let j = i; j < node.args.length; j++) {
+              const v = node.args[j];
+              if (v !== undefined && v !== "") parts.push(v);
+            }
+            break;
+          }
+          const v = node.args[i];
+          if (v !== undefined && v !== "") parts.push(v);
+        }
+      }
+      if (parts.length > 0) {
+        title.textContent = `${node.type} ${parts.join(" ")}`;
+        body.classList.add("patch-object-body--args-inline");
+      } else {
+        title.textContent = node.type;
+      }
     }
     body.appendChild(title);
 
@@ -1061,6 +1230,17 @@ export function renderObject(node: PatchNode): HTMLDivElement {
     const resizeHandle = document.createElement("div");
     resizeHandle.className = "pn-resize-handle";
     el.appendChild(resizeHandle);
+  }
+
+  // Move-handles — invisible perimeter regions. Mousedown on one of these
+  // initiates an object drag; mousedown on the body interior does not.
+  // Bottom-right is reserved for resize (no --br variant). Ports and the
+  // resize handle sit above via z-index, so port/resize hits win where
+  // they overlap a move-handle.
+  for (const variant of MOVE_HANDLE_VARIANTS) {
+    const handle = document.createElement("div");
+    handle.className = `pn-move-handle pn-move-handle--${variant}`;
+    el.appendChild(handle);
   }
 
   return el;

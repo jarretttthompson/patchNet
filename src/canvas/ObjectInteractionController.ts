@@ -15,6 +15,9 @@ import {
   buildArgMessage,
   getVisibleArgs,
   deriveTriggerPorts,
+  derivePackPorts,
+  deriveUnpackPorts,
+  packSlotInit,
   deriveFftPorts,
   deriveMixerPorts,
   mixerDefaultWidth,
@@ -28,9 +31,12 @@ import {
   deriveBufferPorts,
   JS_EFFECT_SIDE_INLET_START,
   getReaperVideoSideInletStart,
+  extractJsEffectSliders,
+  extractReaperVideoParams,
 } from "../graph/objectDefs";
 import { ImageFXPanel } from "./ImageFXPanel";
-import { buildOdometerContent } from "./ObjectRenderer";
+import { buildOdometerContent, formatThumbValue } from "./ObjectRenderer";
+import { startDragSession, type DragSession } from "./dragSession";
 
 /** Parse "90", "1m30s", "2m", "45s" → seconds. Plain numbers are interpreted
  *  as seconds. Returns null if the input doesn't parse. */
@@ -84,6 +90,9 @@ function encodeDmxBase64Json(value: unknown): string {
 function isIntForm(s: string): boolean {
   return /^-?\d+$/.test(s.trim());
 }
+
+/** Body height for a collapsed ezScale — toolbar + multiplier row + slider with their gaps. */
+const EZSCALE_COLLAPSED_HEIGHT = 96;
 
 /** Format a scaled number as a string. In int mode, round to nearest int and
  *  drop the decimal entirely so the wire value is "7" not "7.0". */
@@ -155,11 +164,30 @@ export class ObjectInteractionController {
   private ezScaleDrag: {
     node: PatchNode;
     trackEl: HTMLElement;
-    which: "lo" | "hi";
+    which: "lo" | "hi" | "range";
+    startX?: number;
+    startLo?: number;
+    startHi?: number;
   } | null = null;
 
-  private readonly onDocMouseMove: (e: MouseEvent) => void;
-  private readonly onDocMouseUp: (e: MouseEvent) => void;
+  private ezSliderDrag: {
+    node: PatchNode;
+    trackEl: HTMLElement;
+  } | null = null;
+
+  /** Single live drag session for any of the slider/numbox/buf/vbuf drags
+   *  below — only one can be active at a time (they all branch off
+   *  `handleMouseDown`). Replaces the older onDocMouseMove/Up document-
+   *  listener pair. The session installs its own `window.blur` and
+   *  `Escape`-key recovery so a missed mouseup can't strand the drag. */
+  private currentDragSession: DragSession | null = null;
+  /** Per-dispatch-root visited set for feedback-cycle detection in
+   *  dispatchValue/dispatchBang. Non-null only while a dispatch chain is
+   *  in progress; see `guardedFanout`. */
+  private dispatchVisited: Set<string> | null = null;
+  /** Single warn per dispatch chain so repeating cycles don't spam the
+   *  console. Reset on dispatch-root unwind. */
+  private dispatchCycleWarned = false;
   private readonly onAttrInput: (e: Event) => void;
   private readonly onAttrChange: (e: Event) => void;
   private readonly onCellFocusOut: (e: FocusEvent) => void;
@@ -169,6 +197,10 @@ export class ObjectInteractionController {
   private readonly oscTimers = new Map<string, { rafId: number; startT: number }>();
   private readonly mathLeftOps = new Map<string, number>();
   private readonly drunkPositions = new Map<string, number>();
+  /** Per-node current slot values for `pack`. Initialized from args lazily. */
+  private readonly packSlots = new Map<string, string[]>();
+  /** Per-node current stored slot values for `unpack`. Initialized lazily. */
+  private readonly unpackSlots = new Map<string, string[]>();
   private codeboxController?: CodeboxController;
   private jsEffectPanelController?: JsEffectPanelController;
   private reaperVideoPanelController?: ReaperVideoPanelController;
@@ -193,8 +225,6 @@ export class ObjectInteractionController {
     this.onPanGroupClick = this.handleClick.bind(this);
     this.onPanGroupMouseDown = this.handleMouseDown.bind(this);
     this.onPanGroupDblClick = this.handleDblClick.bind(this);
-    this.onDocMouseMove = this.handleSliderMove.bind(this);
-    this.onDocMouseUp = this.handleSliderUp.bind(this);
     this.onAttrInput  = this.handleAttrInput.bind(this);
     this.onAttrChange = this.handleAttrChange.bind(this);
     this.onCellFocusOut = this.handleCellFocusOut.bind(this);
@@ -205,6 +235,8 @@ export class ObjectInteractionController {
       this.pruneOscTimers();
       this.restoreOscTimers();
       this.syncAttributeNodes();
+      this.syncEzScaleAutoInput();
+      this.syncEzScaleAutoOutput();
       for (const id of this.timerStamps.keys()) {
         if (!this.graph.nodes.has(id)) this.timerStamps.delete(id);
       }
@@ -285,8 +317,8 @@ export class ObjectInteractionController {
       panel.removeEventListener("keydown",   this.onCellKeyDown);
     }
     this.externalPanels.length = 0;
-    document.removeEventListener("mousemove", this.onDocMouseMove);
-    document.removeEventListener("mouseup", this.onDocMouseUp);
+    this.currentDragSession?.end();
+    this.currentDragSession = null;
     this.onGraphChangeUnsubscribe();
     for (const nodeId of this.metroTimers.keys()) {
       this.stopMetro(nodeId, false);
@@ -352,8 +384,7 @@ export class ObjectInteractionController {
           endNorm:   norm,
           shift:     e.shiftKey,
         };
-        document.addEventListener("mousemove", this.onDocMouseMove);
-        document.addEventListener("mouseup",   this.onDocMouseUp);
+        this.startWidgetDragSession();
         return;
       }
     }
@@ -376,8 +407,7 @@ export class ObjectInteractionController {
           endNorm:   norm,
           shift:     e.shiftKey,
         };
-        document.addEventListener("mousemove", this.onDocMouseMove);
-        document.addEventListener("mouseup",   this.onDocMouseUp);
+        this.startWidgetDragSession();
         return;
       }
     }
@@ -394,10 +424,21 @@ export class ObjectInteractionController {
           return;
         }
 
-        let which: "lo" | "hi";
+        let which: "lo" | "hi" | "range";
+        let startX: number | undefined;
+        let startLo: number | undefined;
+        let startHi: number | undefined;
         const thumbEl = (e.target as Element).closest<HTMLElement>(".pn-ezscale__thumb");
         if (thumbEl) {
           which = thumbEl.dataset.ezscaleThumb === "hi" ? "hi" : "lo";
+        } else if ((e.target as Element).closest(".pn-ezscale__fill")) {
+          // Drag the filled region — shifts both handles uniformly.
+          which = "range";
+          startX = e.clientX;
+          const outLoNum = parseFloat(node.args[4] ?? "");
+          const outHiNum = parseFloat(node.args[5] ?? "");
+          startLo = isFinite(outLoNum) ? outLoNum : outMin;
+          startHi = isFinite(outHiNum) ? outHiNum : outMax;
         } else {
           // Click on the track — grab whichever handle is nearer to the click.
           const rect = trackEl.getBoundingClientRect();
@@ -414,15 +455,34 @@ export class ObjectInteractionController {
 
         e.preventDefault();
         e.stopPropagation();
-        this.ezScaleDrag = { node, trackEl, which };
+        this.ezScaleDrag = { node, trackEl, which, startX, startLo, startHi };
         document.body.classList.add("pn-state-slider-drag");
-        document.addEventListener("mousemove", this.onDocMouseMove);
-        document.addEventListener("mouseup", this.onDocMouseUp);
-        this.updateEzScaleFromEvent(e);
+        this.startWidgetDragSession();
+        if (which !== "range") this.updateEzScaleFromEvent(e);
         return;
       }
       // Field clicks: native <input> handles focus/caret. DragController already
       // excludes INPUT from move drags.
+    }
+
+    if (node.type === "ezSlider") {
+      const trackEl = objectEl.querySelector<HTMLElement>(".pn-ezslider__track");
+      if (trackEl && (e.target as Element).closest(".pn-ezslider__track")) {
+        const lo = parseFloat(node.args[0] ?? "");
+        const hi = parseFloat(node.args[1] ?? "");
+        if (!isFinite(lo) || !isFinite(hi)) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        this.ezSliderDrag = { node, trackEl };
+        document.body.classList.add("pn-state-slider-drag");
+        this.startWidgetDragSession();
+        this.updateEzSliderFromEvent(e);
+        return;
+      }
     }
 
     if (node.type === "slider") {
@@ -434,8 +494,7 @@ export class ObjectInteractionController {
 
       this.sliderDrag = { node, trackEl, thumbEl };
       document.body.classList.add("pn-state-slider-drag");
-      document.addEventListener("mousemove", this.onDocMouseMove);
-      document.addEventListener("mouseup", this.onDocMouseUp);
+      this.startWidgetDragSession();
 
       this.updateSliderFromEvent(e);
 
@@ -459,8 +518,7 @@ export class ObjectInteractionController {
 
       this.numboxDrag = { node, el: odoEl, startY: e.clientY, startValue, increment, isFloat, activePlace };
       document.body.classList.add("pn-state-numbox-drag");
-      document.addEventListener("mousemove", this.onDocMouseMove);
-      document.addEventListener("mouseup", this.onDocMouseUp);
+      this.startWidgetDragSession();
     }
   }
 
@@ -509,6 +567,63 @@ export class ObjectInteractionController {
         const nowLocked = (node.args[4] ?? "0") === "1";
         node.args[4] = nowLocked ? "0" : "1";
         this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    // ezScale [auto] toggle button.
+    const ezAutoBtn = (e.target as Element).closest<HTMLElement>('.pn-ezscale__auto-btn[data-ezscale-action="toggle-auto"]');
+    if (ezAutoBtn) {
+      const objectElForBtn = ezAutoBtn.closest<HTMLElement>(".patch-object");
+      const ezNode = objectElForBtn ? this.getNode(objectElForBtn) : null;
+      if (ezNode?.type === "ezScale") {
+        const nowOn = (ezNode.args[6] ?? "1") !== "0";
+        ezNode.args[6] = nowOn ? "0" : "1";
+        this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    // ezScale invert toggle.
+    const ezInvertBtn = (e.target as Element).closest<HTMLElement>('.pn-ezscale__invert-btn[data-ezscale-action="toggle-invert"]');
+    if (ezInvertBtn) {
+      const objectElForBtn = ezInvertBtn.closest<HTMLElement>(".patch-object");
+      const ezNode = objectElForBtn ? this.getNode(objectElForBtn) : null;
+      if (ezNode?.type === "ezScale") {
+        const wasInverted = (ezNode.args[10] ?? "0") === "1";
+        ezNode.args[10] = wasInverted ? "0" : "1";
+        // Swap output bounds + active sub-range so the visual + math reflect
+        // the new direction immediately. Auto-output, if enabled, will keep
+        // the swap consistent on subsequent reconnects.
+        const tmpBound = ezNode.args[2]; ezNode.args[2] = ezNode.args[3] ?? ""; ezNode.args[3] = tmpBound ?? "";
+        const tmpActive = ezNode.args[4]; ezNode.args[4] = ezNode.args[5] ?? ""; ezNode.args[5] = tmpActive ?? "";
+        this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    // ezScale collapse / expand toggle.
+    const ezCollapseBtn = (e.target as Element).closest<HTMLElement>('.pn-ezscale__collapse-btn[data-ezscale-action="toggle-collapse"]');
+    if (ezCollapseBtn) {
+      const objectElForBtn = ezCollapseBtn.closest<HTMLElement>(".patch-object");
+      const ezNode = objectElForBtn ? this.getNode(objectElForBtn) : null;
+      if (ezNode?.type === "ezScale") {
+        const wasCollapsed = (ezNode.args[8] ?? "0") === "1";
+        const def = getObjectDef("ezScale");
+        if (wasCollapsed) {
+          const stored = parseInt(ezNode.args[9] ?? "", 10);
+          const restoreH = isFinite(stored) && stored > 0 ? stored : def.defaultHeight;
+          ezNode.args[8] = "0";
+          this.graph.setNodeSize(ezNode.id, ezNode.width ?? def.defaultWidth, restoreH);
+        } else {
+          const currentH = ezNode.height ?? def.defaultHeight;
+          ezNode.args[9] = String(currentH);
+          ezNode.args[8] = "1";
+          this.graph.setNodeSize(ezNode.id, ezNode.width ?? def.defaultWidth, EZSCALE_COLLAPSED_HEIGHT);
+        }
         e.stopPropagation();
         return;
       }
@@ -584,12 +699,14 @@ export class ObjectInteractionController {
   }
 
   private dispatchBang(fromNodeId: string, fromOutlet: number): void {
-    for (const edge of this.graph.getEdges()) {
-      if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== fromOutlet) continue;
-      const target = this.graph.nodes.get(edge.toNodeId);
-      if (!target) continue;
-      this.deliverBang(target, edge.toInlet);
-    }
+    this.guardedFanout(fromNodeId, fromOutlet, () => {
+      for (const edge of this.graph.getEdges()) {
+        if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== fromOutlet) continue;
+        const target = this.graph.nodes.get(edge.toNodeId);
+        if (!target) continue;
+        this.deliverBang(target, edge.toInlet);
+      }
+    });
   }
 
   /** Route a value from a node outlet to all connected inlets. */
@@ -598,11 +715,62 @@ export class ObjectInteractionController {
   }
 
   private dispatchValue(fromNodeId: string, fromOutlet: number, value: string): void {
-    for (const edge of this.graph.getEdges()) {
-      if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== fromOutlet) continue;
-      const target = this.graph.nodes.get(edge.toNodeId);
-      if (!target) continue;
-      this.deliverMessageValue(target, edge.toInlet, value);
+    this.guardedFanout(fromNodeId, fromOutlet, () => {
+      for (const edge of this.graph.getEdges()) {
+        if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== fromOutlet) continue;
+        const target = this.graph.nodes.get(edge.toNodeId);
+        if (!target) continue;
+        this.deliverMessageValue(target, edge.toInlet, value);
+      }
+    });
+  }
+
+  /**
+   * Wrap an outlet-fan-out in a per-dispatch-root visited set so feedback
+   * cycles in user patches break with a single console.warn rather than
+   * blowing the stack. The set is keyed on `${nodeId}:${outletIdx}` and
+   * lives for the duration of one synchronous dispatch chain (top-level
+   * call clears it on unwind, recursive calls share it).
+   *
+   * Legitimate fan-out (one outlet → many receivers) happens inside the
+   * iterate() callback's for-loop — each edge calls deliverMessageValue
+   * directly, not dispatchValue, so no false positives there. The guard
+   * only fires when the SAME outlet would dispatch a SECOND time within
+   * one chain, which is the signature of a cycle.
+   *
+   * Handles both `dispatchValue` and `dispatchBang` since both share the
+   * same fan-out shape.
+   */
+  private guardedFanout(
+    fromNodeId: string,
+    fromOutlet: number,
+    iterate: () => void,
+  ): void {
+    const key = `${fromNodeId}:${fromOutlet}`;
+    const isRoot = this.dispatchVisited === null;
+    if (isRoot) {
+      this.dispatchVisited = new Set();
+      this.dispatchCycleWarned = false;
+    }
+    if (this.dispatchVisited!.has(key)) {
+      if (!this.dispatchCycleWarned) {
+        const node = this.graph.nodes.get(fromNodeId);
+        const desc = node ? `${node.type} (${fromNodeId.slice(0, 8)}…)` : fromNodeId;
+        console.warn(
+          `[OIC] feedback cycle detected — outlet ${fromOutlet} of ${desc} would fire for the second time in one dispatch chain. Aborting to prevent stack overflow. Check your patch for a connection that loops back to this node.`,
+        );
+        this.dispatchCycleWarned = true;
+      }
+      return;
+    }
+    this.dispatchVisited!.add(key);
+    try {
+      iterate();
+    } finally {
+      if (isRoot) {
+        this.dispatchVisited = null;
+        this.dispatchCycleWarned = false;
+      }
     }
   }
 
@@ -621,6 +789,10 @@ export class ObjectInteractionController {
         if (inlet === 1) {
           this.dispatchValue(node.id, 0, this.getSliderValue(node));
         }
+        break;
+
+      case "ezSlider":
+        if (inlet === 0) this.dispatchEzSliderOutput(node);
         break;
 
       case "message":
@@ -705,6 +877,7 @@ export class ObjectInteractionController {
 
       case "integer":
       case "float":
+      case "f":
         if (inlet === 0) this.dispatchValue(node.id, 0, node.args[0] ?? "0");
         break;
 
@@ -736,6 +909,28 @@ export class ObjectInteractionController {
           this.dispatchValue(node.id, 0, String(this.applyMathOp(node.type, left, right)));
         }
         break;
+
+      case "prepend":
+        if (inlet === 0) this.dispatchValue(node.id, 0, this.composePrependAppend(node, "bang", "prepend"));
+        break;
+
+      case "append":
+        if (inlet === 0) this.dispatchValue(node.id, 0, node.args.join(" "));
+        break;
+
+      case "pack":
+        if (inlet === 0) this.dispatchValue(node.id, 0, this.getPackSlots(node).join(" "));
+        break;
+
+      case "unpack": {
+        if (inlet !== 0) break;
+        const slots = this.getUnpackSlots(node);
+        const letters = node.args.length > 0 ? node.args : ["f", "f"];
+        for (let i = slots.length - 1; i >= 0; i--) {
+          this.dispatchValue(node.id, i, this.coerceUnpackOutput(letters[i] ?? "f", slots[i]));
+        }
+        break;
+      }
 
       case "s":
         if (inlet === 0) this.broadcastToReceivers(node.args[0] ?? "", n => this.dispatchBang(n.id, 0));
@@ -778,7 +973,7 @@ export class ObjectInteractionController {
           const step = Math.max(1, Math.floor(Number(node.args[1] ?? "10")));
           const cur  = this.drunkPositions.get(node.id) ?? Math.floor(Number(node.args[2] ?? "0"));
           const delta = Math.floor(Math.random() * step) * (Math.random() < 0.5 ? 1 : -1);
-          const next  = ((cur + delta) % max + max) % max;
+          const next  = Math.min(max - 1, Math.max(0, cur + delta));
           this.drunkPositions.set(node.id, next);
           node.args[2] = String(next);
           this.dispatchValue(node.id, 0, String(next));
@@ -825,6 +1020,33 @@ export class ObjectInteractionController {
           this.syncSliderThumb(node.id, clamped, node);
           this.graph.emit("display");
           this.dispatchValue(node.id, 0, clamped.toFixed(6));
+        }
+        break;
+
+      case "ezSlider":
+        if (inlet === 0) {
+          const parsed = Number.parseFloat(value);
+          if (Number.isNaN(parsed)) break;
+          const clamped = Math.max(0, Math.min(1, parsed));
+          node.args[2] = String(clamped);
+          const thumbEl = this.findNodeEl(node.id)?.querySelector<HTMLElement>(".pn-ezslider__thumb");
+          if (thumbEl) thumbEl.style.left = `${clamped * 100}%`;
+          this.graph.emit("display");
+          this.dispatchEzSliderOutput(node);
+        } else if (inlet === 1) {
+          if (isFinite(parseFloat(value))) {
+            node.args[0] = value.trim();
+            const field = this.findNodeEl(node.id)?.querySelector<HTMLInputElement>('input[data-ezslider-field="lo"]');
+            if (field && document.activeElement !== field) field.value = node.args[0];
+            this.graph.emit("display");
+          }
+        } else if (inlet === 2) {
+          if (isFinite(parseFloat(value))) {
+            node.args[1] = value.trim();
+            const field = this.findNodeEl(node.id)?.querySelector<HTMLInputElement>('input[data-ezslider-field="hi"]');
+            if (field && document.activeElement !== field) field.value = node.args[1];
+            this.graph.emit("display");
+          }
         }
         break;
 
@@ -981,6 +1203,24 @@ export class ObjectInteractionController {
         break;
       }
 
+      case "f": {
+        if (inlet === 0) {
+          const parsed = parseFloat(value);
+          if (!isNaN(parsed)) {
+            node.args[0] = String(parsed);
+            this.syncFLabel(node);
+            this.dispatchValue(node.id, 0, String(parsed));
+          }
+        } else if (inlet === 1) {
+          const parsed = parseFloat(value);
+          if (!isNaN(parsed)) {
+            node.args[0] = String(parsed);
+            this.syncFLabel(node);
+          }
+        }
+        break;
+      }
+
       case "t": {
         if (inlet !== 0) break;
         const letters = node.args.length > 0 ? node.args : ["i", "i"];
@@ -1001,6 +1241,55 @@ export class ObjectInteractionController {
           } else {
             this.dispatchValue(node.id, i, value);
           }
+        }
+        break;
+      }
+
+      case "prepend":
+      case "append": {
+        if (inlet !== 0) break;
+        const trimmed = value.trim();
+        if (trimmed === "set" || trimmed.startsWith("set ")) {
+          const payload = trimmed === "set" ? "" : trimmed.slice(4).trim();
+          node.args = payload ? payload.split(/\s+/) : [];
+          this.graph.emit("display");
+          return;
+        }
+        this.dispatchValue(node.id, 0, this.composePrependAppend(node, trimmed, node.type as "prepend" | "append"));
+        break;
+      }
+
+      case "pack": {
+        const slots = this.getPackSlots(node);
+        if (inlet < 0 || inlet >= slots.length) break;
+        slots[inlet] = value;
+        this.packSlots.set(node.id, slots);
+        if (inlet === 0) {
+          this.dispatchValue(node.id, 0, slots.join(" "));
+        }
+        break;
+      }
+
+      case "unpack": {
+        if (inlet !== 0) break;
+        const trimmed = value.trim();
+        const slots = this.getUnpackSlots(node);
+        const letters = node.args.length > 0 ? node.args : ["f", "f"];
+        // `set <atoms>` updates stored values silently — same convention as pack/prepend.
+        if (trimmed === "set" || trimmed.startsWith("set ")) {
+          const payload = trimmed === "set" ? "" : trimmed.slice(4).trim();
+          const atoms = payload ? payload.split(/\s+/) : [];
+          for (let i = 0; i < slots.length && i < atoms.length; i++) slots[i] = atoms[i];
+          this.unpackSlots.set(node.id, slots);
+          break;
+        }
+        const atoms = trimmed ? trimmed.split(/\s+/) : [];
+        const count = Math.min(slots.length, atoms.length);
+        for (let i = 0; i < count; i++) slots[i] = atoms[i];
+        this.unpackSlots.set(node.id, slots);
+        // Fire only the outlets that received an atom, right-to-left (Max).
+        for (let i = count - 1; i >= 0; i--) {
+          this.dispatchValue(node.id, i, this.coerceUnpackOutput(letters[i] ?? "f", atoms[i]));
         }
         break;
       }
@@ -1034,6 +1323,8 @@ export class ObjectInteractionController {
         const f = (i: number, def: number) => { const n = parseFloat(node.args[i] ?? ""); return isNaN(n) ? def : n; };
         if (inlet === 0) {
           const input = parseFloat(value);
+          const autoOn = (node.args[6] ?? "1") !== "0";
+          if (autoOn && !isNaN(input)) this.applyEzScaleAutoInput(node, input);
           // All four bounds must be present and numeric — until the user fills
           // them in, the object stays silent (no NaN dispatches).
           const inMinRaw  = parseFloat(node.args[0] ?? "");
@@ -1047,7 +1338,11 @@ export class ObjectInteractionController {
             // Active sub-range falls back to full bounds when outLo/outHi are blank.
             const outLo = f(4, outMin);
             const outHi = f(5, outMax);
-            const t = inMax === inMin ? 0 : (input - inMin) / (inMax - inMin);
+            // Pre-scale multiplier — applied to the raw input before mapping.
+            const multRaw = parseFloat(node.args[7] ?? "1");
+            const mult = isFinite(multRaw) ? multRaw : 1;
+            const scaledInput = input * mult;
+            const t = inMax === inMin ? 0 : (scaledInput - inMin) / (inMax - inMin);
             const result = outLo + t * (outHi - outLo);
             const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
             this.dispatchValue(node.id, 0, formatScaled(result, intMode));
@@ -1055,7 +1350,8 @@ export class ObjectInteractionController {
         } else if (inlet >= 1 && inlet <= 4) {
           if (parseFloat(value) === parseFloat(value) /* not NaN */) {
             node.args[inlet - 1] = value.trim();
-            // Bounds changed → re-clamp/canonicalize active range
+            // Bounds changed → re-clamp/canonicalize active range and
+            // reposition slider against the new bound span.
             if (inlet === 3 || inlet === 4) {
               const outMin = f(2, 0);
               const outMax = f(3, 127);
@@ -1068,7 +1364,27 @@ export class ObjectInteractionController {
               hi = Math.max(lowSide, Math.min(highSide, hi));
               node.args[4] = intMode ? String(Math.round(lo)) : canonicalizeBound(String(lo), false);
               node.args[5] = intMode ? String(Math.round(hi)) : canonicalizeBound(String(hi), false);
+              this.dispatchEzScaleRange(node);
+              this.syncEzScaleSliderVisuals(node);
             }
+            this.graph.emit("display");
+          }
+        } else if (inlet === 5 || inlet === 6) {
+          // Inlets 5/6: drive the active sub-range slider handles directly
+          // (lo and hi). Clamped to the bound extremes so a programmatic
+          // value past the bounds snaps in rather than blowing the slider.
+          const v = parseFloat(value);
+          if (v === v /* not NaN */) {
+            const outMin = f(2, 0);
+            const outMax = f(3, 127);
+            const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
+            const lowSide  = Math.min(outMin, outMax);
+            const highSide = Math.max(outMin, outMax);
+            const clamped  = Math.max(lowSide, Math.min(highSide, v));
+            const argIdx   = inlet === 5 ? 4 : 5; // 5→outLo (args[4]), 6→outHi (args[5])
+            node.args[argIdx] = intMode ? String(Math.round(clamped)) : canonicalizeBound(String(clamped), false);
+            this.dispatchEzScaleRange(node);
+            this.syncEzScaleSliderVisuals(node);
             this.graph.emit("display");
           }
         }
@@ -1250,7 +1566,7 @@ export class ObjectInteractionController {
       }
 
       case "vbuf*": {
-        const VBUF_PARAMS = new Set(["rate", "loop", "maxLen", "range"]);
+        const VBUF_PARAMS = new Set(["rate", "loop", "maxLen", "range", "loopStart", "loopLen"]);
         const tokens = value.trim().split(/\s+/);
         const head   = tokens[0] ?? "";
         const rest   = tokens.slice(1);
@@ -1713,17 +2029,59 @@ export class ObjectInteractionController {
 
   private updateEzScaleFromEvent(e: MouseEvent): void {
     if (!this.ezScaleDrag) return;
-    const { node, trackEl, which } = this.ezScaleDrag;
+    const { node, trackEl, which, startX, startLo, startHi } = this.ezScaleDrag;
 
     const outMin = parseFloat(node.args[2] ?? "0");
     const outMax = parseFloat(node.args[3] ?? "127");
     if (!isFinite(outMin) || !isFinite(outMax) || outMin === outMax) return;
 
     const rect = trackEl.getBoundingClientRect();
+    const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
+
+    if (which === "range") {
+      if (startX === undefined || startLo === undefined || startHi === undefined) return;
+      const deltaT = (e.clientX - startX) / rect.width;
+      const deltaVal = deltaT * (outMax - outMin);
+      const lowBound  = Math.min(outMin, outMax);
+      const highBound = Math.max(outMin, outMax);
+      // Compute screen-order bounds to correctly clamp the shifted range.
+      const screenLo  = Math.min(startLo, startHi);
+      const screenHi  = Math.max(startLo, startHi);
+      const rangeWidth = screenHi - screenLo;
+      let newScreenLo = Math.max(lowBound, Math.min(highBound - rangeWidth, screenLo + deltaVal));
+      const newScreenHi = newScreenLo + rangeWidth;
+      let newLo = startLo <= startHi ? newScreenLo : newScreenHi;
+      let newHi = startLo <= startHi ? newScreenHi : newScreenLo;
+      if (intMode) { newLo = Math.round(newLo); newHi = Math.round(newHi); }
+      node.args[4] = String(newLo);
+      node.args[5] = String(newHi);
+
+      const objectEl = trackEl.closest<HTMLElement>(".patch-object");
+      const fillEl   = objectEl?.querySelector<HTMLElement>(".pn-ezscale__fill");
+      const thumbLoEl = objectEl?.querySelector<HTMLElement>('.pn-ezscale__thumb[data-ezscale-thumb="lo"]');
+      const thumbHiEl = objectEl?.querySelector<HTMLElement>('.pn-ezscale__thumb[data-ezscale-thumb="hi"]');
+      const span = outMax - outMin;
+      const pctOf = (v: number) => Math.max(0, Math.min(1, (v - outMin) / span)) * 100;
+      const loPct = pctOf(newLo);
+      const hiPct = pctOf(newHi);
+      if (thumbLoEl) thumbLoEl.style.left = `${loPct}%`;
+      if (thumbHiEl) thumbHiEl.style.left = `${hiPct}%`;
+      if (fillEl) {
+        fillEl.style.left  = `${Math.min(loPct, hiPct)}%`;
+        fillEl.style.right = `${100 - Math.max(loPct, hiPct)}%`;
+      }
+      const edgeLo = objectEl?.querySelector<HTMLElement>(".pn-ezscale__edge-label--lo");
+      const edgeHi = objectEl?.querySelector<HTMLElement>(".pn-ezscale__edge-label--hi");
+      if (edgeLo) edgeLo.textContent = formatThumbValue(newLo, intMode);
+      if (edgeHi) edgeHi.textContent = formatThumbValue(newHi, intMode);
+      this.dispatchEzScaleRange(node);
+      this.graph.emit("display");
+      return;
+    }
+
     const t = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     let raw = outMin + t * (outMax - outMin);
 
-    const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
     if (intMode) raw = Math.round(raw);
 
     // Clamp lo ≤ hi (and respect min/max ordering: outMin may exceed outMax)
@@ -1761,19 +2119,338 @@ export class ObjectInteractionController {
       fillEl.style.left  = `${Math.min(loPct, hiPct)}%`;
       fillEl.style.right = `${100 - Math.max(loPct, hiPct)}%`;
     }
+    const edgeLo = objectEl?.querySelector<HTMLElement>(".pn-ezscale__edge-label--lo");
+    const edgeHi = objectEl?.querySelector<HTMLElement>(".pn-ezscale__edge-label--hi");
+    if (edgeLo) edgeLo.textContent = formatThumbValue(parseFloat(node.args[4] ?? String(outMin)), intMode);
+    if (edgeHi) edgeHi.textContent = formatThumbValue(parseFloat(node.args[5] ?? String(outMax)), intMode);
+    this.dispatchEzScaleRange(node);
     this.graph.emit("display");
+  }
+
+  private updateEzSliderFromEvent(e: MouseEvent): void {
+    if (!this.ezSliderDrag) return;
+    const { node, trackEl } = this.ezSliderDrag;
+
+    const rect = trackEl.getBoundingClientRect();
+    const t = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    node.args[2] = String(t);
+
+    const thumbEl = trackEl.querySelector<HTMLElement>(".pn-ezslider__thumb");
+    if (thumbEl) thumbEl.style.left = `${t * 100}%`;
+
+    this.dispatchEzSliderOutput(node);
+    this.graph.emit("display");
+  }
+
+  private dispatchEzSliderOutput(node: PatchNode): void {
+    const lo = parseFloat(node.args[0] ?? "");
+    const hi = parseFloat(node.args[1] ?? "");
+    const t  = parseFloat(node.args[2] ?? "0.5");
+    if (!isFinite(lo) || !isFinite(hi)) return;
+    const intMode = isIntForm(node.args[0] ?? "") && isIntForm(node.args[1] ?? "");
+    const result = lo + t * (hi - lo);
+    this.dispatchValue(node.id, 0, formatScaled(result, intMode));
+  }
+
+  private dispatchEzScaleRange(node: PatchNode): void {
+    const outMin = parseFloat(node.args[2] ?? "");
+    const outMax = parseFloat(node.args[3] ?? "");
+    if (!isFinite(outMin) || !isFinite(outMax)) return;
+    const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
+    const f = (i: number, def: number) => { const n = parseFloat(node.args[i] ?? ""); return isNaN(n) ? def : n; };
+    const lo = f(4, outMin);
+    const hi = f(5, outMax);
+    const fmt = (v: number) => intMode ? String(Math.round(v)) : String(v);
+    this.dispatchValue(node.id, 1, `${fmt(lo)} ${fmt(hi)}`);
+  }
+
+  /** Reposition the ezScale active-range thumbs, fill, and edge labels from
+   *  the node's current args[2..5] (outMin, outMax, outLo, outHi). Skips work
+   *  if the object isn't in the DOM yet. Used by the drag handler and any
+   *  cold-inlet path that mutates the active range without triggering a full
+   *  re-render. */
+  private syncEzScaleSliderVisuals(node: PatchNode): void {
+    const outMin = parseFloat(node.args[2] ?? "");
+    const outMax = parseFloat(node.args[3] ?? "");
+    if (!isFinite(outMin) || !isFinite(outMax) || outMin === outMax) return;
+    const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
+    const objectEl = this.panGroup.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`);
+    if (!objectEl) return;
+    const fillEl   = objectEl.querySelector<HTMLElement>(".pn-ezscale__fill");
+    const thumbLo  = objectEl.querySelector<HTMLElement>('.pn-ezscale__thumb[data-ezscale-thumb="lo"]');
+    const thumbHi  = objectEl.querySelector<HTMLElement>('.pn-ezscale__thumb[data-ezscale-thumb="hi"]');
+    const span = outMax - outMin;
+    const pctOf = (v: number) => Math.max(0, Math.min(1, (v - outMin) / span)) * 100;
+    const lo = parseFloat(node.args[4] ?? String(outMin));
+    const hi = parseFloat(node.args[5] ?? String(outMax));
+    const loPct = pctOf(lo);
+    const hiPct = pctOf(hi);
+    if (thumbLo) thumbLo.style.left = `${loPct}%`;
+    if (thumbHi) thumbHi.style.left = `${hiPct}%`;
+    if (fillEl) {
+      fillEl.style.left  = `${Math.min(loPct, hiPct)}%`;
+      fillEl.style.right = `${100 - Math.max(loPct, hiPct)}%`;
+    }
+    const edgeLo = objectEl.querySelector<HTMLElement>(".pn-ezscale__edge-label--lo");
+    const edgeHi = objectEl.querySelector<HTMLElement>(".pn-ezscale__edge-label--hi");
+    if (edgeLo) edgeLo.textContent = formatThumbValue(lo, intMode);
+    if (edgeHi) edgeHi.textContent = formatThumbValue(hi, intMode);
+  }
+
+  /** Auto-mode: expand inMin/inMax to include the latest observed input.
+   *  Mutates args + the input fields in-place and emits "display" so the text
+   *  panel stays in sync without paying for a full DOM rebuild on every value. */
+  private applyEzScaleAutoInput(node: PatchNode, input: number): void {
+    let changed = false;
+    const curMin = parseFloat(node.args[0] ?? "");
+    const curMax = parseFloat(node.args[1] ?? "");
+    if (!isFinite(curMin) || input < curMin) { node.args[0] = String(input); changed = true; }
+    if (!isFinite(curMax) || input > curMax) { node.args[1] = String(input); changed = true; }
+    if (!changed) return;
+    const objectEl = this.panGroup.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`);
+    const minField = objectEl?.querySelector<HTMLInputElement>('input[data-ezscale-field="inMin"]');
+    const maxField = objectEl?.querySelector<HTMLInputElement>('input[data-ezscale-field="inMax"]');
+    if (minField && document.activeElement !== minField) minField.value = node.args[0];
+    if (maxField && document.activeElement !== maxField) maxField.value = node.args[1];
+    this.graph.emit("display");
+  }
+
+  /** Walk outgoing edges from (fromNodeId, fromOutlet), transparently hopping
+   *  through `s`/`r` channels so output auto-range can see the real downstream
+   *  targets even when the patch routes through wireless sends. Depth-limited
+   *  and visited-tracked to avoid loops. */
+  private walkToActualTargets(
+    fromNodeId: string,
+    fromOutlet: number,
+    depth: number,
+    visited: Set<string>,
+  ): Array<{ node: PatchNode; toInlet: number }> {
+    if (depth > 5) return [];
+    const out: Array<{ node: PatchNode; toInlet: number }> = [];
+    for (const edge of this.graph.getEdges()) {
+      if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== fromOutlet) continue;
+      const target = this.graph.nodes.get(edge.toNodeId);
+      if (!target) continue;
+      if (target.type === "s") {
+        const channel = target.args[0] ?? "";
+        if (!channel) continue;
+        for (const r of this.graph.getNodes()) {
+          if (r.type !== "r" || (r.args[0] ?? "") !== channel) continue;
+          if (visited.has(r.id)) continue;
+          visited.add(r.id);
+          out.push(...this.walkToActualTargets(r.id, 0, depth + 1, visited));
+        }
+      } else {
+        out.push({ node: target, toInlet: edge.toInlet });
+      }
+    }
+    return out;
+  }
+
+  /** Auto-mode: when an ezScale's outlet is connected, copy the target inlet's
+   *  arg min/max into outMin/outMax (and reset the active sub-range to span the
+   *  full bounds). Idempotent — safe to call from the graph "change" handler. */
+  private syncEzScaleAutoOutput(): void {
+    for (const node of this.graph.getNodes()) {
+      if (node.type !== "ezScale") continue;
+      if ((node.args[6] ?? "1") === "0") continue;
+
+      const targets = this.walkToActualTargets(node.id, 0, 0, new Set([node.id]));
+      let resolved: { min: number; max: number; isFloat: boolean } | null = null;
+      for (const { node: t, toInlet } of targets) {
+        resolved = this.resolveTargetArgRange(t, toInlet);
+        if (resolved) break;
+      }
+      if (!resolved) continue;
+      const range = resolved;
+
+      // Format in int-form ("0", "4") only when the target arg is int-typed.
+      // Float args render as "0.0" / "4.0" so the int-mode rule doesn't round
+      // float-domain outputs (e.g. vbuf* rate 0..4).
+      const fmt = (n: number) => {
+        if (range.isFloat) return Number.isInteger(n) ? `${n}.0` : String(n);
+        return String(n);
+      };
+      // Honor the user's inverted flag so [auto] doesn't keep undoing manual inversion.
+      const inverted = (node.args[10] ?? "0") === "1";
+      const newMin = inverted ? fmt(range.max) : fmt(range.min);
+      const newMax = inverted ? fmt(range.min) : fmt(range.max);
+      if (node.args[2] === newMin && node.args[3] === newMax) continue;
+      node.args[2] = newMin;
+      node.args[3] = newMax;
+      // Reset active sub-range to span the new full bounds.
+      node.args[4] = newMin;
+      node.args[5] = newMax;
+    }
+  }
+
+  /** Auto-mode: when an ezScale's hot inlet has an upstream whose outlet
+   *  exposes a known numeric range, copy those bounds into inMin/inMax.
+   *  Symmetric to syncEzScaleAutoOutput. Skipped when no source advertises a
+   *  range — the runtime learn-from-values path in applyEzScaleAutoInput
+   *  takes over for those cases. */
+  private syncEzScaleAutoInput(): void {
+    for (const node of this.graph.getNodes()) {
+      if (node.type !== "ezScale") continue;
+      if ((node.args[6] ?? "1") === "0") continue;
+
+      const sources = this.walkFromActualSources(node.id, 0, 0, new Set([node.id]));
+      let resolved: { min: number; max: number; isFloat: boolean } | null = null;
+      for (const { node: s, fromOutlet } of sources) {
+        resolved = this.resolveSourceOutletRange(s, fromOutlet);
+        if (resolved) break;
+      }
+      if (!resolved) continue;
+      const range = resolved;
+      const fmt = (n: number) => {
+        if (range.isFloat) return Number.isInteger(n) ? `${n}.0` : String(n);
+        return String(n);
+      };
+      const newMin = fmt(range.min);
+      const newMax = fmt(range.max);
+      if (node.args[0] === newMin && node.args[1] === newMax) continue;
+      node.args[0] = newMin;
+      node.args[1] = newMax;
+    }
+  }
+
+  /** Walk incoming edges into (toNodeId, toInlet), transparently hopping
+   *  through `r` ← `s` channels so input auto-range can see the real upstream
+   *  sources even when the patch routes through wireless sends. Mirror of
+   *  walkToActualTargets. */
+  private walkFromActualSources(
+    toNodeId: string,
+    toInlet: number,
+    depth: number,
+    visited: Set<string>,
+  ): Array<{ node: PatchNode; fromOutlet: number }> {
+    if (depth > 5) return [];
+    const out: Array<{ node: PatchNode; fromOutlet: number }> = [];
+    for (const edge of this.graph.getEdges()) {
+      if (edge.toNodeId !== toNodeId || edge.toInlet !== toInlet) continue;
+      const source = this.graph.nodes.get(edge.fromNodeId);
+      if (!source) continue;
+      if (source.type === "r") {
+        const channel = source.args[0] ?? "";
+        if (!channel) continue;
+        for (const s of this.graph.getNodes()) {
+          if (s.type !== "s" || (s.args[0] ?? "") !== channel) continue;
+          if (visited.has(s.id)) continue;
+          visited.add(s.id);
+          out.push(...this.walkFromActualSources(s.id, 0, depth + 1, visited));
+        }
+      } else {
+        out.push({ node: source, fromOutlet: edge.fromOutlet });
+      }
+    }
+    return out;
+  }
+
+  /** Known numeric range of `source`'s outlet `fromOutlet`, or null if the
+   *  source doesn't advertise one. Extension point for future bounded sources
+   *  (e.g. counter, random) — add a case here. */
+  private resolveSourceOutletRange(source: PatchNode, fromOutlet: number): { min: number; max: number; isFloat: boolean } | null {
+    if (source.type === "drunk" && fromOutlet === 0) {
+      const raw = source.args[0] ?? "";
+      const fallback = OBJECT_DEFS["drunk"]?.args[0]?.default ?? "";
+      const max = parseInt(raw !== "" ? raw : fallback, 10);
+      if (!Number.isFinite(max) || max <= 0) return null;
+      return { min: 0, max: max - 1, isFloat: false };
+    }
+    return null;
+  }
+
+  /** Find the min/max of the arg/slider/param controlled by `toInlet` on `target`.
+   *  - `attribute` node → inlet i = visible arg i of its target type.
+   *  - `js~` node → side-inlets (index ≥ JS_EFFECT_SIDE_INLET_START) map to JSFX sliders, which carry min/max.
+   *  - `reaperVideo*` node → side-inlets map to @param declarations, which carry min/max.
+   *  - Otherwise, look up the inlet's port via the target spec; fall back to the first non-hidden arg with min/max.
+   *  `isFloat` lets the caller render bounds in float-form so the int-mode output rule doesn't kick in. */
+  private resolveTargetArgRange(target: PatchNode, toInlet: number): { min: number; max: number; isFloat: boolean } | null {
+    if (target.type === "attribute") {
+      const targetType = target.args[0] ?? "";
+      const def = OBJECT_DEFS[targetType];
+      if (!def) return null;
+      const visible = getVisibleArgs(def);
+      const arg = visible[toInlet];
+      if (arg && Number.isFinite(arg.min) && Number.isFinite(arg.max)) {
+        return { min: arg.min as number, max: arg.max as number, isFloat: arg.type === "float" };
+      }
+      return null;
+    }
+    if (target.type === "js~") {
+      const idx = toInlet - JS_EFFECT_SIDE_INLET_START;
+      if (idx < 0) return null;
+      const slider = extractJsEffectSliders(target.args[0] ?? "")[idx];
+      if (slider && Number.isFinite(slider.min) && Number.isFinite(slider.max)) {
+        // JSFX sliders are float-valued (step may be ≥1, but the runtime uses floats throughout).
+        return { min: slider.min, max: slider.max, isFloat: true };
+      }
+      return null;
+    }
+    if (target.type === "reaperVideo*") {
+      const port = target.inlets.find(p => p.index === toInlet);
+      if (!port || port.side !== "left") return null;
+      const params = extractReaperVideoParams(target.args[0] ?? "");
+      const sideInlets = target.inlets.filter(p => p.side === "left").sort((a, b) => a.index - b.index);
+      const sideIdx = sideInlets.findIndex(p => p.index === toInlet);
+      const param = sideIdx >= 0 ? params[sideIdx] : undefined;
+      if (param && Number.isFinite(param.min) && Number.isFinite(param.max)) {
+        return { min: param.min, max: param.max, isFloat: true };
+      }
+      return null;
+    }
+    const def = OBJECT_DEFS[target.type];
+    if (!def) return null;
+    for (const arg of def.args) {
+      if (arg.hidden) continue;
+      if (Number.isFinite(arg.min) && Number.isFinite(arg.max)) {
+        return { min: arg.min as number, max: arg.max as number, isFloat: arg.type === "float" };
+      }
+    }
+    return null;
   }
 
   /** Commit an ezScale field edit (called from focusout / Enter). Validates the
    *  parsed value, writes it to args, and clamps the active range when bounds
    *  shrink or the int/float mode flips. */
+  private commitEzSliderField(input: HTMLInputElement): void {
+    const objectEl = input.closest<HTMLElement>(".patch-object");
+    const node = objectEl ? this.getNode(objectEl) : null;
+    if (!node || node.type !== "ezSlider") return;
+
+    const fieldKey = input.dataset.ezsliderField ?? "";
+    const argIdx = fieldKey === "lo" ? 0 : fieldKey === "hi" ? 1 : -1;
+    if (argIdx < 0) return;
+
+    const raw = input.value.trim();
+    const parsed = parseFloat(raw);
+    if (!isFinite(parsed)) {
+      input.value = node.args[argIdx] ?? "";
+      return;
+    }
+
+    if (node.args[argIdx] === raw) return;
+    node.args[argIdx] = raw;
+
+    const track = objectEl?.querySelector<HTMLElement>(".pn-ezslider__track");
+    const thumb = objectEl?.querySelector<HTMLElement>(".pn-ezslider__thumb");
+    const lo = parseFloat(node.args[0] ?? "");
+    const hi = parseFloat(node.args[1] ?? "");
+    const boundsReady = isFinite(lo) && isFinite(hi);
+    if (track) track.classList.toggle("pn-ezslider__track--inert", !boundsReady);
+    if (thumb) thumb.style.display = boundsReady ? "" : "none";
+
+    this.graph.emit("change");
+  }
+
   private commitEzScaleField(input: HTMLInputElement): void {
     const objectEl = input.closest<HTMLElement>(".patch-object");
     const node = objectEl ? this.getNode(objectEl) : null;
     if (!node || node.type !== "ezScale") return;
 
     const fieldKey = input.dataset.ezscaleField ?? "";
-    const argIdx = ({ inMin: 0, inMax: 1, outMin: 2, outMax: 3 } as Record<string, number>)[fieldKey];
+    const argIdx = ({ inMin: 0, inMax: 1, outMin: 2, outMax: 3, mult: 7 } as Record<string, number>)[fieldKey];
     if (argIdx === undefined) return;
 
     const raw = input.value.trim();
@@ -1820,6 +2497,8 @@ export class ObjectInteractionController {
       this.dispatchValue(this.sliderDrag.node.id, 0, this.getSliderValue(this.sliderDrag.node));
     } else if (this.ezScaleDrag) {
       this.updateEzScaleFromEvent(e);
+    } else if (this.ezSliderDrag) {
+      this.updateEzSliderFromEvent(e);
     } else if (this.numboxDrag) {
       this.updateNumboxFromEvent(e);
     } else if (this.bufWaveDrag) {
@@ -1830,8 +2509,14 @@ export class ObjectInteractionController {
   }
 
   private handleSliderUp(e: MouseEvent): void {
-    if (e.button !== 0) return;
-
+    // Don't gate on `e.button !== 0`: a stuck slider drag (cursor glued to
+    // a thumb, no change event ever fires, and so the new lo/hi values never
+    // get persisted to localStorage) is much worse than ending a drag early
+    // on a stray middle/right release. Drag-start paths are gated on button 0,
+    // so any mouseup arriving mid-drag is from a real release.
+    //
+    // Listener teardown is handled by the dragSession that wrapped the
+    // mousedown that started this drag — we just commit state here.
     if (this.sliderDrag) {
       const { node } = this.sliderDrag;
       this.updateSliderFromEvent(e);
@@ -1839,15 +2524,18 @@ export class ObjectInteractionController {
       this.dispatchValue(node.id, 0, this.getSliderValue(node));
       this.sliderDrag = null;
       document.body.classList.remove("pn-state-slider-drag");
-      document.removeEventListener("mousemove", this.onDocMouseMove);
-      document.removeEventListener("mouseup", this.onDocMouseUp);
     } else if (this.ezScaleDrag) {
       this.updateEzScaleFromEvent(e);
       this.graph.emit("change");
       this.ezScaleDrag = null;
       document.body.classList.remove("pn-state-slider-drag");
-      document.removeEventListener("mousemove", this.onDocMouseMove);
-      document.removeEventListener("mouseup", this.onDocMouseUp);
+    } else if (this.ezSliderDrag) {
+      const { node } = this.ezSliderDrag;
+      this.updateEzSliderFromEvent(e);
+      this.graph.emit("change");
+      this.dispatchEzSliderOutput(node);
+      this.ezSliderDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
     } else if (this.numboxDrag) {
       const { node } = this.numboxDrag;
       this.updateNumboxFromEvent(e);
@@ -1855,17 +2543,64 @@ export class ObjectInteractionController {
       this.dispatchValue(node.id, 0, node.args[0] ?? "0");
       this.numboxDrag = null;
       document.body.classList.remove("pn-state-numbox-drag");
-      document.removeEventListener("mousemove", this.onDocMouseMove);
-      document.removeEventListener("mouseup", this.onDocMouseUp);
     } else if (this.bufWaveDrag) {
       this.completeBufWaveDrag(e);
-      document.removeEventListener("mousemove", this.onDocMouseMove);
-      document.removeEventListener("mouseup",   this.onDocMouseUp);
     } else if (this.vbufStripDrag) {
       this.completeVbufStripDrag(e);
-      document.removeEventListener("mousemove", this.onDocMouseMove);
-      document.removeEventListener("mouseup",   this.onDocMouseUp);
     }
+  }
+
+  /**
+   * Recovery commit when a drag ends without a real mouseup (window blur,
+   * Escape pressed). Mirrors `handleSliderUp` but skips the
+   * `update*FromEvent(e)` step — there is no fresh event, and the most
+   * recent value is already reflected in the drag state from the last
+   * mousemove. We still emit `change` and dispatch so localStorage persists
+   * the value and downstream listeners observe the final state.
+   */
+  private cancelWidgetDrag(): void {
+    if (this.sliderDrag) {
+      const { node } = this.sliderDrag;
+      this.graph.emit("change");
+      this.dispatchValue(node.id, 0, this.getSliderValue(node));
+      this.sliderDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
+    } else if (this.ezScaleDrag) {
+      this.graph.emit("change");
+      this.ezScaleDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
+    } else if (this.ezSliderDrag) {
+      const { node } = this.ezSliderDrag;
+      this.graph.emit("change");
+      this.dispatchEzSliderOutput(node);
+      this.ezSliderDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
+    } else if (this.numboxDrag) {
+      const { node } = this.numboxDrag;
+      this.graph.emit("change");
+      this.dispatchValue(node.id, 0, node.args[0] ?? "0");
+      this.numboxDrag = null;
+      document.body.classList.remove("pn-state-numbox-drag");
+    } else if (this.bufWaveDrag) {
+      this.completeBufWaveDrag(new MouseEvent("mouseup"));
+    } else if (this.vbufStripDrag) {
+      this.completeVbufStripDrag(new MouseEvent("mouseup"));
+    }
+  }
+
+  /**
+   * Start the shared mousemove/mouseup session for the slider/numbox/buf/vbuf
+   * widget-drag family. Replaces the older `document.addEventListener` pair —
+   * always pairs with a `window.blur` and `Escape` recovery hook so a missed
+   * mouseup can't strand the drag with the cursor glued to a thumb.
+   */
+  private startWidgetDragSession(): void {
+    this.currentDragSession?.end();
+    this.currentDragSession = startDragSession({
+      onMove:   (e) => this.handleSliderMove(e),
+      onUp:     (e) => { this.handleSliderUp(e); this.currentDragSession = null; },
+      onCancel: ()  => { this.cancelWidgetDrag(); this.currentDragSession = null; },
+    });
   }
 
   private updateBufWaveDragFromEvent(e: MouseEvent): void {
@@ -2187,6 +2922,14 @@ export class ObjectInteractionController {
         if (newType === "t") {
           ({ inlets: node.inlets, outlets: node.outlets } = deriveTriggerPorts(newArgs));
         }
+        if (newType === "pack") {
+          ({ inlets: node.inlets, outlets: node.outlets } = derivePackPorts(newArgs));
+          this.packSlots.delete(node.id);
+        }
+        if (newType === "unpack") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveUnpackPorts(newArgs));
+          this.unpackSlots.delete(node.id);
+        }
         if (newType === "sequencer") {
           ensureSequencerArgs(node.args);
           this.syncSequencerPorts(node);
@@ -2210,6 +2953,20 @@ export class ObjectInteractionController {
         node.args = newArgs;
         if (node.type === "t") {
           ({ inlets: node.inlets, outlets: node.outlets } = deriveTriggerPorts(newArgs));
+          for (const edge of this.graph.getEdges()) {
+            if (edge.fromNodeId === node.id && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
+          }
+        }
+        if (node.type === "pack") {
+          ({ inlets: node.inlets, outlets: node.outlets } = derivePackPorts(newArgs));
+          this.packSlots.delete(node.id);
+          for (const edge of this.graph.getEdges()) {
+            if (edge.toNodeId === node.id && edge.toInlet >= node.inlets.length) this.graph.removeEdge(edge.id);
+          }
+        }
+        if (node.type === "unpack") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveUnpackPorts(newArgs));
+          this.unpackSlots.delete(node.id);
           for (const edge of this.graph.getEdges()) {
             if (edge.fromNodeId === node.id && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
           }
@@ -2476,6 +3233,58 @@ export class ObjectInteractionController {
     return `${left} ${right}`;
   }
 
+  /** Build prepend/append output by joining stored args with the incoming message, capped at 256 atoms. */
+  private composePrependAppend(node: PatchNode, incoming: string, mode: "prepend" | "append"): string {
+    const stored = node.args.join(" ").trim();
+    const inc = incoming.trim();
+    const joined = mode === "prepend"
+      ? (stored && inc ? `${stored} ${inc}` : stored || inc)
+      : (inc && stored ? `${inc} ${stored}` : inc || stored);
+    const atoms = joined.split(/\s+/).filter(Boolean);
+    if (atoms.length > 256) {
+      console.warn(`[${node.type}] output truncated at 256 atoms`);
+      return atoms.slice(0, 256).join(" ");
+    }
+    return atoms.join(" ");
+  }
+
+  /** Lazily initialize and return the runtime slot values for a `pack` node. */
+  private getPackSlots(node: PatchNode): string[] {
+    let slots = this.packSlots.get(node.id);
+    if (!slots || slots.length !== node.inlets.length) {
+      const argSource = node.args.length > 0 ? node.args : ["f", "f"];
+      slots = node.inlets.map((_, i) => packSlotInit(argSource[i] ?? "f"));
+      this.packSlots.set(node.id, slots);
+    }
+    return slots;
+  }
+
+  /** Lazily initialize and return the runtime slot values for an `unpack` node. */
+  private getUnpackSlots(node: PatchNode): string[] {
+    let slots = this.unpackSlots.get(node.id);
+    if (!slots || slots.length !== node.outlets.length) {
+      const argSource = node.args.length > 0 ? node.args : ["f", "f"];
+      slots = node.outlets.map((_, i) => packSlotInit(argSource[i] ?? "f"));
+      this.unpackSlots.set(node.id, slots);
+    }
+    return slots;
+  }
+
+  /** Format a stored atom for emission from an `unpack` outlet, per the slot's
+   *  type letter (i → trunc to int, f → float, s/l/literal → passthrough). */
+  private coerceUnpackOutput(letter: string, atom: string): string {
+    const l = letter.toLowerCase();
+    if (l === "i") {
+      const n = parseFloat(atom);
+      return isNaN(n) ? "0" : String(Math.trunc(n));
+    }
+    if (l === "f") {
+      const n = parseFloat(atom);
+      return isNaN(n) ? "0" : String(n);
+    }
+    return atom;
+  }
+
   private getSliderValue(node: PatchNode): string {
     const val = Number.parseFloat(node.args[0] ?? "0");
     const clamped = Math.max(0, Math.min(1, isNaN(val) ? 0 : val));
@@ -2488,6 +3297,14 @@ export class ObjectInteractionController {
     if (el) {
       buildOdometerContent(el, parseFloat(node.args[0] ?? "0"), node.type === "float", null);
     }
+  }
+
+  private syncFLabel(node: PatchNode): void {
+    const nodeEl = this.findNodeEl(node.id);
+    const titleEl = nodeEl?.querySelector<HTMLElement>(".patch-object-title");
+    if (!titleEl) return;
+    const val = parseFloat(node.args[0] ?? "0");
+    titleEl.textContent = `f ${isNaN(val) ? "0" : String(parseFloat(val.toFixed(4)))}`;
   }
 
   private syncSliderThumb(nodeId: string, value: number, _node: PatchNode): void {
@@ -2743,11 +3560,34 @@ export class ObjectInteractionController {
         const s = parseFloat(args[0] ?? "");
         const e = parseFloat(args[1] ?? "");
         if (!Number.isFinite(s) || !Number.isFinite(e)) break;
-        const cs = Math.max(0, Math.min(1, s));
-        const ce = Math.max(0, Math.min(1, e));
-        node.args[6] = String(cs);
-        node.args[7] = String(ce);
-        vbn?.setRange(cs, ce);
+        if (!vbn) break;
+        vbn.setRange(s, e);
+        // Persist the post-shift values setRange actually stored, not the raw
+        // request — otherwise an overshooting `range` would re-clamp on reload.
+        node.args[6] = String(vbn.rangeStartNorm);
+        node.args[7] = String(vbn.rangeEndNorm);
+        this.graph.emit("display");
+        break;
+      }
+
+      case "loopStart": {
+        const v = parseFloat(args[0] ?? "");
+        if (!Number.isFinite(v)) break;
+        if (!vbn) break;
+        vbn.setLoopStart(v);
+        node.args[6] = String(vbn.rangeStartNorm);
+        node.args[7] = String(vbn.rangeEndNorm);
+        this.graph.emit("display");
+        break;
+      }
+
+      case "loopLen": {
+        const v = parseFloat(args[0] ?? "");
+        if (!Number.isFinite(v)) break;
+        if (!vbn) break;
+        vbn.setLoopLenMs(v);
+        node.args[6] = String(vbn.rangeStartNorm);
+        node.args[7] = String(vbn.rangeEndNorm);
         this.graph.emit("display");
         break;
       }
@@ -2759,6 +3599,28 @@ export class ObjectInteractionController {
         node.args[8] = "";
         this.graph.emit("change");
         break;
+
+      case "load": {
+        if (!vbn) break;
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "video/*";
+        input.style.display = "none";
+        input.addEventListener("change", () => {
+          const f = input.files?.[0];
+          input.remove();
+          if (!f) return;
+          void vbn.loadFile(f).then(() => {
+            if (vbn.duration > 0) {
+              node.args[2] = String(Math.max(1, Math.min(600, Math.ceil(vbn.duration))));
+            }
+            this.graph.emit("change");
+          });
+        });
+        document.body.appendChild(input);
+        input.click();
+        break;
+      }
 
       default:
         break;
@@ -3219,6 +4081,10 @@ export class ObjectInteractionController {
       this.commitEzScaleField(target);
       return;
     }
+    if (target instanceof HTMLInputElement && target.classList.contains("pn-ezslider__field")) {
+      this.commitEzSliderField(target);
+      return;
+    }
   }
 
   private handleCellKeyDown(e: KeyboardEvent): void {
@@ -3261,6 +4127,23 @@ export class ObjectInteractionController {
         const key = target.dataset.ezscaleField ?? "";
         const argIdx = ({ inMin: 0, inMax: 1, outMin: 2, outMax: 3 } as Record<string, number>)[key];
         if (node && argIdx !== undefined) target.value = node.args[argIdx] ?? "";
+        target.blur();
+      }
+      return;
+    }
+
+    if (target instanceof HTMLInputElement && target.classList.contains("pn-ezslider__field")) {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        target.blur(); // triggers focusout → commitEzSliderField
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        const objectEl = target.closest<HTMLElement>(".patch-object");
+        const node = objectEl ? this.getNode(objectEl) : null;
+        const key = target.dataset.ezsliderField ?? "";
+        const argIdx = key === "lo" ? 0 : key === "hi" ? 1 : -1;
+        if (node && argIdx >= 0) target.value = node.args[argIdx] ?? "";
         target.blur();
       }
       return;

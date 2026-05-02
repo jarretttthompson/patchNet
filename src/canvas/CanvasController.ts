@@ -6,6 +6,7 @@ import { ObjectEntryBox } from "./ObjectEntryBox";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvasSpace";
 import { getZoom, setZoomValue, MIN_ZOOM, MAX_ZOOM } from "./zoomState";
 import { OBJECT_DEFS, getObjectDef } from "../graph/objectDefs";
+import { startDragSession, type DragSession } from "./dragSession";
 import {
   getUserDefaultSize,
   setUserDefaultSize,
@@ -97,11 +98,13 @@ export class CanvasController {
   private readonly onDocClick: (e: MouseEvent) => void;
   private readonly onCableClick: (e: MouseEvent) => void;
   private readonly onPanMouseDown: (e: MouseEvent) => void;
-  private readonly onPanMouseMove: (e: MouseEvent) => void;
-  private readonly onPanMouseUp: (e: MouseEvent) => void;
   private readonly onDoubleClick: (e: MouseEvent) => void;
   private readonly onWheel: (e: WheelEvent) => void;
   private readonly onDocMouseMove: (e: MouseEvent) => void;
+  /** Single live drag session for pan + rubber-band. Mutually exclusive
+   *  modes (`isPanning` vs `isRubberBanding`); session installs blur +
+   *  Escape recovery so an alt-tab mid-pan can't strand the cursor. */
+  private panSession: DragSession | null = null;
 
   constructor(
     private readonly canvasEl: HTMLElement,
@@ -117,8 +120,6 @@ export class CanvasController {
     this.onDocClick = this.handleDocClick.bind(this);
     this.onCableClick = this.handleCableClick.bind(this);
     this.onPanMouseDown = this.handlePanMouseDown.bind(this);
-    this.onPanMouseMove = this.handlePanMouseMove.bind(this);
-    this.onPanMouseUp = this.handlePanMouseUp.bind(this);
     this.onDoubleClick = this.handleDoubleClick.bind(this);
     this.onWheel = this.handleWheel.bind(this);
     this.onDocMouseMove = (e: MouseEvent) => {
@@ -313,8 +314,8 @@ export class CanvasController {
     document.removeEventListener("keydown", this.onKeyDown);
     document.removeEventListener("keyup", this.onKeyUp);
     document.removeEventListener("click", this.onDocClick, true);
-    document.removeEventListener("mousemove", this.onPanMouseMove);
-    document.removeEventListener("mouseup", this.onPanMouseUp);
+    this.panSession?.end();
+    this.panSession = null;
     this.cables?.getSVGElement().removeEventListener("click", this.onCableClick);
     this.cableDraw = null;
     this.endPan();
@@ -629,8 +630,7 @@ export class CanvasController {
       this.suppressCanvasClick = true;
       this.closeMenu();
       this.updateCursor();
-      document.addEventListener("mousemove", this.onPanMouseMove);
-      document.addEventListener("mouseup", this.onPanMouseUp);
+      this.startPanSession();
       return;
     }
 
@@ -683,8 +683,26 @@ export class CanvasController {
     this.canvasEl.appendChild(el);
     this.rubberBandEl = el;
 
-    document.addEventListener("mousemove", this.onPanMouseMove);
-    document.addEventListener("mouseup", this.onPanMouseUp);
+    this.startPanSession();
+  }
+
+  /**
+   * Shared mousemove/mouseup session for pan and rubber-band. The two are
+   * mutually exclusive (gated on `isPanning` / `isRubberBanding`) so a
+   * single session covers either one. Installs `window.blur` + Escape
+   * recovery so a missed mouseup can't strand the user mid-pan.
+   */
+  private startPanSession(): void {
+    this.panSession?.end();
+    this.panSession = startDragSession({
+      onMove:   (e) => this.handlePanMouseMove(e),
+      onUp:     (e) => this.handlePanMouseUp(e),
+      onCancel: ()  => {
+        // Pan: just stop. Rubber-band: discard selection (don't commit).
+        if (this.isPanning) this.endPan();
+        else if (this.isRubberBanding) this.endRubberBand(false);
+      },
+    });
   }
 
   private updateRubberBand(e: MouseEvent): void {
@@ -730,8 +748,8 @@ export class CanvasController {
 
     this.rubberBandEl?.remove();
     this.rubberBandEl = null;
-    document.removeEventListener("mousemove", this.onPanMouseMove);
-    document.removeEventListener("mouseup", this.onPanMouseUp);
+    this.panSession?.end();
+    this.panSession = null;
   }
 
   // ── Context menu ───────────────────────────────────────────────────
@@ -854,8 +872,8 @@ export class CanvasController {
 
   private endPan(): void {
     this.isPanning = false;
-    document.removeEventListener("mousemove", this.onPanMouseMove);
-    document.removeEventListener("mouseup", this.onPanMouseUp);
+    this.panSession?.end();
+    this.panSession = null;
     this.updateCursor();
   }
 

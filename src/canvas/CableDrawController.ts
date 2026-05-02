@@ -1,6 +1,7 @@
 import type { PatchGraph } from "../graph/PatchGraph";
 import { CableRenderer, CABLE_SNAP_RADIUS_PX, getPortPos } from "./CableRenderer";
 import { getZoom } from "./zoomState";
+import { startDragSession, type DragSession } from "./dragSession";
 
 interface DrawState {
   /** The port the user started dragging from */
@@ -42,8 +43,7 @@ export class CableDrawController {
   private suppressCableClick = false;
 
   private readonly onMouseDown: (e: MouseEvent) => void;
-  private readonly onMouseMove: (e: MouseEvent) => void;
-  private readonly onMouseUp: (e: MouseEvent) => void;
+  private session: DragSession | null = null;
 
   constructor(
     private readonly canvasEl: HTMLElement,
@@ -51,10 +51,20 @@ export class CableDrawController {
     private readonly cables: CableRenderer,
   ) {
     this.onMouseDown = this.handleMouseDown.bind(this);
-    this.onMouseMove = this.handleMouseMove.bind(this);
-    this.onMouseUp = this.handleMouseUp.bind(this);
 
     this.canvasEl.addEventListener("mousedown", this.onMouseDown);
+  }
+
+  /** Start the shared mousemove/mouseup session for cable drawing. The
+   *  session installs `window.blur` and `Escape` recovery so a missed
+   *  mouseup leaves no ghost cable and no leaked listeners. */
+  private startCableSession(): void {
+    this.session?.end();
+    this.session = startDragSession({
+      onMove:   (e) => this.handleMouseMove(e),
+      onUp:     (e) => this.handleMouseUp(e),
+      onCancel: ()  => this.cancel(),
+    });
   }
 
   isDrawing(): boolean {
@@ -73,8 +83,8 @@ export class CableDrawController {
 
   destroy(): void {
     this.canvasEl.removeEventListener("mousedown", this.onMouseDown);
-    document.removeEventListener("mousemove", this.onMouseMove);
-    document.removeEventListener("mouseup", this.onMouseUp);
+    this.session?.end();
+    this.session = null;
     this.cables.clearGhost();
   }
 
@@ -156,8 +166,7 @@ export class CableDrawController {
             this.cables.startGhost(anchor.x, anchor.y, cursorX, cursorY);
           }
 
-          document.addEventListener("mousemove", this.onMouseMove);
-          document.addEventListener("mouseup", this.onMouseUp);
+          this.startCableSession();
           return;
         }
       }
@@ -199,8 +208,7 @@ export class CableDrawController {
     const cursorY    = (e.clientY - canvasRect.top)  / z;
     this.cables.startGhost(from.x, from.y, cursorX, cursorY);
 
-    document.addEventListener("mousemove", this.onMouseMove);
-    document.addEventListener("mouseup", this.onMouseUp);
+    this.startCableSession();
   }
 
   /**
@@ -261,8 +269,7 @@ export class CableDrawController {
 
     this.startedDragFromCableBody = true;
 
-    document.addEventListener("mousemove", this.onMouseMove);
-    document.addEventListener("mouseup", this.onMouseUp);
+    this.startCableSession();
     return true;
   }
 
@@ -415,7 +422,7 @@ export class CableDrawController {
     }
     this.cables.clearGhost();
     this.draw = null;
-    document.removeEventListener("mousemove", this.onMouseMove);
-    document.removeEventListener("mouseup", this.onMouseUp);
+    this.session?.end();
+    this.session = null;
   }
 }

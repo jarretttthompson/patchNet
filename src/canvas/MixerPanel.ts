@@ -2,6 +2,7 @@ import type { PatchGraph } from "../graph/PatchGraph";
 import type { AudioGraph } from "../runtime/AudioGraph";
 import type { PatchNode } from "../graph/PatchNode";
 import { mixerChannelCount } from "../graph/objectDefs";
+import { startDragSession } from "./dragSession";
 
 function parseMixerFloats(raw: string, count: number, defaultVal: number): number[] {
   const parts = raw ? raw.split(",") : [];
@@ -146,13 +147,15 @@ export class MixerPanel {
 
       setFromEvent(e);
 
-      const onMove = (ev: MouseEvent) => setFromEvent(ev);
-      const onUp   = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup",   onUp);
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup",   onUp);
+      // Fader value commits live on every mousemove via applyGain, so blur/
+      // Escape don't need a special commit path — onCancel is implicit
+      // (just tear down listeners). The session install of window.blur +
+      // Escape recovery is what we're after: a missed mouseup outside the
+      // window won't leave the fader tracking the cursor.
+      startDragSession({
+        onMove: (ev) => setFromEvent(ev),
+        onUp:   ()   => { /* nothing to commit — applyGain already ran */ },
+      });
     });
 
     // ── Readout + label ───────────────────────────────────────────────

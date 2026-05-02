@@ -1,5 +1,5 @@
 import { PatchEdge, type PatchEdgeData } from "./PatchEdge";
-import { canonicalizeType, deriveBufferPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "./objectDefs";
+import { canonicalizeType, deriveBufferPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, fillCreationDefaults, getObjectDef } from "./objectDefs";
 import { PatchNode, type PatchNodeData } from "./PatchNode";
 import { parsePatch } from "../serializer/parse";
 import { getBlobSchema, isBlobPlaceholder, serializePatch, serializePatchForDisplay } from "../serializer/serialize";
@@ -18,10 +18,17 @@ export class PatchGraph {
   addNode(type: string, x: number, y: number, args: string[] = []): PatchNode {
     type = canonicalizeType(type);
     const objectDef = getObjectDef(type);
+    args = fillCreationDefaults(objectDef, args);
     let inlets  = objectDef.inlets;
     let outlets = objectDef.outlets;
     if (type === "t") {
       ({ inlets, outlets } = deriveTriggerPorts(args));
+    }
+    if (type === "pack") {
+      ({ inlets, outlets } = derivePackPorts(args));
+    }
+    if (type === "unpack") {
+      ({ inlets, outlets } = deriveUnpackPorts(args));
     }
     if (type === "sequencer") {
       ensureSequencerArgs(args);

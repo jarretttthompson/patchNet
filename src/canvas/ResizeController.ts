@@ -1,6 +1,7 @@
 import { PatchGraph } from "../graph/PatchGraph";
 import { checkOverlap, type Box } from "./OverlapGuard";
 import { getZoom } from "./zoomState";
+import { startDragSession, type DragSession } from "./dragSession";
 
 const MIN_WIDTH = 28;
 const MIN_HEIGHT = 24;
@@ -29,10 +30,9 @@ export class ResizeController {
   private readonly graph: PatchGraph;
 
   private state: ResizeState | null = null;
+  private session: DragSession | null = null;
 
   private readonly onMouseDown: (event: MouseEvent) => void;
-  private readonly onMouseMove: (event: MouseEvent) => void;
-  private readonly onMouseUp: (event: MouseEvent) => void;
 
   constructor(
     panGroup: HTMLElement,
@@ -43,8 +43,6 @@ export class ResizeController {
     this.graph = graph;
 
     this.onMouseDown = this.handleMouseDown.bind(this);
-    this.onMouseMove = this.handleMouseMove.bind(this);
-    this.onMouseUp = this.handleMouseUp.bind(this);
 
     this.panGroup.addEventListener("mousedown", this.onMouseDown);
   }
@@ -67,6 +65,12 @@ export class ResizeController {
 
     event.preventDefault();
     event.stopPropagation();
+
+    // Re-entrancy guard: if a prior resize's mouseup was missed, force-end
+    // it before starting a new one.
+    if (this.state) {
+      this.commitAndEnd();
+    }
 
     // Per-object resize floor — when the body has been wrapped in a
     // .pn-stage, the stage's measured layout box is the natural minimum
@@ -92,8 +96,11 @@ export class ResizeController {
 
     objectEl.classList.add("patch-object--resizing");
 
-    document.addEventListener("mousemove", this.onMouseMove);
-    document.addEventListener("mouseup", this.onMouseUp);
+    this.session = startDragSession({
+      onMove:   (e) => this.handleMouseMove(e),
+      onUp:     ()  => this.commitAndEnd(),
+      onCancel: ()  => this.cancelAndEnd(),
+    });
   }
 
   private handleMouseMove(event: MouseEvent): void {
@@ -136,33 +143,46 @@ export class ResizeController {
     this.onResize?.(this.state.nodeId, newWidth, newHeight);
   }
 
-  private handleMouseUp(_event: MouseEvent): void {
-    if (!this.state) {
-      return;
-    }
+  /** Normal mouseup path — commit the last non-colliding extent. */
+  private commitAndEnd(): void {
+    if (!this.state) return;
 
-    // Commit the last non-colliding extent — handleMouseMove already kept
-    // lastValidWidth/Height in sync; recomputing here would re-introduce the
-    // raw mouse delta and bypass the clamp.
     const finalWidth  = this.state.lastValidWidth;
     const finalHeight = this.state.lastValidHeight;
+    const { element, nodeId } = this.state;
 
-    this.state.element.style.width  = `${finalWidth}px`;
-    this.state.element.style.height = `${finalHeight}px`;
-    this.state.element.classList.remove("patch-object--resizing");
+    element.style.width  = `${finalWidth}px`;
+    element.style.height = `${finalHeight}px`;
 
-    this.graph.setNodeSize(this.state.nodeId, finalWidth, finalHeight);
+    // Clear class on live DOM BEFORE setNodeSize emits "change" and
+    // potentially rebuilds the element — otherwise the class lands on an
+    // orphan and the cursor stays in the resize state.
+    element.classList.remove("patch-object--resizing");
+
+    this.graph.setNodeSize(nodeId, finalWidth, finalHeight);
 
     this.state = null;
+    this.session = null;
+  }
 
-    document.removeEventListener("mousemove", this.onMouseMove);
-    document.removeEventListener("mouseup", this.onMouseUp);
+  /** Recovery path for blur/Escape — restore the pre-resize dimensions. */
+  private cancelAndEnd(): void {
+    if (!this.state) return;
+
+    const { element, startWidth, startHeight, nodeId } = this.state;
+    element.style.width  = `${startWidth}px`;
+    element.style.height = `${startHeight}px`;
+    element.classList.remove("patch-object--resizing");
+    this.onResize?.(nodeId, startWidth, startHeight);
+
+    this.state = null;
+    this.session = null;
   }
 
   destroy(): void {
     this.panGroup.removeEventListener("mousedown", this.onMouseDown);
-    document.removeEventListener("mousemove", this.onMouseMove);
-    document.removeEventListener("mouseup", this.onMouseUp);
+    this.session?.end();
+    this.session = null;
     this.state = null;
   }
 }

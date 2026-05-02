@@ -1,5 +1,5 @@
 import { PatchEdge } from "../graph/PatchEdge";
-import { canonicalizeType, deriveBufferPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
+import { canonicalizeType, deriveBufferPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
 import { PatchNode } from "../graph/PatchNode";
 import type { PortType } from "../graph/PatchNode";
 import { derivePortsFromCode } from "../canvas/codeboxPorts";
@@ -267,6 +267,14 @@ export function parsePatch(text: string): ParsedPatch {
 
       if (type === "t") {
         ({ inlets, outlets } = deriveTriggerPorts(args));
+      }
+
+      if (type === "pack") {
+        ({ inlets, outlets } = derivePackPorts(args));
+      }
+
+      if (type === "unpack") {
+        ({ inlets, outlets } = deriveUnpackPorts(args));
       }
 
       if (type === "sequencer") {

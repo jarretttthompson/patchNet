@@ -28,23 +28,26 @@ export class LayerNode {
   private mediaFX:    ImageFXNode     | null = null;
   private videoFX:    VideoFXSource   | null = null;
 
-  scaleX = 1.0;
-  scaleY = 1.0;
-  posX   = 0.0;
-  posY   = 0.0;
+  scaleX  = 1.0;
+  scaleY  = 1.0;
+  posX    = 0.0;
+  posY    = 0.0;
+  opacity = 1.0;
 
   constructor(
     public readonly patchNodeId: string,
     public priority: number,
-    scaleX = 1.0,
-    scaleY = 1.0,
-    posX   = 0.0,
-    posY   = 0.0,
+    scaleX  = 1.0,
+    scaleY  = 1.0,
+    posX    = 0.0,
+    posY    = 0.0,
+    opacity = 1.0,
   ) {
-    this.scaleX = scaleX;
-    this.scaleY = scaleY;
-    this.posX   = posX;
-    this.posY   = posY;
+    this.scaleX  = scaleX;
+    this.scaleY  = scaleY;
+    this.posX    = posX;
+    this.posY    = posY;
+    this.opacity = opacity;
   }
 
   setMediaVideo(node: MediaVideoSource | null): void { this.mediaVideo = node; this.mediaImage = null; this.mediaFX = null; this.videoFX = null; }
@@ -60,9 +63,12 @@ export class LayerNode {
   }
 
   draw(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, this.opacity));
+
     // vFX nodes wrap mediaVideo — show placeholder while source video loads
     if (this.videoFX) {
-      if (!this.videoFX.isReady) return;
+      if (!this.videoFX.isReady) { ctx.restore(); return; }
       this.videoFX.process();
       const source = this.videoFX.canvas;
       const drawW = w * this.scaleX;
@@ -70,6 +76,7 @@ export class LayerNode {
       const x     = (w - drawW) / 2 + this.posX * w;
       const y     = (h - drawH) / 2 + this.posY * h;
       try { ctx.drawImage(source, x, y, drawW, drawH); } catch { /* skip */ }
+      ctx.restore();
       return;
     }
 
@@ -80,6 +87,7 @@ export class LayerNode {
         h,
         this.mediaVideo.hasError ? "video failed" : "loading video",
       );
+      ctx.restore();
       return;
     }
 
@@ -89,7 +97,7 @@ export class LayerNode {
       this.mediaImage?.isReady ? this.mediaImage.displaySource   :
       null;
 
-    if (!source) return;
+    if (!source) { ctx.restore(); return; }
 
     const drawW = w * this.scaleX;
     const drawH = h * this.scaleY;
@@ -101,6 +109,7 @@ export class LayerNode {
     } catch {
       // media not yet decodable — skip frame silently
     }
+    ctx.restore();
   }
 
   private drawVideoPlaceholder(

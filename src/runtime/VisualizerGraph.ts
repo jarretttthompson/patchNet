@@ -379,6 +379,7 @@ export class VisualizerGraph {
       if (!activeIds.has(id)) {
         this.videoBufferStateListeners.get(id)?.();
         this.videoBufferStateListeners.delete(id);
+        this.stopPositionLoop(id);
         vbn.destroy();
         this.videoBufferNodes.delete(id);
       }
@@ -443,6 +444,7 @@ export class VisualizerGraph {
         const scaleY   = parseFloat(node.args[3] ?? "1");
         const posX     = parseFloat(node.args[4] ?? "0");
         const posY     = parseFloat(node.args[5] ?? "0");
+        const opacity  = parseFloat(node.args[6] ?? "1");
         this.layerNodes.set(node.id, new LayerNode(
           node.id,
           isNaN(priority) ? 0  : priority,
@@ -450,6 +452,7 @@ export class VisualizerGraph {
           isNaN(scaleY)   ? 1  : scaleY,
           isNaN(posX)     ? 0  : posX,
           isNaN(posY)     ? 0  : posY,
+          isNaN(opacity)  ? 1  : opacity,
         ));
       }
 
@@ -595,10 +598,42 @@ export class VisualizerGraph {
           nodeId:     node.id,
         });
         this.videoBufferNodes.set(node.id, vbn);
-        const unsub = vbn.onStateChange(() => {
+        const unsubState = vbn.onStateChange(() => {
           this.videoBufferStateChangeCallback?.(node.id);
+          if (vbn.state === "play") this.startVideoBufferPositionLoop(node.id);
+          else this.stopPositionLoop(node.id);
+          this.fireIntOutlet(node.id, 5, vbn.effectiveDurMs);
+          this.fireFloatOutlet(node.id, 6, vbn.loopLenMs);
         });
-        this.videoBufferStateListeners.set(node.id, unsub);
+        const unsubEnd = vbn.onRangeEnd(() => {
+          this.fireOutlet(node.id, 2);
+        });
+        const unsubRange = vbn.onRangeChange(() => {
+          this.fireFloatOutlet(node.id, 3, vbn.loopStart);
+          this.fireFloatOutlet(node.id, 4, vbn.loopEnd);
+          this.fireFloatOutlet(node.id, 6, vbn.loopLenMs);
+        });
+        // Outlet 5 (duration ms) is rate-independent now, so no rate-change
+        // hook. Duration changes only on new recording / load / OPFS adopt,
+        // which are covered by onStateChange and the post-adopt fire below.
+        const unsubRate = () => {};
+        this.videoBufferStateListeners.set(node.id, () => {
+          unsubState();
+          unsubEnd();
+          unsubRange();
+          unsubRate();
+        });
+        // Reattach any persisted OPFS recording / loaded video. Subscribe
+        // BEFORE adopt so the resulting state emit drives the panel UI.
+        const storageKey = node.args[8] ?? "";
+        if (storageKey) {
+          void vbn.adoptStorage().then((adopted) => {
+            if (adopted) {
+              this.fireIntOutlet(node.id, 5, vbn.effectiveDurMs);
+              this.fireFloatOutlet(node.id, 6, vbn.loopLenMs);
+            }
+          });
+        }
       }
 
       if (node.type === "patchViz" && !this.patchVizNodes.has(node.id)) {
@@ -688,7 +723,7 @@ export class VisualizerGraph {
       if (vn.floating !== shouldFloat) vn.setFloat(shouldFloat);
     }
 
-    // Sync layer priority/scale/position in case args changed
+    // Sync layer priority/scale/position/opacity in case args changed
     for (const [id, layer] of this.layerNodes) {
       const pn = this.graph.nodes.get(id);
       if (!pn) continue;
@@ -697,11 +732,13 @@ export class VisualizerGraph {
       const scaleY   = parseFloat(pn.args[3] ?? "1");
       const posX     = parseFloat(pn.args[4] ?? "0");
       const posY     = parseFloat(pn.args[5] ?? "0");
+      const opacity  = parseFloat(pn.args[6] ?? "1");
       layer.priority = isNaN(priority) ? 0  : priority;
       layer.scaleX   = isNaN(scaleX)   ? 1  : scaleX;
       layer.scaleY   = isNaN(scaleY)   ? 1  : scaleY;
       layer.posX     = isNaN(posX)     ? 0  : posX;
       layer.posY     = isNaN(posY)     ? 0  : posY;
+      layer.opacity  = isNaN(opacity)  ? 1  : opacity;
     }
 
     // Apply mediaVideo transport from patch args (text / attribute edits)
@@ -1021,6 +1058,10 @@ export class VisualizerGraph {
         patchNode.args[5] = String(layer.posY);
         break;
       }
+      case "opacity":
+        layer.opacity = val;
+        patchNode.args[6] = String(val);
+        break;
       default:
         return;
     }
@@ -1288,6 +1329,20 @@ export class VisualizerGraph {
     this.positionLoops.set(patchNodeId, requestAnimationFrame(tick));
   }
 
+  private startVideoBufferPositionLoop(patchNodeId: string): void {
+    if (this.positionLoops.has(patchNodeId)) return;
+    const tick = () => {
+      const vbn = this.videoBufferNodes.get(patchNodeId);
+      if (!vbn || vbn.state !== "play") {
+        this.positionLoops.delete(patchNodeId);
+        return;
+      }
+      this.fireFloatOutlet(patchNodeId, 1, vbn.position);
+      this.positionLoops.set(patchNodeId, requestAnimationFrame(tick));
+    };
+    this.positionLoops.set(patchNodeId, requestAnimationFrame(tick));
+  }
+
   private stopPositionLoop(patchNodeId: string): void {
     const id = this.positionLoops.get(patchNodeId);
     if (id !== undefined) cancelAnimationFrame(id);
@@ -1308,6 +1363,16 @@ export class VisualizerGraph {
   private fireFloatOutlet(patchNodeId: string, outletIndex: number, value: number): void {
     if (!this.objectInteraction) return;
     const str = value.toFixed(4);
+    for (const edge of this.graph.getEdges()) {
+      if (edge.fromNodeId !== patchNodeId || edge.fromOutlet !== outletIndex) continue;
+      const target = this.graph.nodes.get(edge.toNodeId);
+      if (target) this.objectInteraction.deliverMessageValue(target, edge.toInlet, str);
+    }
+  }
+
+  private fireIntOutlet(patchNodeId: string, outletIndex: number, value: number): void {
+    if (!this.objectInteraction) return;
+    const str = String(Math.round(value));
     for (const edge of this.graph.getEdges()) {
       if (edge.fromNodeId !== patchNodeId || edge.fromOutlet !== outletIndex) continue;
       const target = this.graph.nodes.get(edge.toNodeId);

@@ -71,6 +71,14 @@ export class VideoBufferNode {
 
 
   private readonly _stateListeners = new Set<() => void>();
+  private readonly _rangeEndListeners = new Set<() => void>();
+  private readonly _rangeChangeListeners = new Set<() => void>();
+  private readonly _rateChangeListeners = new Set<() => void>();
+  /** Latched when checkRange has fired the end-of-range bang for the current
+   *  approach to tEnd, cleared once the playhead has wrapped or stepped well
+   *  back inside the window. Prevents one bang per rVFC tick while currentTime
+   *  is still settling after the seek-back. */
+  private _endFired = false;
 
   constructor(config: VideoBufferConfig) {
     this._maxSec = Math.max(1, config.maxSeconds);
@@ -111,8 +119,27 @@ export class VideoBufferNode {
   get loop():  boolean { return this._loop; }
   get nodeId(): string { return this._nodeId; }
   get duration(): number { return this._duration; }
+  /** Total media length in milliseconds — independent of playback rate.
+   *  Changes only when a new recording loads or finishes recording. */
+  get effectiveDurMs(): number { return this._duration * 1000; }
+  /** Length of the active loop window in ms (loopEnd − loopStart) × duration. */
+  get loopLenMs(): number { return (this.loopEnd - this.loopStart) * this._duration * 1000; }
   get video(): HTMLVideoElement { return this._playEl; }
   get hasRecording(): boolean { return this._duration > 0 || this._readHandle != null; }
+
+  /** Effective playback window in normalized 0..1. When no range is set
+   *  (rangeEnd ≤ rangeStart), the active window is the whole buffer [0, 1].
+   *  These are what outlets 3/4 (loopstart/loopend) emit. */
+  get loopStart(): number {
+    return this._rangeEndNorm > this._rangeStartNorm ? this._rangeStartNorm : 0;
+  }
+  get loopEnd(): number {
+    return this._rangeEndNorm > this._rangeStartNorm ? this._rangeEndNorm : 1;
+  }
+  /** Raw stored range (0,0 ⇒ cleared). For persistence — `loopStart`/`loopEnd`
+   *  fold the cleared state into [0,1], which is wrong to write back into args. */
+  get rangeStartNorm(): number { return this._rangeStartNorm; }
+  get rangeEndNorm():   number { return this._rangeEndNorm; }
 
   // ── MediaVideoSource conformance (LayerNode.setMediaVideo / VFX) ────
   get isReady(): boolean { return this._duration > 0 && this._playEl.readyState >= 2; }
@@ -140,10 +167,12 @@ export class VideoBufferNode {
 
   setRate(r: number): void {
     if (!Number.isFinite(r)) return;
-    // D1: forward only.
-    this._rate = Math.max(0, Math.abs(r));
-    this._playEl.playbackRate = Math.max(0.0625, Math.min(16, this._rate || 0.0625));
-    if (this._rate === 0) this._playEl.pause();
+    // D1: forward only. Browser playbackRate floor is 0.0625; below that
+    // is unreliable, so we clamp incoming values rather than supporting
+    // rate=0 as a pause shortcut (use pause()/stop() for that).
+    this._rate = Math.max(0.0625, Math.min(16, Math.abs(r)));
+    this._playEl.playbackRate = this._rate;
+    this.emitRateChange();
   }
 
   setLoop(v: boolean): void {
@@ -154,9 +183,30 @@ export class VideoBufferNode {
 
   /** Persistent playback window. `end <= start` clears the range. */
   setRange(normStart: number, normEnd: number): void {
-    const s = Math.max(0, Math.min(1, Number.isFinite(normStart) ? normStart : 0));
-    const e = Math.max(0, Math.min(1, Number.isFinite(normEnd)   ? normEnd   : 0));
-    if (e <= s) {
+    let s = Number.isFinite(normStart) ? normStart : 0;
+    let e = Number.isFinite(normEnd)   ? normEnd   : 0;
+    // Clear sentinel must be detected on raw inputs — once we shift/clip below,
+    // a request like `range 1.2 1.5` (length 0.3, fits in [0,1]) would no
+    // longer look like a clear and would correctly become [0.7, 1.0].
+    const clearing = e <= s;
+    if (!clearing) {
+      const len = e - s;
+      if (len <= 1) {
+        // Window fits in [0,1]. Shift to fit instead of clamping each end —
+        // independent clamping silently shrinks the window on overshoot
+        // (e.g. `range 0.8 1.3` → [0.8, 1.0], length 0.5 instead of 0.5),
+        // which ratchets the loop shorter on every random-walk bang.
+        if      (s < 0) { s = 0;        e = len;     }
+        else if (e > 1) { e = 1;        s = 1 - len; }
+      } else {
+        // Window can't fit — clip both ends (length intentionally not preserved).
+        s = Math.max(0, Math.min(1, s));
+        e = Math.max(0, Math.min(1, e));
+      }
+    }
+    const prevStart = this._rangeStartNorm;
+    const prevEnd   = this._rangeEndNorm;
+    if (clearing || e <= s) {
       this._rangeStartNorm = 0;
       this._rangeEndNorm   = 0;
     } else {
@@ -165,7 +215,39 @@ export class VideoBufferNode {
     }
     // Re-evaluate native loop vs. range loop.
     this._playEl.loop = this._loop && this._rangeEndNorm <= this._rangeStartNorm;
+    // If looping and playing, immediately restart from the new range start so
+    // every range update begins a fresh loop cycle rather than waiting for the
+    // playhead to drift out of the old window.
+    // Only seek when the new range is valid (non-cleared) — a cleared range
+    // (e ≤ s above) produces rangeStartNorm=0, and seeking to 0 here would
+    // erroneously jump to the start when a programmatic source sends lo/hi as
+    // two separate messages and the first message temporarily has lo > old-hi.
+    if (this._loop && this._state === "play" && this._duration > 0
+        && this._rangeEndNorm > this._rangeStartNorm
+        && (this._rangeStartNorm !== prevStart || this._rangeEndNorm !== prevEnd)) {
+      this._endFired = false;
+      this.precisionSeek(this._rangeStartNorm * this._duration);
+    }
     this.emitState();
+    if (this._rangeStartNorm !== prevStart || this._rangeEndNorm !== prevEnd) {
+      this.emitRangeChange();
+    }
+  }
+
+  /** Move the loop window to start at `normStart`, preserving its current length.
+   *  Length is taken from the active window (loopEnd − loopStart) — for an
+   *  unranged buffer this is 1.0, so the call is effectively a no-op. */
+  setLoopStart(normStart: number): void {
+    const len = this.loopEnd - this.loopStart;
+    this.setRange(normStart, normStart + len);
+  }
+
+  /** Resize the loop window in milliseconds, preserving its current start.
+   *  No-op when duration is unknown (would divide by zero). */
+  setLoopLenMs(ms: number): void {
+    if (this._duration <= 0) return;
+    const len = ms / (this._duration * 1000);
+    this.setRange(this.loopStart, this.loopStart + len);
   }
 
   async record(): Promise<void> {
@@ -270,6 +352,7 @@ export class VideoBufferNode {
     this._playEl.playbackRate = Math.max(0.0625, Math.min(16, this._rate || 0.0625));
     void this._playEl.play().catch(() => { /* autoplay rejection ok */ });
     this._state = "play";
+    this._endFired = false;
     this.startRangeWatchdog();
     this.emitState();
   }
@@ -293,6 +376,7 @@ export class VideoBufferNode {
     this._playEl.playbackRate = Math.max(0.0625, Math.min(16, this._rate || 0.0625));
     void this._playEl.play().catch(() => { /* autoplay rejection ok */ });
     this._state = "play";
+    this._endFired = false;
     this.startRangeWatchdog();
     this.emitState();
   }
@@ -339,15 +423,104 @@ export class VideoBufferNode {
       this._readHandle = null;
     }
     this._duration = 0;
+    this._stripFrames = [];
     this._playEl.removeAttribute("src");
     this._playEl.load();
     await videoBufferStorage.delete(this._nodeId);
     this.emitState();
   }
 
+  /** Load a local video file into the buffer. The file is written to the same
+   *  OPFS slot used by recordings, so playback / seek / range / loop / rate all
+   *  work identically. Filmstrip thumbnails are sampled by seeking through the
+   *  playback element after the file lands. */
+  async loadFile(file: File): Promise<void> {
+    if (!file || file.size === 0) return;
+    // Tear down any prior recording / playback.
+    this.stop();
+    if (this._blobUrl) { URL.revokeObjectURL(this._blobUrl); this._blobUrl = null; }
+    if (this._readHandle) { try { await this._readHandle.close(); } catch { /* ignore */ } this._readHandle = null; }
+    this._duration = 0;
+    this._stripFrames = [];
+    this.emitState();
+
+    // Write the file straight into OPFS at this node's key.
+    try {
+      const w = await videoBufferStorage.openWrite(this._nodeId);
+      await w.appendBlob(file);
+      await w.close();
+    } catch (err) {
+      console.warn(`[vbuf* ${this._nodeId}] loadFile: write failed`, err);
+      return;
+    }
+
+    await this.ensurePlaybackLoaded();
+    // Some containers (notably WebM without a Cues element) report duration
+    // as Infinity until a full scan completes — same trick we use on reload.
+    if (!isFinite(this._duration) || this._duration <= 0) {
+      try { await this.resolveDuration(); } catch { /* ignore */ }
+    }
+
+    await this.generateStripFrames();
+    this._state = "stop";
+    this.emitState();
+  }
+
+  /** Sample frames across the loaded recording for the filmstrip canvas.
+   *  Recording fills the strip chunk-by-chunk; loaded files have no chunk
+   *  stream, so we seek through the playback element instead. */
+  private async generateStripFrames(): Promise<void> {
+    const dur = this._duration;
+    if (!isFinite(dur) || dur <= 0) return;
+    const v = this._playEl;
+    if (v.readyState < 1) return;
+
+    const w = VideoBufferNode.STRIP_FRAME_W;
+    const h = VideoBufferNode.STRIP_FRAME_H;
+    const N = Math.min(VideoBufferNode.MAX_STRIP_FRAMES, 48);
+
+    for (let i = 0; i < N; i++) {
+      const t = ((i + 0.5) / N) * dur;
+      await this.seekAndWait(v, t);
+      const c = document.createElement("canvas");
+      c.width  = w;
+      c.height = h;
+      const ctx = c.getContext("2d");
+      if (!ctx) continue;
+      try {
+        ctx.drawImage(v, 0, 0, w, h);
+      } catch {
+        continue;
+      }
+      this._stripFrames.push(c);
+      this.emitState();
+    }
+    try { v.currentTime = 0; } catch { /* ignore */ }
+  }
+
+  private seekAndWait(v: HTMLVideoElement, t: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let done = false;
+      const cleanup = () => {
+        if (done) return; done = true;
+        v.removeEventListener("seeked", onSeek);
+        v.removeEventListener("error", onErr);
+        resolve();
+      };
+      const onSeek = () => cleanup();
+      const onErr  = () => cleanup();
+      v.addEventListener("seeked", onSeek);
+      v.addEventListener("error", onErr);
+      try { v.currentTime = Math.max(0, t); } catch { cleanup(); return; }
+      // Defensive timeout — a stuck seek would leave the loop hanging.
+      setTimeout(cleanup, 1500);
+    });
+  }
+
   /** Open the OPFS recording on patch reload — duration is read from the
    *  HTMLVideoElement once metadata loads. Returns true if a recording was
-   *  found. */
+   *  found. Also regenerates filmstrip thumbnails since those live in memory
+   *  only (the strip canvas is empty after reload until we re-sample). */
   async adoptStorage(): Promise<boolean> {
     const exists = await videoBufferStorage.exists(this._nodeId);
     if (!exists) return false;
@@ -357,12 +530,36 @@ export class VideoBufferNode {
     if (this._duration <= 0) {
       try { await this.resolveDuration(); } catch { /* ignore */ }
     }
+    if (this._duration > 0) {
+      this._stripFrames = [];
+      try { await this.generateStripFrames(); } catch { /* ignore */ }
+      this.emitState();
+    }
     return this._duration > 0;
   }
 
   onStateChange(fn: () => void): () => void {
     this._stateListeners.add(fn);
     return () => { this._stateListeners.delete(fn); };
+  }
+
+  /** Fires when playback hits the end of the active window — either the loop
+   *  wrap point or the one-shot stop point. Outlet 2 (bang) hangs off this. */
+  onRangeEnd(fn: () => void): () => void {
+    this._rangeEndListeners.add(fn);
+    return () => { this._rangeEndListeners.delete(fn); };
+  }
+
+  /** Fires when the persistent playback window (loopStart / loopEnd) changes.
+   *  Outlets 3 and 4 (loopstart / loopend floats) hang off this. */
+  onRangeChange(fn: () => void): () => void {
+    this._rangeChangeListeners.add(fn);
+    return () => { this._rangeChangeListeners.delete(fn); };
+  }
+
+  onRateChange(fn: () => void): () => void {
+    this._rateChangeListeners.add(fn);
+    return () => { this._rateChangeListeners.delete(fn); };
   }
 
   /** Filmstrip frames for the panel to draw — one canvas per recorded chunk.
@@ -376,6 +573,9 @@ export class VideoBufferNode {
     if (this._blobUrl) URL.revokeObjectURL(this._blobUrl);
     this._blobUrl = null;
     this._stateListeners.clear();
+    this._rangeEndListeners.clear();
+    this._rangeChangeListeners.clear();
+    this._rateChangeListeners.clear();
   }
 
   // ── Internal ────────────────────────────────────────────────────────
@@ -543,9 +743,18 @@ export class VideoBufferNode {
     const tEnd = e * dur;
     const tStart = s * dur;
     const preroll = VideoBufferNode.LOOP_PREROLL_S;
+
+    // Reset the end-of-range latch once the playhead has comfortably moved
+    // back inside the window (post-wrap or post-seek).
+    if (t < tEnd - preroll * 2) this._endFired = false;
+
     if (t >= tEnd - preroll) {
       if (this._loop) {
         this.precisionSeek(tStart);
+        if (!this._endFired) {
+          this._endFired = true;
+          this.emitRangeEnd();
+        }
       } else if (t >= tEnd - 1e-3) {
         this._playEl.pause();
         this._playEl.currentTime = tEnd;
@@ -553,6 +762,10 @@ export class VideoBufferNode {
         this._state = "stop";
         this.stopRangeWatchdog();
         this.emitState();
+        if (!this._endFired) {
+          this._endFired = true;
+          this.emitRangeEnd();
+        }
       }
     } else if (t < tStart - 1e-3) {
       this.precisionSeek(tStart);
@@ -597,19 +810,23 @@ export class VideoBufferNode {
     });
   }
 
-  /** Seek as precisely as possible. Uses fastSeek when available (Chrome —
-   *  closest-keyframe shortcut) for low-latency wraps; falls back to direct
-   *  currentTime assignment otherwise. */
   private precisionSeek(t: number): void {
-    type SeekableVideo = HTMLVideoElement & { fastSeek?: (t: number) => void };
-    const v = this._playEl as SeekableVideo;
-    if (typeof v.fastSeek === "function") {
-      try { v.fastSeek(Math.max(0, t)); return; } catch { /* fall through */ }
-    }
     this._playEl.currentTime = Math.max(0, t);
   }
 
   private emitState(): void {
     for (const fn of this._stateListeners) fn();
+  }
+
+  private emitRangeEnd(): void {
+    for (const fn of this._rangeEndListeners) fn();
+  }
+
+  private emitRangeChange(): void {
+    for (const fn of this._rangeChangeListeners) fn();
+  }
+
+  private emitRateChange(): void {
+    for (const fn of this._rateChangeListeners) fn();
   }
 }

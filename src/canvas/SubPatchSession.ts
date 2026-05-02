@@ -8,6 +8,7 @@ import { ResizeController } from "./ResizeController";
 import { UndoManager } from "../graph/UndoManager";
 import { renderObject } from "./ObjectRenderer";
 import { getObjectDef } from "../graph/objectDefs";
+import { startDragSession } from "./dragSession";
 import { VisualizerGraph } from "../runtime/VisualizerGraph";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvasSpace";
 
@@ -262,11 +263,33 @@ export class SubPatchSession {
       }
     };
 
-    const onMouseUp = () => {
+    const commitOnUp = () => {
       if (state?.moved) this.syncPorts();
       state = null;
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup",   onMouseUp);
+    };
+
+    /** Recovery for blur/Escape: restore the panel item's pre-drag x/y/w/h
+     *  rather than committing a partial drag. The user expects "Escape =
+     *  abandon", not "Escape = freeze where I happen to be". */
+    const cancelAndRestore = () => {
+      if (state) {
+        const node = this.graph.nodes.get(state.nodeId);
+        if (node) {
+          if (state.mode === "move") {
+            state.el.style.left = `${state.startPanelX}px`;
+            state.el.style.top  = `${state.startPanelY}px`;
+            node.panelX = state.startPanelX;
+            node.panelY = state.startPanelY;
+          } else {
+            state.el.style.width  = `${state.startW}px`;
+            state.el.style.height = `${state.startH}px`;
+            node.panelW = state.startW;
+            node.panelH = state.startH;
+          }
+          if (state.moved) this.syncPorts();
+        }
+        state = null;
+      }
     };
 
     this.presentationEl.addEventListener("mousedown", (e: MouseEvent) => {
@@ -296,8 +319,11 @@ export class SubPatchSession {
         moved: false,
       };
 
-      document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("mouseup",   onMouseUp);
+      startDragSession({
+        onMove:   onMouseMove,
+        onUp:     commitOnUp,
+        onCancel: cancelAndRestore,
+      });
     });
 
     this.presentationEl.addEventListener("click", (e: MouseEvent) => {

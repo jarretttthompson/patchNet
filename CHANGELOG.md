@@ -23,6 +23,179 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-02] COMPLETED | vbuf*: loopStart / loopLen messages + setRange shift-to-fit
+**Agent:** Claude Code
+
+**Done:**
+- `vbuf*` accepts two new messages on the control inlet: `loopStart <0–1>` (move the loop window, preserving length) and `loopLen <ms>` (resize the window, preserving start). Units match outlets 3/4 and 6 respectively, so `outlet → s name → r name → vbuf*` round-trips for both.
+- Fixed a ratchet bug in `VideoBufferNode.setRange`: when the requested window overshot `[0,1]`, each end was clamped independently, silently shrinking the loop. With a random-walk start (e.g. `[drunk] → [scale 0..1] → range`), every overshoot fed a shorter `loopLen` back through the patch and the loop collapsed over time. setRange now shifts the window to fit when the requested length is ≤ 1; only a length > 1 falls back to per-end clipping.
+- Existing `range s e` handler updated to persist the post-shift values setRange actually stored, so an overshooting range message can't re-clamp on reload.
+
+**Changed files:**
+- src/runtime/VideoBufferNode.ts — `setRange` shift-to-fit logic; new `setLoopStart(norm)` / `setLoopLenMs(ms)` methods; raw `rangeStartNorm` / `rangeEndNorm` getters for persistence (the existing `loopStart` / `loopEnd` getters fold cleared-range into `[0,1]` and are wrong to write back into args).
+- src/graph/objectDefs.ts — registered `loopStart` and `loopLen` selectors on `vbuf*`; updated inlet-1 hint label.
+- src/canvas/ObjectInteractionController.ts — added `loopStart` / `loopLen` to `VBUF_PARAMS`; new dispatch cases that call the node methods then read back the canonical range for arg persistence.
+
+**Notes / decisions:**
+- Chose option-1 unit semantics (loopStart in 0–1 norm, loopLen in ms) so the messages mirror the outlet units exactly. The asymmetry is already a fact of the existing API and the round-trip property is worth more than message-level unit symmetry.
+- A drunk-walk-with-fixed-length patch now collapses to `[r loopBang] → [drunk] → [ezScale 0..1] → [loopStart $1]` with no `+ / pack / prepend range` math chain.
+
+**Next needed:**
+- (none specific)
+
+## [2026-05-02] COMPLETED | ezScale: cold inlets 5/6 now repaint slider thumbs in real time
+**Agent:** Claude Code
+
+**Done:**
+- Programmatic floats sent to ezScale's active-range lo/hi inlets (5/6) now move the thumbs and fill instantly. Previously, args were updated and the text panel re-synced via `emit("display")`, but the slider DOM only refreshed on the next full canvas render — so an LFO/drunk/numbox driving the active range looked stuck.
+- Same fix covers the bounds-clamp path: when inlets 3/4 (output bound min/max) change, the active range gets re-clamped and the slider repositions against the new bound span.
+
+**Changed files:**
+- src/canvas/ObjectInteractionController.ts — added `syncEzScaleSliderVisuals(node)` helper that repositions thumbs/fill/edge labels from current args. Called from the cold-inlet 5/6 path and the inlet-3/4 bounds-clamp path.
+
+**Notes / decisions:**
+- Kept the helper a separate method rather than refactoring `updateEzScaleFromEvent` to use it — the drag path mutates DOM during an active drag with locally computed values, so leaving its inline updates avoids regression risk. The new helper reads from `node.args` after the fact, which is the right shape for inlet-driven updates.
+- The hidden outLo/outHi args (4/5) are not user-editable fields, so no input-value sync is needed — only thumbs, fill, and edge labels.
+
+**Next needed:**
+- (none specific)
+
+## [2026-05-02] COMPLETED | unpack object (Max-style)
+**Agent:** Claude Code
+
+**Done:**
+- Added `unpack` object mirroring `pack`: 1 hot inlet, N outlets typed per arg letter (i/f → float, s/l → message, literal → any).
+- Right-to-left outlet firing (Max convention), matching `t`.
+- Stores last-received atoms per slot; `bang` re-emits stored values; `set <atoms>` updates silently.
+- Type coercion per slot letter on output (i → trunc int, f → float, s/l → passthrough).
+- Initial slot values from args reuse `packSlotInit()` (i/f → 0, s/l → empty, literal → as-is).
+
+**Changed files:**
+- src/graph/objectDefs.ts — registered `unpack` in OBJECT_DEFS; added `deriveUnpackPorts()`.
+- src/graph/PatchGraph.ts — addNode branch for `unpack`.
+- src/serializer/parse.ts — parser branch for `unpack`.
+- src/canvas/ObjectInteractionController.ts — bang/message handlers, `unpackSlots` map, `getUnpackSlots()`, `coerceUnpackOutput()`, edit branches that re-derive ports on type/args change.
+
+**Notes / decisions:**
+- If incoming list is shorter than slot count, only the present atoms are dispatched (Max behavior). Excess atoms are dropped.
+- Reused `packSlotInit()` for initial values rather than duplicating — same arg semantics.
+
+**Next needed:**
+- (none specific)
+
+## [2026-05-02] COMPLETED | ezScale slider release + value persistence
+**Agent:** Claude Code
+
+**Done:**
+- Fixed stuck-cursor bug on the ezScale dual-handle range slider (and slider, ezSlider, numbox by association — they all share the same release handler).
+- Fixed companion bug where ezScale lo/hi values weren't being persisted across page reloads. Same root cause.
+
+**Changed files:**
+- src/canvas/ObjectInteractionController.ts — dropped the `if (e.button !== 0) return;` early-return at the top of `handleSliderUp`.
+
+**Notes / decisions:**
+- Both symptoms had a single root cause: when `handleSliderUp` returned early (any browser/input quirk that produced a non-zero `button` on mouseup), the drag state stayed set, the document mousemove listener stayed attached, and the cursor-glued-to-thumb state persisted. Worse, the `graph.emit("change")` call lives inside the cleanup branches — without it, `savePatch()` never runs, so localStorage is never updated. So the same skipped-cleanup left both the slider stuck AND the new lo/hi values unsaved.
+- Drag-start paths are still gated on `button === 0`, so any mouseup that arrives mid-drag is from a real release. Dropping the guard on the release side is safe.
+
+**Next needed:**
+- Consider a window.blur safety net in OIC mirroring DragController's, for the case where focus leaves mid-slider-drag (alt-tab, etc.). Not urgent.
+
+---
+
+## [2026-05-02] COMPLETED | Port hover hit-area + drag release safety nets
+**Agent:** Claude Code
+
+**Done:**
+- Port hover hit-area expanded: `.patch-port::before` halo grew from `inset: -8px` → `inset: -12px` (24px → 32px effective hit zone). Hover scale bumped from 1.35 → 1.55 with stronger glow so the active port is unmistakable from across the canvas.
+- Stacking fix: `.patch-object-ports` containers were at `z-index: 2` and form their own stacking context, so the port nubs inside (despite their own `z-index: 6`) were stacked at level 2 against move-handles (z=4). Container z-index bumped to 7 — top/bottom ports now reliably win hover/click in overlap zones.
+- Drag release hardened: switched mousemove/mouseup listeners from `document` to `window`, dropped the `e.button !== 0` early-return in `handleMouseUp` (a stuck drag is worse than ending one early on a stray middle/right release), and added a `window.blur` safety net that commits-and-ends the in-flight drag if focus leaves the browser mid-drag (covers OS-swallowed mouseup). Extracted the commit logic into `commitAndEnd()` shared by both paths.
+
+**Changed files:**
+- src/shell.css — `.patch-object-ports` z-index 2 → 7; `.patch-port::before` inset −8px → −12px; hover scale 1.35 → 1.55, glow tuned up.
+- src/canvas/DragController.ts — listeners moved from document to window; new `commitAndEnd()` method; new `onWindowBlur` handler attached in constructor / removed in destroy; `handleMouseUp` no longer guards on `e.button`.
+
+**Notes / decisions:**
+- Stacking-context gotcha was the real cause of "outlets sometimes don't take": port nubs at `z-index: 6` were nested inside a `z-index: 2` container, so they stacked at 2 against move-handles at 4. Bumping the container is the only fix — bumping the nub does nothing while it's nested.
+- Halo at 32px feels generous without making port-vs-port disambiguation hard, since adjacent ports are spaced by `width / (n+1)` which is typically ≥ 30px.
+- The `e.button` check on mouseup was a defensive guard that, in edge cases (synthetic events with weird button properties, browser quirks), could prevent drag from ending. Always-end-on-mouseup is safer.
+
+**Next needed:**
+- Watch real-world drag behavior; if any path still leaves drag stuck, consider also hooking `pointercancel` and `mouseleave` on the document.
+
+---
+
+## [2026-05-02] COMPLETED | Move-only-from-perimeter + drop-blocked cursor
+**Agent:** Claude Code
+
+**Done:**
+- Object drag is now initiated only from a perimeter `.pn-move-handle` element. Each `.patch-object` gains 7 invisible handles (top/bottom/left/right edges + TL/TR/BL corners; BR stays reserved for resize).
+- The `--pn-cursor-grab` move cursor only appears on those handles. The body interior reverts to the default arrow (or its widget-specific cursor: text on inputs, pointer on bang/toggle/message, col-resize on slider track, etc.).
+- `DragController.handleMouseDown` simplified: replaced the long blocklist of interior-widget exclusions with a single whitelist gate (`target.closest(".pn-move-handle")`). Kept `.patch-port` and `.pn-resize-handle` short-circuits as defense-in-depth.
+- Port nubs now have explicit `z-index: 6` and resize handle stays at 5; move handles sit at 4. Port and resize hits always win event.target where they overlap a move-handle.
+- New `--pn-cursor-not-allowed` cursor token (red circle-with-slash). `.patch-object--drop-blocked` (and its descendants) now show this cursor while a dragged object hovers over a forbidden drop position, complementing the existing dashed outline.
+
+**Changed files:**
+- src/canvas/ObjectRenderer.ts — append 7 `.pn-move-handle--*` elements after the resize handle; new `MOVE_HANDLE_VARIANTS` constant.
+- src/canvas/DragController.ts — replaced ~70-line blocklist with whitelist gate on `.pn-move-handle`; kept port/resize defense-in-depth + subPatch-panel guard.
+- src/shell.css — removed body grab cursor rules; added `.pn-move-handle` block; added `--pn-cursor-not-allowed` token + drop-blocked cursor rule; `z-index: 6` on `.patch-port`; rewrote the cursor-system header comment.
+
+**Notes / decisions:**
+- Mirrors the existing `.pn-resize-handle` pattern (invisible perimeter element, cursor flips on hover) for consistency.
+- Browser~ and youtube~ already skip the resize handle; under the new model their BR is just an empty 18×18 dead zone (no move-handle or resize), matching the TL/TR/BL-only rule across all object types.
+- Body cursor rules at lines ~414–434 (grab + descendant grab + body-scoped text override) all become unnecessary once the body interior is no longer a move surface — removed.
+- DragController's interior-widget exclusions (INPUT, slider track, bang circle, message content, jseffect/rvideo locked-state checks, ezScale, sequencer, …) are now dead code: those elements live inside the body and can never be the target of a drag-initiating mousedown. Dropped to keep the gate readable.
+
+**Next needed:**
+- Watch for objects whose subPatch-lock or other "perimeter button" sits at top-right and might collide with the TR move-handle. None observed today.
+
+---
+
+## [2026-05-02] COMPLETED | ezSlider object
+**Agent:** Claude Code
+
+**Done:**
+- New `ezSlider` UI object: horizontal slider with editable lo/hi text fields above each end
+- Thumb interpolates linearly between lo and hi; output = `lo + t × (hi − lo)` where t ∈ [0, 1]
+- Int/float mode: both bounds int-form (no dot) → rounded integer output; any decimal in either bound → float output (same convention as `scale`/`ezScale`)
+- Inlet 0 (hot): set thumb position [0–1] and output; inlet 1: set lo; inlet 2: set hi
+- Field editing: Enter/Escape key handling, focusout commit, invalid input reverts
+- Thumb position persisted as hidden `value` arg in serialized patch text
+- Verified via browser test: int mode `0 127` → correct rounded output; float mode `0.0 1.0` → unrounded float; serialization round-trips correctly
+
+**Changed files:**
+- `src/graph/objectDefs.ts` — added `ezSlider` definition (3 args, 3 inlets, 1 outlet)
+- `src/canvas/ObjectRenderer.ts` — added `buildEzSliderBody()`, wired into `buildObjectElement()`
+- `src/canvas/ObjectInteractionController.ts` — `ezSliderDrag` state, `updateEzSliderFromEvent`, `dispatchEzSliderOutput`, `commitEzSliderField`, bang/value message dispatch, focusout/keydown handlers
+- `src/shell.css` — `.pn-ezslider` CSS block (container, fields row, track, thumb, inert state)
+
+**Notes / decisions:**
+- Inlet 0 accepts 0–1 normalized position (matching basic `slider` convention), not the interpolated value range
+- `lo > hi` works naturally — thumb at 0 outputs lo, thumb at 1 outputs hi regardless of ordering
+- Inert state (blank/invalid bounds): track dims and thumb hides; drag blocked until both fields are valid
+
+**Next needed:**
+- Consider adding a value readout label on or near the thumb showing the current interpolated output
+
+## [2026-05-02] COMPLETED | vbuf* auto maxLen + effectiveDur outlet
+**Agent:** Claude Code
+
+**Done:**
+- When a video file is uploaded to vbuf*, `maxLen` arg auto-updates to match the file's duration (ceil'd to nearest second, clamped 1–600)
+- Added outlet 5 (`effectiveDur`, float, ms): outputs `duration × rate × 1000` — fires on state change (when duration becomes known) and on every rate change in real-time
+
+**Changed files:**
+- `src/runtime/VideoBufferNode.ts` — `onRateChange` listener, `effectiveDurMs` getter, `emitRateChange()` from `setRate()`
+- `src/runtime/VisualizerGraph.ts` — subscribe `onRateChange` + fire outlet 5; also fire outlet 5 on state change
+- `src/graph/objectDefs.ts` — outlet 5 added to vbuf* definition
+- `src/canvas/ObjectInteractionController.ts` — update `node.args[2]` after `loadFile` resolves with real duration
+
+**Notes / decisions:**
+- `effectiveDurMs = duration * 1000 * rate`: if a 100ms video plays at rate 2, outlet emits 200ms
+- maxLen update is upload-only; recordings keep whatever maxLen was set before recording
+
+**Next needed:**
+- Nothing blocked
+
 ## Architecture Decisions Log
 
 Agents: append here when making a decision that affects the whole project.
@@ -40,6 +213,137 @@ Agents: append here when making a decision that affects the whole project.
 ## Changelog
 
 Older entries archived to `AGENTS-archive.md`.
+
+---
+## [2026-05-02] COMPLETED | vbuf*: loopstart / loopend float outlets
+**Agent:** Claude Code
+**Phase:** Object suite — vbuf* outlets
+
+**Done:**
+- Added outlet 3 (`loopstart`, float 0–1) and outlet 4 (`loopend`, float 0–1) to vbuf*.
+- `VideoBufferNode` exposes `loopStart` / `loopEnd` getters returning the *effective* window — when no range is set (rangeEnd ≤ rangeStart), they read 0 and 1 respectively, matching the playback / range-end semantics.
+- New `onRangeChange(fn)` listener fires from `setRange` only when the stored values actually change (dedup). `VisualizerGraph` subscribes alongside `onRangeEnd` and pushes both floats out via `fireFloatOutlet`.
+- Args-sync calls `setRange(savedStart, savedEnd)` on patch reload, which seeds downstream nodes from a previous-state value of (0, 0).
+
+**Changed files:**
+- src/graph/objectDefs.ts — vbuf* outlets array gains two float outlets.
+- src/runtime/VideoBufferNode.ts — `_rangeChangeListeners`, `onRangeChange`, `loopStart` / `loopEnd` getters, `emitRangeChange`, dedup in `setRange`.
+- src/runtime/VisualizerGraph.ts — subscribe `onRangeChange` per-vbuf and route to outlets 3/4.
+
+**Notes / decisions:**
+- Outlets emit the **effective** active window (0,1 when no range) rather than raw stored (0,0) — gives downstream meaningful loop bounds even when the user hasn't dragged a sub-range. Mirrors how outlet 2 (range-end bang) treats no-range as a full-buffer loop.
+- Dedup prevents the per-graph-sync `setRange` call from spamming float emissions on every patch change.
+
+**Next needed:**
+- buffer~ has the same range/loop UX — likely worth mirroring the loopstart/loopend outlets there for consistency.
+
+---
+## [2026-05-01] COMPLETED | Add `prepend`, `append`, `pack` objects (Max-style)
+**Agent:** Claude Code
+**Phase:** Object suite — control objects
+
+**Done:**
+- `prepend <atoms>` — emits `<stored> <input>` for any incoming message; bang emits `<stored> bang`; `set <…>` updates stored list silently. Single hot inlet.
+- `append <atoms>` — mirror of prepend; emits `<input> <stored>`; bang emits `<stored>` alone.
+- `pack <slots>` — N inlets (one per arg, default `pack f f`). Inlet 0 hot, others cold. Stores per-inlet values in a runtime side-map (`packSlots`); on hot inlet emits all slots joined by spaces. `i`/`f` letters init to `0`, `s`/`l` to empty, anything else becomes a literal initial value.
+- Both 256-atom output cap (Max parity) for `prepend`/`append`.
+- Wired `derivePackPorts` into PatchGraph.addNode, parser, and retype paths so dynamic inlet count survives serialization round-trip.
+
+**Changed files:**
+- src/graph/objectDefs.ts — three new entries; `derivePackPorts`, `packSlotInit` helpers
+- src/canvas/ObjectInteractionController.ts — bang + value handlers; `composePrependAppend`, `getPackSlots`; retype hookup; `packSlots` map
+- src/graph/PatchGraph.ts — `derivePackPorts` in `addNode`
+- src/serializer/parse.ts — `derivePackPorts` for parsed nodes
+
+**Notes / decisions:**
+- Use case: `prepend range` + `0.0 1.0` input → emits `range 0.0 1.0` (configures vbuf*'s range from a list).
+- Type letters in `pack` args (i/f/s/l) are not enforced on the wire — patchNet treats all values as strings, so `pack f f` and `pack i i` behave identically. Args are preserved verbatim for serialization round-trip; runtime values live separately in `packSlots`.
+- `append` + bang emits the stored list alone (not "re-emit last composed") — simpler and matches the practical use case.
+
+**Next needed:**
+- Manual test: drop `prepend range` before a `vbuf*`, send a `t f f` of two floats from a `pack f f`, confirm vbuf* range updates.
+
+## [2026-05-01] COMPLETED | ezScale auto-range (input + output) with [auto] toggle button
+**Agent:** Claude Code
+**Phase:** Object suite — control objects
+
+**Done:**
+- New hidden `auto` arg on `ezScale` (default `1`).
+- Body now renders an `[auto]` toolbar button (top-right of the body) that toggles the flag; styled with active/inactive states.
+- Input auto-range: when `auto=1`, observed values at inlet 0 expand `inMin`/`inMax`. Field DOM is updated in place; only `display` is emitted (not `change`) to keep streaming inputs cheap. Skips fields the user is currently editing.
+- Output auto-range: a new `syncEzScaleAutoOutput()` runs on every graph `change`. For each `auto=1` ezScale, it reads the first edge from outlet 0, resolves the target inlet's arg min/max, and writes them into `outMin`/`outMax` (active sub-range resets to span the new bounds).
+- Target arg lookup: for `attribute` targets, inlet `i` maps to visible arg `i` of its target type; for any other target, falls back to the first non-hidden arg with explicit `min`/`max` (covers `slider` 0–1, `drunk` `max`, `metro` `interval`, etc.).
+- DragController now lets clicks on `.pn-ezscale__auto-btn` through (no object drag).
+- Default body height bumped 96 → 112 to fit the toolbar above the field grid.
+
+**Changed files:**
+- src/graph/objectDefs.ts — added `auto` arg, bumped `defaultHeight`
+- src/canvas/ObjectRenderer.ts — toolbar + button in `buildEzScaleBody`
+- src/canvas/ObjectInteractionController.ts — click handler, `applyEzScaleAutoInput`, `syncEzScaleAutoOutput`, `resolveTargetArgRange`
+- src/canvas/DragController.ts — exempt the auto button from drag start
+- src/shell.css — `.pn-ezscale__toolbar` + `.pn-ezscale__auto-btn` styles
+
+**Notes / decisions:**
+- Input auto only widens (never narrows). A stray spike permanently widens the range — toggle off and re-enable to reset, or edit fields manually.
+- Manual edits to `inMin/inMax` while auto is on aren't protected: the next observed value will widen them again. Considered tracking "user-typed" state per field but kept simpler.
+- Output auto overwrites typed `outMin/outMax` whenever the connection resolves a range. Toggle auto off to lock manual values.
+- Target-arg resolution heuristic isn't perfect for objects whose inlets don't directly mirror args (e.g. `metro` inlet 0 takes any selector); falls back to "first arg with min/max", which is fine for the common slider/drunk/metro cases.
+
+**Next needed:**
+- Browser smoke-test: confirm the [auto] button toggles, input widening shows in fields live, and connecting to a `slider` updates `outMin/outMax` to 0/1.
+
+---
+## [2026-05-01] COMPLETED | ezScale: js~/reaperVideo* output auto-range + multiplier field + thumb labels
+**Agent:** Claude Code
+**Phase:** Object suite — control objects (ezScale follow-up)
+
+**Done:**
+- Output auto-range now resolves slider/param min/max for `js~` and `reaperVideo*` side-inlets (was previously failing because their dynamic params don't live in `OBJECT_DEFS.args`).
+- `extractJsEffectSliders` and `extractReaperVideoParams` extended to carry `min`/`max` (always parsed; just wasn't surfaced).
+- New hidden `mult` arg on `ezScale` (default `1`). Renders as a single field row between the in/out grid and the range slider, labeled `× mult`. Applied to incoming values *before* mapping (`scaledInput = input * mult`, then mapped through inMin..inMax, then through outLo..outHi).
+- Range-slider thumbs now show their current value as a small label above the thumb. Labels update live during drag and respect int-form output bounds (round) vs float-form (≤3 decimals, trailing zeros trimmed).
+- Default body height bumped 112 → 132 to fit the multiplier row.
+
+**Changed files:**
+- src/graph/objectDefs.ts — `mult` arg, `defaultHeight`, slider/param min/max in extract* helpers
+- src/canvas/ObjectRenderer.ts — `× mult` field row, thumb-label spans, `formatThumbValue` helper (exported for the OIC's drag updater)
+- src/canvas/ObjectInteractionController.ts — `js~` and `reaperVideo*` branches in `resolveTargetArgRange`; multiplier applied in inlet-0 math; `commitEzScaleField` accepts `mult`; thumb labels updated in-place during drag
+- src/shell.css — `.pn-ezscale__mult-row`, `.pn-ezscale__thumb-label` styles
+
+**Notes / decisions:**
+- Auto-input range tracks the raw (pre-multiplier) value so the multiplier and bounds don't chase each other.
+- For `reaperVideo*`, side-inlet → param mapping uses inlet ordering (not absolute index) since signal/media inlets sit before side inlets in the same array.
+
+**Next needed:**
+- Browser smoke-test of: js~ slider auto-range, multiplier math, thumb labels during drag.
+
+---
+## [2026-05-01] COMPLETED | ezScale: float-form fidelity, collapse, invert, s/r walking, edge-pinned labels
+**Agent:** Claude Code
+**Phase:** Object suite — control objects (ezScale follow-up)
+
+**Done:**
+- **Float-form bounds for float-typed args.** Output bounds render as `0.0` / `4.0` when the target arg is `type: "float"` (vbuf* rate, JSFX sliders, RVideo @params). Was previously falling into int-mode rounding because `String(0)` is int-form.
+- **Collapse / expand toggle (`▾` / `▸`).** Hides the in/out fields and the multiplier row, but keeps the toolbar **and the range slider** visible — active sub-range stays adjustable from the patch. Saved expanded height stored in a hidden `expandedHeight` arg so the user's prior size is restored on re-expand. Collapsed height = 60px.
+- **Invert toggle (`⇅`).** Affects the **output side only** — never touches `inMin`/`inMax`. Swaps `outMin↔outMax` and `outLo↔outHi`. The `inverted` flag is honored by `syncEzScaleAutoOutput` so [auto] reconnects keep the user's chosen direction (a 0..1 source through an inverted ezScale comes out as 1..0).
+- **`s`/`r` chain walking for output auto-range.** New `walkToActualTargets` helper transparently hops through wireless send/receive channels (depth-limited at 5 hops, visited-tracked) so `ezScale → s foo` … `r foo → slider` populates from the slider's range. Input auto-range already worked through s/r — values dispatch through `broadcastToReceivers` and arrive at inlet 0 the same as a direct edge.
+- **Edge-pinned value labels on the range slider.** The numeric labels for `outLo`/`outHi` are now anchored to the slider's left and right edges (instead of riding the thumbs). Stays out of the way during drag; values still update live.
+- **Cursor + drag plumbing.** All three toolbar buttons get `--pn-cursor-pointer` on hover, and `DragController` exempts them so clicks don't initiate object drag.
+
+**Changed files:**
+- src/graph/objectDefs.ts — `collapsed`, `expandedHeight`, `inverted` args
+- src/canvas/ObjectRenderer.ts — toolbar reorder ([⇅] [auto] [▾]); fields/mult only when expanded; slider unconditional; edge-pinned labels
+- src/canvas/ObjectInteractionController.ts — `EZSCALE_COLLAPSED_HEIGHT`, `walkToActualTargets`, invert/collapse click handlers, inverted-aware auto-output, `isFloat` plumbing in `resolveTargetArgRange`, drag updater rewrites edge labels not thumb labels
+- src/canvas/DragController.ts — drag exemptions for invert + collapse buttons
+- src/shell.css — `.pn-ezscale__edge-label`, cursor + active-state styling for all three toolbar buttons
+
+**Notes / decisions:**
+- Invert is purely output: input bounds are never touched. The flag exists so [auto] doesn't undo manual inversion on the next change cycle.
+- `walkToActualTargets` only hops through `s` / `r` — not generic forwarder objects (no `t`, no message routing). Add more hop types here if needed.
+- Edge labels use the same `formatThumbValue` formatter (int-mode rounds, float-mode trims trailing zeros) so they match the bound-field formatting.
+
+**Next needed:**
+- Browser smoke-test: collapse keeps slider live; invert flips a real ezScale → slider connection; `s/r` chain populates output bounds; edge labels stay pinned during drag.
 
 ---
 ## [2026-05-01] COMPLETED | Add `ezScale` object + int-form output rule (also applies to `scale`)

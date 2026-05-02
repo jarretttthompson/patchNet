@@ -52,10 +52,16 @@ interface CoMover {
 export class DragController {
   private drag: DragState | null = null;
   private coMovers: CoMover[] = [];
+  /** Set to true once we've warned about a re-entrant mousedown. The
+   *  guard's job is rare-event recovery; if it fires repeatedly that
+   *  signals a real bug elsewhere and we want it visible exactly once. */
+  private reentrancyWarned = false;
 
   private readonly onMouseDown: (e: MouseEvent) => void;
   private readonly onMouseMove: (e: MouseEvent) => void;
   private readonly onMouseUp: (e: MouseEvent) => void;
+  private readonly onWindowBlur: () => void;
+  private readonly onEscapeKey: (e: KeyboardEvent) => void;
 
   constructor(
     private readonly canvasEl: HTMLElement,
@@ -76,8 +82,25 @@ export class DragController {
     this.onMouseDown = this.handleMouseDown.bind(this);
     this.onMouseMove = this.handleMouseMove.bind(this);
     this.onMouseUp = this.handleMouseUp.bind(this);
+    // If the window loses focus (e.g., user alt-tabs mid-drag, or releases
+    // the mouse outside the browser window so the OS swallows mouseup),
+    // commit-and-clean rather than leaving the object stuck to the cursor.
+    this.onWindowBlur = () => {
+      if (this.drag) this.commitAndEnd();
+    };
+    // Escape mid-drag: commit-and-end at the current position. Matches
+    // window.blur semantics — both are recovery paths for "the user can't
+    // release the mouse normally". We commit rather than revert because
+    // the user's pressing Escape to break a stuck-cursor state, not to
+    // undo a move they made on purpose.
+    this.onEscapeKey = (e) => {
+      if (e.key !== "Escape") return;
+      if (this.drag) this.commitAndEnd();
+    };
 
     this.canvasEl.addEventListener("mousedown", this.onMouseDown);
+    window.addEventListener("blur", this.onWindowBlur);
+    window.addEventListener("keydown", this.onEscapeKey);
   }
 
   isDragging(): boolean {
@@ -86,6 +109,8 @@ export class DragController {
 
   destroy(): void {
     this.canvasEl.removeEventListener("mousedown", this.onMouseDown);
+    window.removeEventListener("blur", this.onWindowBlur);
+    window.removeEventListener("keydown", this.onEscapeKey);
     this.endDrag();
   }
 
@@ -94,81 +119,39 @@ export class DragController {
   private handleMouseDown(e: MouseEvent): void {
     if (e.button !== 0) return;
 
-    // Only drag the object body — not port nubs, resize handle, cable SVG,
-    // native inputs (attribute sliders / text fields), the custom slider track,
-    // or any bounded click-to-trigger widget inside a body (bang circle,
-    // toggle rocker, message content). Those match the cursor-system design
-    // where grab = move and pointer = click: hovering a pointer-cursor region
-    // must never start a move.
+    // Drag is initiated only from a perimeter move-handle. ObjectRenderer
+    // appends seven invisible .pn-move-handle elements to every object
+    // (top/bottom/left/right edges + TL/TR/BL corners — BR is reserved for
+    // resize). Mousedown anywhere else on the object — body interior,
+    // ports, panel hosts, interactive widgets — won't have .pn-move-handle
+    // as an ancestor and is dropped here.
     const target = e.target as Element;
-    if (target.tagName === "INPUT") return;
-    if (target.tagName === "SELECT") return;
-    if (target.tagName === "TEXTAREA") return;
-    if (target.tagName === "BUTTON") return;
-    if (target.closest(".pn-subpatch-lock")) return;
-    if (target.closest(".pn-odo-col")) return;   // digit column — OIC handles drag
+    const moveHandle = target.closest(".pn-move-handle");
+    if (!moveHandle) return;
+
+    // Defense-in-depth: ports (z-index 6) and the resize handle (z-index 5)
+    // sit above move-handles (z-index 4) and should already win event.target
+    // where they overlap. Keep these short-circuits so a future stacking
+    // change can't silently turn a port click into a drag.
     if (target.closest(".patch-port")) return;
     if (target.closest(".pn-resize-handle")) return;
-    if (target.closest(".pn-cable-svg")) return;
-    if (target.closest(".patch-object-codebox-host")) return;
-    if (target.closest(".cm-editor")) return;
-    // Inline dmx panel: its tabs, forms, and scroll regions should never
-    // initiate an object drag. The object can still be dragged by grabbing
-    // its border or any area outside the panel host.
-    if (target.closest(".pn-dmx-panel-host")) return;
-    if (target.closest(".pn-mixer-panel-host")) return;
-    // Local (gitignored) plugin bodies opt in by tagging their host with
-    // [data-localplugin-host]. Inline INPUT/SELECT/BUTTON are already excluded
-    // above; this catches clicks on the plugin's own interactive surface.
-    if (target.closest("[data-localplugin-host]")) return;
-    // youtube~ panel — interior is URL input + iframe + buttons. Buttons/
-    // inputs are already excluded above; this catches clicks on the iframe
-    // body (which we never want to convert into an object drag).
-    if (target.closest(".pn-youtube-panel-host")) return;
-    // Same treatment for the js~ inline code-pane + slider panel — BUT
-    // only when the js~ is unlocked. Locked js~ objects drag from anywhere
-    // on the body, with an explicit exception for sliders (which stay
-    // interactive in both states).
-    const jsEffectHost = target.closest<HTMLElement>(".pn-jseffect-panel-host");
-    if (jsEffectHost) {
-      // Sliders always stay interactive — never initiate drag over them.
-      if (target.closest(".pn-jseffect-slider-range")) return;
-      // Lock button itself always clicks, never drags.
-      if (target.closest(".pn-jseffect-lock")) return;
-      const lockedBody = jsEffectHost.closest<HTMLElement>('.patch-object-jseffect-body[data-locked="1"]');
-      if (!lockedBody) return;  // unlocked → panel interactive (no drag)
-      // locked → fall through to drag
-    }
-    const rvideoHost = target.closest<HTMLElement>(".pn-rvideo-panel-host");
-    if (rvideoHost) {
-      // Knobs always stay interactive.
-      if (target.closest(".pn-rvideo-knob-range")) return;
-      // Lock button always clicks, never drags.
-      if (target.closest(".pn-rvideo-lock")) return;
-      const lockedBody = rvideoHost.closest<HTMLElement>('.patch-object-rvideo-body[data-locked="1"]');
-      if (!lockedBody) return;
-      // locked → fall through to drag
-    }
-    // buffer~ transport buttons + waveform canvas: never start drag.
-    if (target.closest(".pn-buf-btn")) return;
-    if (target.closest(".pn-buf-wave")) return;
-    // vbuf* transport buttons + loop toggle + timeline strip + preview video.
-    if (target.closest(".pn-vbuf-btn")) return;
-    if (target.closest(".pn-vbuf-loop-btn")) return;
-    if (target.closest(".pn-vbuf-strip")) return;
-    if (target.closest(".pn-vbuf-preview")) return;
-    if (target.closest(".patch-object-slider-track")) return;
-    if (target.closest(".pn-ezscale__range")) return;
-    if (target.closest(".patch-object-face-button")) return;
-    if (target.closest(".patch-object-toggle-rocker")) return;
-    if (target.closest(".patch-object-message-content")) return;
-    // Sequencer cells: only block drag when the cell is editable (unlocked).
-    // Locked cells fall through to drag so the object can be moved from the grid.
-    const seqCell = target.closest<HTMLElement>(".pn-seq-cell");
-    if (seqCell?.isContentEditable) return;
 
     const objectEl = target.closest<HTMLElement>(".patch-object");
     if (!objectEl?.dataset.nodeId) return;
+
+    // Re-entrancy guard: if a prior drag's mouseup was missed (focus race,
+    // synchronous DOM rebuild on emit("change"), browser quirk), this.drag
+    // is still populated and the prior dragging-class is still on the prior
+    // element. Commit-and-end the stale drag before allocating new state so
+    // we don't stack drags or leak the visual stuck-to-cursor state. Warn
+    // exactly once — if this fires routinely it's a real bug elsewhere.
+    if (this.drag) {
+      if (!this.reentrancyWarned) {
+        console.warn("[DragController] re-entrant mousedown caught a stale drag; force-committing prior drag. If you see this, a mouseup was missed somewhere upstream.");
+        this.reentrancyWarned = true;
+      }
+      this.commitAndEnd();
+    }
     // Don't drag objects rendered inside a subPatch presentation panel
     if (objectEl.closest(".pn-subpatch-panel")) return;
 
@@ -250,8 +233,8 @@ export class DragController {
         coEl.classList.add("patch-object--dragging");
       }
 
-      document.addEventListener("mousemove", this.onMouseMove);
-      document.addEventListener("mouseup", this.onMouseUp);
+      window.addEventListener("mousemove", this.onMouseMove);
+      window.addEventListener("mouseup", this.onMouseUp);
       return;
     }
 
@@ -326,8 +309,8 @@ export class DragController {
       }
     }
 
-    document.addEventListener("mousemove", this.onMouseMove);
-    document.addEventListener("mouseup", this.onMouseUp);
+    window.addEventListener("mousemove", this.onMouseMove);
+    window.addEventListener("mouseup", this.onMouseUp);
   }
 
   private handleMouseMove(e: MouseEvent): void {
@@ -415,10 +398,29 @@ export class DragController {
     }
   }
 
-  private handleMouseUp(e: MouseEvent): void {
+  private handleMouseUp(_e: MouseEvent): void {
     if (!this.drag) return;
-    if (e.button !== 0) return;
+    // Don't gate on `e.button !== 0`: a stuck drag is much worse than ending
+    // one early on a stray middle/right release. The drag-start path is still
+    // gated on button 0, so the only events reaching here mid-drag are real
+    // releases. Always commit-and-end.
+    this.commitAndEnd();
+  }
 
+  /**
+   * Commit the in-flight drag's final position to the graph and tear down
+   * drag state. Used by `handleMouseUp` (normal release) and `onWindowBlur`
+   * (recovery when the window loses focus mid-drag, so the OS may have
+   * swallowed mouseup). Safe to call when `this.drag` is null (no-op).
+   *
+   * Order matters: classes are cleared on the live DOM elements BEFORE
+   * `setNodePosition` runs, because `setNodePosition` may synchronously
+   * `emit("change")` and rebuild the DOM, which would orphan the
+   * dragged element and leave its `--dragging`/`--drop-blocked` classes
+   * stuck on a detached node.
+   */
+  private commitAndEnd(): void {
+    if (!this.drag) return;
     const { nodeId, el, moved, lastFrameValid, lastValidX, lastValidY } = this.drag;
 
     if (moved) {
@@ -436,6 +438,9 @@ export class DragController {
         }
       }
 
+      // Clear classes on the live DOM before the commit can rebuild it.
+      this.clearDragClasses();
+
       const x = parseFloat(el.style.left || "0");
       const y = parseFloat(el.style.top || "0");
       this.graph.setNodePosition(nodeId, x, y);
@@ -445,30 +450,50 @@ export class DragController {
         const ny = parseFloat(cm.el.style.top || "0");
         this.graph.setNodePosition(cm.nodeId, nx, ny);
       }
+    } else {
+      // No commit needed (no movement), but classes still need clearing.
+      this.clearDragClasses();
     }
 
-    this.endDrag();
+    this.clearDragState();
     this.onDragEnd?.(nodeId);
   }
 
   /**
-   * Tear down drag state. Always clears the `patch-object--dragging` class —
-   * previously only cleared it when the object had actually moved, which
-   * leaked the class onto any object the user clicked without dragging, and
-   * locked that object's cursor into `grabbing` until the next real drag.
+   * Remove `patch-object--dragging` and `patch-object--drop-blocked` from
+   * the primary dragged element and any co-movers. Idempotent — safe to
+   * call when `this.drag` is null. Does not touch `this.drag`/`coMovers`
+   * arrays or window listeners (see `clearDragState` for that).
    */
-  private endDrag(): void {
+  private clearDragClasses(): void {
     if (this.drag) {
       this.drag.el.classList.remove("patch-object--dragging");
       this.drag.el.classList.remove("patch-object--drop-blocked");
-      this.drag = null;
     }
     for (const cm of this.coMovers) {
       cm.el.classList.remove("patch-object--dragging");
       cm.el.classList.remove("patch-object--drop-blocked");
     }
+  }
+
+  /**
+   * Null out drag state and detach window listeners. Idempotent.
+   */
+  private clearDragState(): void {
+    this.drag = null;
     this.coMovers = [];
-    document.removeEventListener("mousemove", this.onMouseMove);
-    document.removeEventListener("mouseup", this.onMouseUp);
+    window.removeEventListener("mousemove", this.onMouseMove);
+    window.removeEventListener("mouseup", this.onMouseUp);
+  }
+
+  /**
+   * Tear down everything — used by `destroy()`. Always clears the
+   * `patch-object--dragging` class even when no movement happened, so a
+   * mousedown-without-drag-then-destroy doesn't leak the class onto an
+   * unmoved object.
+   */
+  private endDrag(): void {
+    this.clearDragClasses();
+    this.clearDragState();
   }
 }

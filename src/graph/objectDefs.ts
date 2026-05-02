@@ -234,6 +234,26 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
+  f: {
+    description: "Float storage box (Max-style). Cold inlet stores a value; bang on the hot inlet outputs the stored value.",
+    category: "control",
+    args: [{ name: "value", type: "float", default: "0", description: "Stored float value." }],
+    messages: [
+      { inlet: 0, selector: "bang",  description: "output stored value" },
+      { inlet: 0, selector: "float", description: "store and output" },
+      { inlet: 0, selector: "int",   description: "store and output" },
+      { inlet: 1, selector: "float", description: "store value (cold — no output)" },
+      { inlet: 1, selector: "int",   description: "store value (cold — no output)" },
+    ],
+    inlets: [
+      { index: 0, type: "bang",  label: "bang: output  |  float: store + output", temperature: "hot"  },
+      { index: 1, type: "float", label: "store value (no output)",                 temperature: "cold" },
+    ],
+    outlets: [{ index: 0, type: "float", label: "stored float value" }],
+    defaultWidth:  40,
+    defaultHeight: 28,
+  },
+
   t: {
     description: "Trigger (abbreviated t). Distributes input to multiple outlets in right-to-left order, converting each to the type specified by its argument letter: i=int, f=float, b=bang, s=symbol, l=list. Default args: i i.",
     category: "control",
@@ -247,6 +267,71 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [
       { index: 0, type: "float", label: "int" },
       { index: 1, type: "float", label: "int" },
+    ],
+    defaultWidth:  80,
+    defaultHeight: 40,
+  },
+
+  prepend: {
+    description: "Prepends its creation args to any incoming message. e.g. `prepend range` + input `0.0 1.0` → emits `range 0.0 1.0`. `set <atoms>` replaces the stored list silently.",
+    category: "control",
+    args: [{ name: "atoms", type: "list", description: "Atoms to prepend to incoming messages." }],
+    messages: [
+      { inlet: 0, selector: "bang", description: "emit stored list followed by 'bang'" },
+      { inlet: 0, selector: "any",  description: "emit stored list followed by incoming atoms" },
+      { inlet: 0, selector: "set",  description: "replace stored list without output: set <atoms>" },
+    ],
+    inlets:  [{ index: 0, type: "message", label: "message in (set <…> updates silently)", temperature: "hot" }],
+    outlets: [{ index: 0, type: "message", label: "stored + input" }],
+    defaultWidth:  100,
+    defaultHeight: 28,
+  },
+
+  append: {
+    description: "Appends its creation args to any incoming message. e.g. `append done` + input `5` → emits `5 done`. `set <atoms>` replaces the stored list silently.",
+    category: "control",
+    args: [{ name: "atoms", type: "list", description: "Atoms to append to incoming messages." }],
+    messages: [
+      { inlet: 0, selector: "bang", description: "emit stored list" },
+      { inlet: 0, selector: "any",  description: "emit incoming atoms followed by stored list" },
+      { inlet: 0, selector: "set",  description: "replace stored list without output: set <atoms>" },
+    ],
+    inlets:  [{ index: 0, type: "message", label: "message in (set <…> updates silently)", temperature: "hot" }],
+    outlets: [{ index: 0, type: "message", label: "input + stored" }],
+    defaultWidth:  100,
+    defaultHeight: 28,
+  },
+
+  pack: {
+    description: "Pack values from N inlets into a single space-separated message. Args define slot count and initial values: letters i/f → init 0, s/l → init empty, any literal becomes the initial slot value. Inlet 0 is hot (triggers output); inlets 1..N-1 are cold (store only). Default args: f f.",
+    category: "control",
+    args: [{ name: "slots", type: "list", description: "Per-slot type letter (i/f/s/l) or literal initial value." }],
+    messages: [
+      { inlet: 0, selector: "bang", description: "emit current slot values" },
+      { inlet: 0, selector: "any",  description: "store in slot 0 and emit all slots" },
+    ],
+    inlets:  [
+      { index: 0, type: "any", label: "slot 0 (hot)",  temperature: "hot" },
+      { index: 1, type: "any", label: "slot 1 (cold)", temperature: "cold" },
+    ],
+    outlets: [{ index: 0, type: "message", label: "packed list" }],
+    defaultWidth:  80,
+    defaultHeight: 40,
+  },
+
+  unpack: {
+    description: "Distribute atoms from an incoming list to N outlets — atom i emits from outlet i, in right-to-left order (Max convention). Args define slot count, output type, and initial stored value: i/f → 0, s/l → empty, any literal becomes the initial value. `bang` re-emits stored values; `set <atoms>` updates stored values silently. Default args: f f.",
+    category: "control",
+    args: [{ name: "slots", type: "list", description: "Per-slot type letter (i/f/s/l) or literal initial value." }],
+    messages: [
+      { inlet: 0, selector: "bang", description: "emit stored slot values right-to-left" },
+      { inlet: 0, selector: "any",  description: "store atoms positionally and emit each from its outlet (right-to-left)" },
+      { inlet: 0, selector: "set",  description: "replace stored values without output: set <atoms>" },
+    ],
+    inlets:  [{ index: 0, type: "any", label: "list in (hot)", temperature: "hot" }],
+    outlets: [
+      { index: 0, type: "float", label: "slot 0" },
+      { index: 1, type: "float", label: "slot 1" },
     ],
     defaultWidth:  80,
     defaultHeight: 40,
@@ -290,6 +375,11 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { name: "outMax", type: "float", default: "127", description: "Output bound high. Int-form (no dot) rounds output to int." },
       { name: "outLo",  type: "float", default: "0",   hidden: true, description: "Active output range low (slider lo handle)." },
       { name: "outHi",  type: "float", default: "127", hidden: true, description: "Active output range high (slider hi handle)." },
+      { name: "auto",   type: "int",   default: "1",   hidden: true, description: "1 = auto-detect input bounds from incoming values and auto-set output bounds from connected target arg's min/max. Toggle with the [auto] button." },
+      { name: "mult",   type: "float", default: "1",   hidden: true, description: "Pre-scale multiplier — incoming values are multiplied by this before being mapped through inMin..inMax." },
+      { name: "collapsed",      type: "int", default: "0", hidden: true, description: "1 = body collapsed to toolbar + slider; field controls hidden." },
+      { name: "expandedHeight", type: "int", default: "0", hidden: true, description: "Saved body height (px) so re-expanding restores the user's previous size." },
+      { name: "inverted",       type: "int", default: "0", hidden: true, description: "1 = output bounds inverted (low maps to outMax, high maps to outMin). Auto-output respects this." },
     ],
     messages: [
       { inlet: 0, selector: "float", description: "map value (using active slider sub-range) and output result" },
@@ -297,6 +387,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { inlet: 2, selector: "float", description: "set input max" },
       { inlet: 3, selector: "float", description: "set output bound min (clamps active range)" },
       { inlet: 4, selector: "float", description: "set output bound max (clamps active range)" },
+      { inlet: 5, selector: "float", description: "set active sub-range low (lo slider handle); clamps to bounds" },
+      { inlet: 6, selector: "float", description: "set active sub-range high (hi slider handle); clamps to bounds" },
     ],
     inlets: [
       { index: 0, type: "float", label: "value to scale",   temperature: "hot" },
@@ -304,10 +396,38 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { index: 2, type: "float", label: "input max",        temperature: "cold" },
       { index: 3, type: "float", label: "output bound min", temperature: "cold" },
       { index: 4, type: "float", label: "output bound max", temperature: "cold" },
+      { index: 5, type: "float", label: "active range lo (slider lo handle)", temperature: "cold" },
+      { index: 6, type: "float", label: "active range hi (slider hi handle)", temperature: "cold" },
     ],
-    outlets: [{ index: 0, type: "float", label: "scaled value (active sub-range)" }],
+    outlets: [
+      { index: 0, type: "float", label: "scaled value (active sub-range)" },
+      { index: 1, type: "message",  label: "range [lo hi]" },
+    ],
     defaultWidth: 220,
-    defaultHeight: 96,
+    defaultHeight: 142,
+  },
+
+  ezSlider: {
+    description: "Slider with named endpoints: type lo/hi values above each end, drag the thumb to interpolate. Int-form bounds (no dot) round output to integers.",
+    category: "ui",
+    args: [
+      { name: "lo",    type: "float", default: "0",   description: "Left-end value." },
+      { name: "hi",    type: "float", default: "1",   description: "Right-end value." },
+      { name: "value", type: "float", default: "0.5", hidden: true, description: "Thumb position (0–1)." },
+    ],
+    messages: [
+      { inlet: 0, selector: "float", description: "set thumb position (0–1) and output interpolated value" },
+      { inlet: 1, selector: "float", description: "set lo bound" },
+      { inlet: 2, selector: "float", description: "set hi bound" },
+    ],
+    inlets: [
+      { index: 0, type: "float", label: "thumb position (0–1)",  temperature: "hot"  },
+      { index: 1, type: "float", label: "lo bound",              temperature: "cold" },
+      { index: 2, type: "float", label: "hi bound",              temperature: "cold" },
+    ],
+    outlets: [{ index: 0, type: "float", label: "interpolated value" }],
+    defaultWidth: 180,
+    defaultHeight: 60,
   },
 
   timer: {
@@ -324,7 +444,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
   },
 
   drunk: {
-    description: "Random walk (drunk walk) — each bang steps ±step from current, wrapping in [0, max).",
+    description: "Random walk (drunk walk) — each bang steps ±step from current, clamped to [0, max).",
     category: "control",
     args: [
       { name: "max",     type: "int", default: "128", min: 1, max: 32767, step: 1, description: "Upper bound (exclusive); output range 0 to max−1." },
@@ -513,8 +633,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     description: "Video tape-recorder buffer. Records the upstream video source to a local OPFS file (WebM), plays it back at variable rate, with loop and a sub-range window. Same transport / range / loop / maxLen UX as buffer~.",
     category: "visual",
     args: [
-      { name: "rate",   type: "float",  default: "1", min: 0, max: 4, step: 0.01,
-        description: "Playback rate. 1.0 = normal, 2.0 = double speed. 0 = paused playhead. Forward only for now." },
+      { name: "rate",   type: "float",  default: "1", min: 0.0625, max: 16, step: 0.01,
+        description: "Playback rate. 1.0 = normal, 2.0 = double speed. Forward only for now. Browser-clamped to [0.0625, 16]." },
       { name: "loop",   type: "int",    default: "0", min: 0, max: 1, step: 1,
         description: "Loop mode: 1 = loop, 0 = stop at end." },
       { name: "maxLen", type: "float",  default: "60", min: 1, max: 600, step: 1,
@@ -542,16 +662,23 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { inlet: -1, selector: "stop",   description: "stop and rewind position to 0" },
       { inlet: -1, selector: "clear",  description: "erase the recording" },
       { inlet: -1, selector: "seek",   description: "jump to normalized position: seek <0.0–1.0>" },
-      { inlet: -1, selector: "range",  description: "restrict playback (and looping) to a window: range <start> <end> in 0.0–1.0" },
-      { inlet: -1, selector: "float",  description: "shorthand for rate: incoming float sets rate directly" },
+      { inlet: -1, selector: "range",     description: "restrict playback (and looping) to a window: range <start> <end> in 0.0–1.0. End < 1 → window shifts to fit, preserving length." },
+      { inlet: -1, selector: "loopStart", description: "move the loop window to start here, preserving length: loopStart <0.0–1.0>. Shifts to fit if it overshoots." },
+      { inlet: -1, selector: "loopLen",   description: "resize the loop window, preserving start: loopLen <ms>. Matches outlet 6 units, so `outlet 6 → loopLen` round-trips." },
+      { inlet: -1, selector: "float",     description: "shorthand for rate: incoming float sets rate directly" },
     ],
     inlets: [
       { index: 0, type: "media", label: "video in (record source)" },
-      { index: 1, type: "any",   label: "record | play | pause | stop | rate f | loop 0|1 | range s e", temperature: "hot" },
+      { index: 1, type: "any",   label: "record | play | pause | stop | rate f | loop 0|1 | range s e | loopStart s | loopLen ms", temperature: "hot" },
     ],
     outlets: [
       { index: 0, type: "media", label: "video out (playback)" },
       { index: 1, type: "float", label: "position (0.0–1.0)" },
+      { index: 2, type: "bang",  label: "bang at range/loop end" },
+      { index: 3, type: "float", label: "loopstart (0.0–1.0)" },
+      { index: 4, type: "float", label: "loopend (0.0–1.0)" },
+      { index: 5, type: "float", label: "duration (ms int — total media length, rate-independent)" },
+      { index: 6, type: "float", label: "loopLen (ms — active loop window length)" },
     ],
     defaultWidth:  280,
     defaultHeight: 220,
@@ -846,6 +973,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
         description: "Horizontal position offset as a fraction of canvas width. 0 = centered." },
       { name: "posY",     type: "float",  default: "0",  min: -1,   max: 1,   step: 0.01,
         description: "Vertical position offset as a fraction of canvas height. 0 = centered." },
+      { name: "opacity",  type: "float",  default: "1",  min: 0,    max: 1,   step: 0.01,
+        description: "Layer opacity. 1 = fully opaque, 0 = fully transparent." },
     ],
     messages: [
       { inlet: 0, selector: "scaleX",   description: "set horizontal scale: scaleX <float>" },
@@ -856,8 +985,9 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { inlet: 0, selector: "pos",      description: "set both position axes: pos <x> <y>" },
       { inlet: 0, selector: "priority", description: "set draw priority: priority <int>" },
       { inlet: 0, selector: "context",  description: "set target visualizer: context <name>" },
+      { inlet: 0, selector: "opacity",  description: "set layer opacity: opacity <float 0-1>" },
     ],
-    inlets:  [{ index: 0, type: "any", label: "media in  |  scaleX f  |  scaleY f  |  posX f  |  posY f  |  priority n  |  context name" }],
+    inlets:  [{ index: 0, type: "any", label: "media in  |  scaleX f  |  scaleY f  |  posX f  |  posY f  |  opacity f  |  priority n  |  context name" }],
     outlets: [],
     defaultWidth: 120,
     defaultHeight: 40,
@@ -1323,15 +1453,81 @@ export function deriveTriggerPorts(args: string[]): { inlets: PortDef[]; outlets
   const inlets: PortDef[] = [
     { index: 0, type: "any", label: "any → fan out right-to-left", temperature: "hot" },
   ];
+  const total = letters.length;
+  const ordinal = (n: number) => {
+    if (n === 1) return "1st";
+    if (n === 2) return "2nd";
+    if (n === 3) return "3rd";
+    return `${n}th`;
+  };
   const outlets: PortDef[] = letters.map((raw, i) => {
     const letter = raw.toLowerCase();
+    // t fires right-to-left: rightmost outlet fires first
+    const fireOrder = ordinal(total - i);
+    const suffix = ` (fires ${fireOrder})`;
     switch (letter) {
-      case "i": return { index: i, type: "float"   as PortType, label: "int" };
-      case "f": return { index: i, type: "float"   as PortType, label: "float" };
-      case "b": return { index: i, type: "bang"    as PortType, label: "bang" };
-      case "s": return { index: i, type: "message" as PortType, label: "symbol" };
-      case "l": return { index: i, type: "message" as PortType, label: "list" };
-      default:  return { index: i, type: "any"     as PortType, label: raw };
+      case "i": return { index: i, type: "float"   as PortType, label: `int${suffix}` };
+      case "f": return { index: i, type: "float"   as PortType, label: `float${suffix}` };
+      case "b": return { index: i, type: "bang"    as PortType, label: `bang${suffix}` };
+      case "s": return { index: i, type: "message" as PortType, label: `symbol${suffix}` };
+      case "l": return { index: i, type: "message" as PortType, label: `list${suffix}` };
+      default:  return { index: i, type: "any"     as PortType, label: `${raw}${suffix}` };
+    }
+  });
+  return { inlets, outlets };
+}
+
+/**
+ * pack: one inlet per arg (min 2). Inlet 0 is hot, the rest are cold.
+ * Single message outlet.
+ */
+export function derivePackPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const slots = args.length > 0 ? args : ["f", "f"];
+  const inlets: PortDef[] = slots.map((raw, i) => ({
+    index: i,
+    type: "any" as PortType,
+    label: i === 0 ? `slot 0 (hot): ${raw}` : `slot ${i} (cold): ${raw}`,
+    temperature: i === 0 ? ("hot" as const) : ("cold" as const),
+  }));
+  const outlets: PortDef[] = [{ index: 0, type: "message" as PortType, label: "packed list" }];
+  return { inlets, outlets };
+}
+
+/** Initial slot value for a `pack` arg: i/f → "0", s/l → "", anything else → the literal. */
+export function packSlotInit(raw: string): string {
+  const letter = raw.toLowerCase();
+  if (letter === "i" || letter === "f") return "0";
+  if (letter === "s" || letter === "l") return "";
+  return raw;
+}
+
+/**
+ * unpack: 1 hot inlet, one outlet per arg (min 2). Outlet types come from the
+ * arg letter (i/f → float, s/l → message, literal → any). Atoms emit
+ * right-to-left, matching Max.
+ */
+export function deriveUnpackPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const slots = args.length > 0 ? args : ["f", "f"];
+  const total = slots.length;
+  const ordinal = (n: number) => {
+    if (n === 1) return "1st";
+    if (n === 2) return "2nd";
+    if (n === 3) return "3rd";
+    return `${n}th`;
+  };
+  const inlets: PortDef[] = [
+    { index: 0, type: "any" as PortType, label: "list in (hot)", temperature: "hot" as const },
+  ];
+  const outlets: PortDef[] = slots.map((raw, i) => {
+    const letter = raw.toLowerCase();
+    const fireOrder = ordinal(total - i);
+    const suffix = ` (fires ${fireOrder})`;
+    switch (letter) {
+      case "i": return { index: i, type: "float"   as PortType, label: `int${suffix}` };
+      case "f": return { index: i, type: "float"   as PortType, label: `float${suffix}` };
+      case "s": return { index: i, type: "message" as PortType, label: `symbol${suffix}` };
+      case "l": return { index: i, type: "message" as PortType, label: `list${suffix}` };
+      default:  return { index: i, type: "any"     as PortType, label: `${raw}${suffix}` };
     }
   });
   return { inlets, outlets };
@@ -1442,11 +1638,11 @@ export function deriveJsEffectPorts(args: string[]): { inlets: PortDef[]; outlet
 }
 
 /** Parsed slider list in display order, tolerant of parse errors (returns []). */
-export function extractJsEffectSliders(source: string): Array<{ sliderIndex: number; label: string }> {
+export function extractJsEffectSliders(source: string): Array<{ sliderIndex: number; label: string; min: number; max: number }> {
   if (!source) return [];
   const parsed = parseJsfx(source);
   if (!parsed.ok) return [];
-  return parsed.program.sliders.map(s => ({ sliderIndex: s.index, label: s.label }));
+  return parsed.program.sliders.map(s => ({ sliderIndex: s.index, label: s.label, min: s.min, max: s.max }));
 }
 
 // ── buffer~ helpers ──────────────────────────────────────────────────
@@ -1617,11 +1813,11 @@ export function deriveReaperVideoPorts(args: string[]): { inlets: PortDef[]; out
 }
 
 /** Parsed param list in display order, tolerant of parse errors (returns []). */
-export function extractReaperVideoParams(source: string): Array<{ name: string; label: string }> {
+export function extractReaperVideoParams(source: string): Array<{ name: string; label: string; min: number; max: number }> {
   if (!source) return [];
   const parsed = parseRVideo(source);
   if (!parsed.ok) return [];
-  return parsed.program.params.map(p => ({ name: p.name, label: p.label || p.name }));
+  return parsed.program.params.map(p => ({ name: p.name, label: p.label || p.name, min: p.min, max: p.max }));
 }
 
 export function getObjectDef(type: string): ObjectSpec {
@@ -1661,6 +1857,27 @@ export function getObjectDef(type: string): ObjectSpec {
 /** Args visible in the attribute panel (non-hidden only). */
 export function getVisibleArgs(spec: ObjectSpec): ArgDef[] {
   return spec.args.filter(a => !a.hidden);
+}
+
+/** Fill missing creation args with their def defaults so the user can see
+ *  what the defaults are without consulting the spec. Only fills positions
+ *  up to and including the last *visible* arg — trailing hidden state args
+ *  (drunk's `current`, vbuf*'s `transport`/`position`/`thumb`, etc.) are
+ *  left alone so they don't surface in the patch text. Existing values are
+ *  preserved; only undefined/empty slots are filled. */
+export function fillCreationDefaults(spec: ObjectSpec, args: string[]): string[] {
+  let lastVisibleIdx = -1;
+  for (let i = 0; i < spec.args.length; i++) {
+    if (!spec.args[i].hidden) lastVisibleIdx = i;
+  }
+  if (lastVisibleIdx < 0) return [...args];
+  const out = [...args];
+  for (let i = 0; i <= lastVisibleIdx; i++) {
+    if (out[i] === undefined || out[i] === "") {
+      out[i] = spec.args[i].default ?? "";
+    }
+  }
+  return out;
 }
 
 /**
