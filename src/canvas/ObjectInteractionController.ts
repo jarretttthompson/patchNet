@@ -1027,10 +1027,22 @@ export class ObjectInteractionController {
         if (inlet === 0) {
           const parsed = Number.parseFloat(value);
           if (Number.isNaN(parsed)) break;
-          const clamped = Math.max(0, Math.min(1, parsed));
-          node.args[2] = String(clamped);
+          // Incoming values are interpreted in the slider's [lo, hi] range,
+          // matching Pd's [hsl]/[vsl] convention — a bare float arriving here
+          // is "the slider's current value." Previously we clamped to [0,1]
+          // and treated it as a raw thumb position, which silently pinned
+          // the thumb to max for any feedback path delivering bound-range or
+          // ms values (e.g. vbuf*'s loopLen outlet). The drag path still
+          // writes args[2] directly because the mouse already produces a
+          // [0,1] track fraction.
+          const lo = parseFloat(node.args[0] ?? "");
+          const hi = parseFloat(node.args[1] ?? "");
+          if (!isFinite(lo) || !isFinite(hi)) break;
+          const span = hi - lo;
+          const t = span === 0 ? 0 : Math.max(0, Math.min(1, (parsed - lo) / span));
+          node.args[2] = String(t);
           const thumbEl = this.findNodeEl(node.id)?.querySelector<HTMLElement>(".pn-ezslider__thumb");
-          if (thumbEl) thumbEl.style.left = `${clamped * 100}%`;
+          if (thumbEl) thumbEl.style.left = `${t * 100}%`;
           this.graph.emit("display");
           this.dispatchEzSliderOutput(node);
         } else if (inlet === 1) {

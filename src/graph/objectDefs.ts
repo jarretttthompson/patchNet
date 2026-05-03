@@ -416,12 +416,12 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { name: "value", type: "float", default: "0.5", hidden: true, description: "Thumb position (0–1)." },
     ],
     messages: [
-      { inlet: 0, selector: "float", description: "set thumb position (0–1) and output interpolated value" },
+      { inlet: 0, selector: "float", description: "set slider value (in [lo, hi]) and output it; values outside the range clamp to lo/hi" },
       { inlet: 1, selector: "float", description: "set lo bound" },
       { inlet: 2, selector: "float", description: "set hi bound" },
     ],
     inlets: [
-      { index: 0, type: "float", label: "thumb position (0–1)",  temperature: "hot"  },
+      { index: 0, type: "float", label: "value in [lo, hi]",     temperature: "hot"  },
       { index: 1, type: "float", label: "lo bound",              temperature: "cold" },
       { index: 2, type: "float", label: "hi bound",              temperature: "cold" },
     ],

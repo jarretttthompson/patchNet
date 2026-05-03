@@ -23,6 +23,25 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-02] COMPLETED | ezSlider: inlet 0 takes value-in-[lo,hi], not raw 0–1
+**Agent:** Claude Code
+
+**Done:**
+- ezSlider's left inlet now interprets incoming floats as values in the slider's `[lo, hi]` range, matching Pd's `[hsl]`/`[vsl]` convention. Values outside the range clamp to lo/hi.
+- Previously, inlet 0 clamped any incoming value to `[0, 1]` and treated it as a raw thumb fraction. Anything > 1 — e.g. `vbuf*`'s outlet-6 loopLen value (in ms) feeding back through `s/r loopLen` — silently pinned the thumb to max with no diagnostic. A metro driving the slider made this constant: every tick re-emitted the value, the feedback path returned an ms value, the slider clamped to 1.0, and the user couldn't drag away.
+- Drag path is unchanged (the mouse already produces a [0,1] track fraction, written to args[2] directly). Inlets 1/2 (lo/hi bounds) and bang-on-inlet-0 (re-emit) are unchanged.
+
+**Changed files:**
+- src/canvas/ObjectInteractionController.ts — rewrote inlet-0 case in `deliverMessageValue` to compute `t = clamp((v − lo) / (hi − lo), 0, 1)`.
+- src/graph/objectDefs.ts — updated inlet-0 label and message description so autocomplete reflects the new contract.
+
+**Notes / decisions:**
+- This is a behavior change. Existing patches that explicitly send `[0, 1]` values into ezSlider (e.g. `random` drivers) will now read those as values in `[lo, hi]` — for any non-trivial bounds they'd land in a tiny window near lo. That's the right tradeoff: the new behavior matches Pd convention and what users actually expect, and the broken cases are loud (thumb stops moving with the source) rather than silent (thumb pinned to one end, hidden by feedback). For the rare case where 0–1 input is actually wanted, an `ezScale` upstream is the explicit fix.
+- Considered keeping a separate `thumb`-selector inlet for raw 0–1 control. Decided against — the inlet-0 contract is the one users hit by default, and Pd has no separate thumb message either.
+
+**Next needed:**
+- (none specific)
+
 ## [2026-05-02] COMPLETED | vbuf*: loopStart / loopLen messages + setRange shift-to-fit
 **Agent:** Claude Code
 
