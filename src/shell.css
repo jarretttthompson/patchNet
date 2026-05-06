@@ -964,16 +964,12 @@ html {
 
 /* ── Odometer number boxes (integer / float) ────────────────────────────── */
 
-/* Body takes full space — no padding, frame fills it. Cursor inherits
-   the universal hand cursor from .patch-object-body; drum columns below
-   override that with row-resize to signal vertical scrubbing. */
 .patch-object-integer .patch-object-body,
 .patch-object-float   .patch-object-body {
   padding: 0;
   overflow: hidden;
 }
 
-/* Minimum size so the frame never collapses the inner window */
 .patch-object-integer,
 .patch-object-float {
   min-width:  52px;
@@ -981,33 +977,18 @@ html {
   border-color: var(--pn-accent);
 }
 
-/* ── Frame / housing ────────────────────────────────────────────────────── */
-/* Gray frame with green outlines on both edges:
-   - outer green: the patch-object's existing green glow/border
-   - gray fill:   the 10px border on .pn-odometer
-   - inner green: the ::after pseudo-element */
+/* Digit window fills the body directly — no extra housing frame. */
 .pn-odometer {
   display: flex;
   align-items: stretch;
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  border: 4px solid var(--pn-bg);
   padding: 0;
   background: transparent;
   position: relative; /* anchor for the typing overlay */
   user-select: none;
   gap: 0;
-}
-
-/* Inner green outline — sits at the boundary between the gray frame and the dark window */
-.pn-odometer::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border: 2px solid var(--pn-accent);
-  pointer-events: none;
-  z-index: 10;
 }
 
 /* ── Inner digit window ─────────────────────────────────────────────────── */

@@ -161,6 +161,7 @@ export class ObjectInteractionController {
     increment: number;
     isFloat: boolean;
     activePlace: number | null;
+    moved: boolean;
   } | null = null;
 
   private bufWaveDrag: {
@@ -648,7 +649,7 @@ export class ObjectInteractionController {
       const increment = activePlace !== null ? Math.pow(10, activePlace) : 1;
       const startValue = parseFloat(node.args[0] ?? "0") || 0;
 
-      this.numboxDrag = { node, el: odoEl, startY: e.clientY, startValue, increment, isFloat, activePlace };
+      this.numboxDrag = { node, el: odoEl, startY: e.clientY, startValue, increment, isFloat, activePlace, moved: false };
       document.body.classList.add("pn-state-numbox-drag");
       this.startWidgetDragSession();
     }
@@ -2895,6 +2896,11 @@ export class ObjectInteractionController {
     } else if (this.ezSliderDrag) {
       this.updateEzSliderFromEvent(e);
     } else if (this.numboxDrag) {
+      // Don't promote tiny pointer jitter into a value change. Without this
+      // gate, a 1px wiggle during a click rebuilds the .pn-odo-col DOM and
+      // kills the dblclick that opens inline numeric entry.
+      if (!this.numboxDrag.moved && Math.abs(e.clientY - this.numboxDrag.startY) <= this.DRAG_THRESHOLD) return;
+      this.numboxDrag.moved = true;
       this.updateNumboxFromEvent(e);
     } else if (this.bufWaveDrag) {
       this.updateBufWaveDragFromEvent(e);
@@ -2938,10 +2944,17 @@ export class ObjectInteractionController {
       this.ezSliderDrag = null;
       document.body.classList.remove("pn-state-slider-drag");
     } else if (this.numboxDrag) {
-      const { node } = this.numboxDrag;
-      this.updateNumboxFromEvent(e);
-      this.graph.emit("change");
-      this.dispatchValue(node.id, 0, node.args[0] ?? "0");
+      const { node, moved } = this.numboxDrag;
+      // Sub-threshold release = click, not drag. Skip the value update (which
+      // re-creates .pn-odo-col children) and the change-emit (which rebuilds
+      // the object DOM). Either would replace the click target between the
+      // two clicks of a double-click, suppressing dblclick — and dblclick is
+      // how integer/float open inline numeric entry on the digits.
+      if (moved) {
+        this.updateNumboxFromEvent(e);
+        this.graph.emit("change");
+        this.dispatchValue(node.id, 0, node.args[0] ?? "0");
+      }
       this.numboxDrag = null;
       document.body.classList.remove("pn-state-numbox-drag");
     } else if (this.bufWaveDrag) {
