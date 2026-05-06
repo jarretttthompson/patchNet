@@ -9,6 +9,7 @@ import { FftAnalyzerNode } from "./FftAnalyzerNode";
 import { JsEffectNode } from "./JsEffectNode";
 import { MixerNode } from "./MixerNode";
 import { WaveNode } from "./WaveNode";
+import { NoiseNode } from "./NoiseNode";
 import { AdsrNode } from "./AdsrNode";
 import { LfoNode } from "./LfoNode";
 import { TransientFollowerNode } from "./TransientFollowerNode";
@@ -47,6 +48,7 @@ export class AudioGraph {
   private jsEffectNodes     = new Map<string, JsEffectNode>();
   private mixerNodes        = new Map<string, MixerNode>();
   private waveNodes         = new Map<string, WaveNode>();
+  private noiseNodes        = new Map<string, NoiseNode>();
   private adsrNodes         = new Map<string, AdsrNode>();
   private lfoNodes          = new Map<string, LfoNode>();
   private transientFollowerNodes = new Map<string, TransientFollowerNode>();
@@ -230,6 +232,10 @@ export class AudioGraph {
     return this.waveNodes.get(nodeId) ?? null;
   }
 
+  getNoiseNode(nodeId: string): NoiseNode | null {
+    return this.noiseNodes.get(nodeId) ?? null;
+  }
+
   getAdsrNode(nodeId: string): AdsrNode | null {
     return this.adsrNodes.get(nodeId) ?? null;
   }
@@ -320,6 +326,17 @@ export class AudioGraph {
     }
   }
 
+  /** Redraw all noise~ live oscilloscope traces. Called once per rAF. */
+  updateNoiseDisplay(panGroup: HTMLElement): void {
+    if (this.noiseNodes.size === 0) return;
+    for (const [id, nn] of this.noiseNodes) {
+      const liveCanvas = panGroup.querySelector<HTMLCanvasElement>(
+        `canvas.pn-noise-scope-live[data-noise-node-id="${id}"]`,
+      );
+      if (liveCanvas) nn.drawLiveScope(liveCanvas);
+    }
+  }
+
   getBufferNode(nodeId: string): BufferNode | null {
     return this.bufferNodes.get(nodeId) ?? null;
   }
@@ -379,6 +396,8 @@ export class AudioGraph {
     this.mixerNodes.clear();
     for (const wn of this.waveNodes.values()) wn.destroy();
     this.waveNodes.clear();
+    for (const nn of this.noiseNodes.values()) nn.destroy();
+    this.noiseNodes.clear();
     for (const an of this.adsrNodes.values()) an.destroy();
     this.adsrNodes.clear();
     this.adsrPendingCompletions = [];
@@ -472,6 +491,9 @@ export class AudioGraph {
     }
     for (const id of this.waveNodes.keys()) {
       if (!activeNodeIds.has(id)) { this.waveNodes.get(id)?.destroy(); this.waveNodes.delete(id); }
+    }
+    for (const id of this.noiseNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.noiseNodes.get(id)?.destroy(); this.noiseNodes.delete(id); }
     }
     for (const id of this.adsrNodes.keys()) {
       if (!activeNodeIds.has(id)) { this.adsrNodes.get(id)?.destroy(); this.adsrNodes.delete(id); }
@@ -610,6 +632,17 @@ export class AudioGraph {
           // when the value hasn't changed (gain.setTargetAtTime is cheap).
           wn.setMorph(Number.isFinite(morph) ? morph : 0);
           wn.setLevel(Number.isFinite(level) ? level : 0.5);
+        }
+        if (node.type === "noise~") {
+          const color = node.args[0] ?? "white";
+          const level = parseFloat(node.args[1] ?? "0.25");
+          let nn = this.noiseNodes.get(node.id);
+          if (!nn) {
+            nn = new NoiseNode(this.runtime);
+            this.noiseNodes.set(node.id, nn);
+          }
+          nn.setColor(color);
+          nn.setLevel(Number.isFinite(level) ? level : 0.25);
         }
         if (node.type === "adsr~") {
           const a  = parseFloat(node.args[0] ?? "50");
@@ -779,6 +812,7 @@ export class AudioGraph {
     for (const js of this.jsEffectNodes.values()) js.disconnect();
     for (const mx of this.mixerNodes.values()) mx.disconnect();
     for (const wn of this.waveNodes.values()) wn.disconnect();
+    for (const nn of this.noiseNodes.values()) nn.disconnect();
     for (const an of this.adsrNodes.values()) an.disconnect();
     for (const ln of this.lfoNodes.values()) ln.disconnect();
     for (const tf of this.transientFollowerNodes.values()) tf.disconnect();
@@ -821,6 +855,8 @@ export class AudioGraph {
           }
         } else if (fromNode.type === "wave~") {
           this.waveNodes.get(edge.fromNodeId)?.connect(channelInput, 0);
+        } else if (fromNode.type === "noise~") {
+          this.noiseNodes.get(edge.fromNodeId)?.connect(channelInput, 0);
         } else if (fromNode.type === "adsr~") {
           this.adsrNodes.get(edge.fromNodeId)?.connect(channelInput, 0);
         } else if (fromNode.type === "lfo~") {
@@ -864,6 +900,8 @@ export class AudioGraph {
           }
         } else if (fromNode.type === "wave~") {
           this.waveNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "noise~") {
+          this.noiseNodes.get(edge.fromNodeId)?.connect(destInput, 0);
         } else if (fromNode.type === "adsr~") {
           this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, 0);
         } else if (fromNode.type === "lfo~") {
@@ -904,6 +942,8 @@ export class AudioGraph {
           }
         } else if (fromNode.type === "wave~") {
           this.waveNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "noise~") {
+          this.noiseNodes.get(edge.fromNodeId)?.connect(destInput, 0);
         } else if (fromNode.type === "adsr~") {
           this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, 0);
         } else if (fromNode.type === "lfo~") {
@@ -944,6 +984,8 @@ export class AudioGraph {
           }
         } else if (fromNode.type === "wave~") {
           this.waveNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "noise~") {
+          this.noiseNodes.get(edge.fromNodeId)?.connect(destInput, 0);
         } else if (fromNode.type === "adsr~") {
           this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, 0);
         } else if (fromNode.type === "lfo~") {
@@ -986,6 +1028,8 @@ export class AudioGraph {
           }
         } else if (fromNode.type === "wave~") {
           this.waveNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "noise~") {
+          this.noiseNodes.get(edge.fromNodeId)?.connect(destInput, 0);
         } else if (fromNode.type === "adsr~") {
           this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, 0);
         } else if (fromNode.type === "lfo~") {
@@ -1028,6 +1072,8 @@ export class AudioGraph {
           }
         } else if (fromNode.type === "wave~") {
           this.waveNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
+        } else if (fromNode.type === "noise~") {
+          this.noiseNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
         } else if (fromNode.type === "adsr~") {
           this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
         } else if (fromNode.type === "lfo~") {
@@ -1077,6 +1123,8 @@ export class AudioGraph {
         }
       } else if (fromNode.type === "wave~") {
         this.waveNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
+      } else if (fromNode.type === "noise~") {
+        this.noiseNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
       } else if (fromNode.type === "adsr~") {
         this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
       } else if (fromNode.type === "lfo~") {

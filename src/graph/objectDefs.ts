@@ -494,6 +494,29 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
+  "noise~": {
+    description: "Continuous procedural noise source. Outputs white, pink, or brown noise at audio rate.",
+    category: "audio",
+    args: [
+      { name: "color", type: "symbol", default: "white",
+        description: "Noise color: white, pink, or brown." },
+      { name: "level", type: "float", default: "0.25", min: 0, max: 1, step: 0.001,
+        description: "Output level (linear 0..1)." },
+    ],
+    messages: [
+      { inlet: 0, selector: "color", description: "color white|pink|brown — choose the noise spectrum" },
+      { inlet: 0, selector: "level", description: "level <0..1> — set output level" },
+    ],
+    inlets: [
+      { index: 0, type: "any", label: "color white|pink|brown | level <0..1>" },
+    ],
+    outlets: [
+      { index: 0, type: "signal", label: "noise signal out" },
+    ],
+    defaultWidth: 140,
+    defaultHeight: 110,
+  },
+
   "adsr~": {
     description: "ADSR envelope generator. Multiplies the input signal by an attack/decay/sustain-hold/release envelope. Bang to one-shot fire; float 1/0 for gate mode. Drag the handles in the body to shape the envelope.",
     category: "audio",

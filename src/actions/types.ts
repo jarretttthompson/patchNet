@@ -24,6 +24,7 @@ export interface AppActionsAPI {
   isPatchMode(): boolean;
   toggleToolbar(): void;
   toggleConsole(): void;
+  togglePatchTerminal(): void;
   newScratchTab(): void;
 }
 

@@ -86,6 +86,15 @@ export function formatLevel(v: number): string {
   return Number.isFinite(v) ? Math.max(0, Math.min(1, v)).toFixed(2) : "0.00";
 }
 
+function formatNoiseLevel(v: number): string {
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)).toFixed(2) : "0.00";
+}
+
+function normalizeNoiseColor(raw: string | undefined): "white" | "pink" | "brown" {
+  const color = (raw ?? "white").trim().toLowerCase();
+  return color === "pink" || color === "brown" ? color : "white";
+}
+
 /** Build a wave~ knob: SVG dial + label + readout. The dial pointer angle
  *  is set inline from the knob's normalized 0..1 fraction. Param-space →
  *  fraction conversion lives in waveKnobFraction(). */
@@ -1148,6 +1157,21 @@ function buildBody(node: PatchNode): HTMLDivElement {
           ${waveKnobHtml(node.id, "freq",  "FREQ",  freq,  formatFreq(freq))}
           ${waveKnobHtml(node.id, "morph", "MORPH", morph, formatMorph(morph))}
           ${waveKnobHtml(node.id, "level", "LEVEL", level, formatLevel(level))}
+        </div>
+      </div>`;
+
+  } else if (node.type === "noise~") {
+    body.classList.add("pn-noise-body");
+    const color = normalizeNoiseColor(node.args[0]);
+    const level = parseFloat(node.args[1] ?? "0.25");
+    body.innerHTML = `
+      <div class="pn-noise-panel">
+        <div class="pn-noise-scope-bezel">
+          <canvas class="pn-noise-scope-live" data-noise-node-id="${node.id}" width="320" height="96"></canvas>
+        </div>
+        <div class="pn-noise-readouts">
+          <span data-noise-readout="color">${color}</span>
+          <span data-noise-readout="level">L:${formatNoiseLevel(level)}</span>
         </div>
       </div>`;
 

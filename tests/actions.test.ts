@@ -139,8 +139,29 @@ describe("ActionKeymap", () => {
     expect(km.shortcutsFor("view.zoomIn")).toEqual(["Mod+=", "Mod++"]);
   });
 
+  it("prefers explicit Shift+letter bindings and falls back to bare letters when unbound", () => {
+    const r = new ActionRegistry();
+    r.registerAll([
+      makeAction({ id: "object.toggle", defaultKeys: ["T"] }),
+      makeAction({ id: "terminal.toggle", defaultKeys: ["Shift+T"] }),
+      makeAction({ id: "view.toolbar", defaultKeys: ["Q"] }),
+      makeAction({ id: "actions.open", defaultKeys: ["?"] }),
+    ]);
+    const km = new ActionKeymap(r);
+    km.rebuildFromDefaults();
+
+    expect(km.resolve(new FakeKeyEvent({ key: "t" }) as unknown as KeyboardEvent)).toEqual(["object.toggle"]);
+    expect(km.resolve(new FakeKeyEvent({ key: "T", shiftKey: true }) as unknown as KeyboardEvent)).toEqual(["terminal.toggle"]);
+    expect(km.resolve(new FakeKeyEvent({ key: "Q", shiftKey: true }) as unknown as KeyboardEvent)).toEqual(["view.toolbar"]);
+    expect(km.resolve(new FakeKeyEvent({ key: "?", shiftKey: true }) as unknown as KeyboardEvent)).toEqual(["actions.open"]);
+  });
+
   it("eventToChord round-trips printable + named keys", () => {
-    expect(eventToChord(new FakeKeyEvent({ key: "s", metaKey: true }) as unknown as KeyboardEvent)).toMatch(/^mod\+s$/i);
+    const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+    const mod = { metaKey: isMac, ctrlKey: !isMac };
+    expect(eventToChord(new FakeKeyEvent({ key: "s", ...mod }) as unknown as KeyboardEvent)).toMatch(/^mod\+s$/i);
+    expect(eventToChord(new FakeKeyEvent({ key: "T", ...mod, shiftKey: true }) as unknown as KeyboardEvent)).toMatch(/^mod\+shift\+t$/i);
+    expect(eventToChord(new FakeKeyEvent({ key: "T", shiftKey: true }) as unknown as KeyboardEvent)).toBe("Shift+t");
     expect(eventToChord(new FakeKeyEvent({ key: "Delete" }) as unknown as KeyboardEvent)).toBe("Delete");
     expect(eventToChord(new FakeKeyEvent({ code: "Space" }) as unknown as KeyboardEvent)).toBe("Space");
   });

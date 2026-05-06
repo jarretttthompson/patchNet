@@ -50,6 +50,7 @@ import { TabManager } from "./canvas/TabManager";
 import { ScratchTabSession } from "./canvas/ScratchTabSession";
 import { registerSession } from "./canvas/patchSessionRegistry";
 import { buildShareUrl, loadFromShareUrl } from "./share/shareUrl";
+import { PatchTerminalController } from "./terminal/PatchTerminalController";
 
 function requireElement<T extends Element>(
   selector: string,
@@ -291,6 +292,7 @@ function startMeterLoop(): void {
     audioGraph.mountFftNodes(panGroup);
     audioGraph.updateFftDisplay(panGroup);
     audioGraph.updateWaveDisplay(panGroup);
+    audioGraph.updateNoiseDisplay(panGroup);
     audioGraph.updateLfoDisplay(panGroup);
     audioGraph.updateTransientFollowerDisplay(panGroup);
     audioGraph.flushAdsrCompletions(performance.now());
@@ -1396,6 +1398,8 @@ for (const a of collectLocalPluginActions()) {
 const actionKeymap = new ActionKeymap(actionRegistry);
 actionKeymap.loadUserOverrides();
 
+let patchTerminal: PatchTerminalController | null = null;
+
 const appActions: AppActionsAPI = {
   saveToFile: () => savePatchToFile(),
   openLoadPicker: () => {
@@ -1411,6 +1415,7 @@ const appActions: AppActionsAPI = {
   isPatchMode: () => getPatchMode(),
   toggleToolbar: toggleToolbarCollapse,
   toggleConsole,
+  togglePatchTerminal: () => patchTerminal?.toggle(),
   newScratchTab: () => { addNewScratchTab(); },
 };
 
@@ -1440,6 +1445,7 @@ const actionListDialog = new ActionListDialog(
   buildActionContext,
   (id) => actionDispatcher.run(id),
 );
+patchTerminal = new PatchTerminalController(buildActionContext);
 
 actionDispatcher.attachToDocument();
 shortcutsBtn?.addEventListener("click", () => actionListDialog.toggle());

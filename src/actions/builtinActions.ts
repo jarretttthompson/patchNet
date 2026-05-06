@@ -21,6 +21,14 @@ export const BUILTIN_ACTIONS: PatchAction[] = [
     keywords: ["palette", "command", "menu", "shortcuts"],
     run: (ctx) => ctx.openActionList(),
   },
+  {
+    id: "app.terminal.toggle",
+    title: "Toggle patch terminal",
+    section: APP,
+    defaultKeys: ["Shift+T"],
+    keywords: ["terminal", "command", "live coding", "keyboard"],
+    run: (ctx) => ctx.app.togglePatchTerminal(),
+  },
 
   // ── File ─────────────────────────────────────────────────────────────
   {
@@ -98,6 +106,7 @@ export const BUILTIN_ACTIONS: PatchAction[] = [
     id: "app.view.toggleConsole",
     title: "Toggle text/console panel",
     section: VIEW,
+    defaultKeys: ["C"],
     keywords: ["panel", "log", "side"],
     run: (ctx) => ctx.app.toggleConsole(),
   },

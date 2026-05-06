@@ -11,9 +11,9 @@
  * Printable vs special keys
  * ─────────────────────────
  * Printable leaves match e.key directly (case-insensitive for letters).
- * "?" matches when e.key === "?", which already accounts for Shift+/ on a
- * US keyboard — chord strings describe what the user types, not which
- * physical keys they press.
+ * Explicit shifted-letter bindings ("Shift+T") win over bare-letter
+ * bindings ("T"). If no shifted binding exists, shifted bare letters fall
+ * back to their unshifted binding so "Q" still matches q or Q.
  *
  * Special leaves match named keys exactly: Escape, Delete, Backspace,
  * Space, Tab, Enter, ArrowUp/Down/Left/Right, Home, End.
@@ -100,12 +100,9 @@ export function eventToChord(e: KeyboardEvent): string {
   if (cmd) parts.push("Mod");
   if (e.altKey) parts.push("Alt");
 
-  // Shift is only an explicit modifier when the leaf is a non-printable key
-  // (Shift+Tab, Shift+ArrowDown). For printable characters the shifted form
-  // is already encoded in e.key ("?" not "Shift+/").
   const leaf = leafFromEvent(e);
   const isPrintable = leaf.length === 1;
-  if (e.shiftKey && !isPrintable) parts.push("Shift");
+  if (e.shiftKey && shouldPreserveShift(isPrintable, leaf)) parts.push("Shift");
 
   parts.push(leaf.length === 1 ? leaf.toLowerCase() : leaf);
   return parts.join("+");
@@ -128,7 +125,7 @@ export function chordFromEventForUi(e: KeyboardEvent): string | null {
   if (cmd) parts.push("Mod");
   if (e.altKey) parts.push("Alt");
   const isPrintable = leaf.length === 1;
-  if (e.shiftKey && !isPrintable) parts.push("Shift");
+  if (e.shiftKey && shouldPreserveShift(isPrintable, leaf)) parts.push("Shift");
   parts.push(isPrintable ? leaf.toUpperCase() : leaf);
   return parts.join("+");
 }
@@ -324,8 +321,16 @@ export class ActionKeymap {
   resolve(e: KeyboardEvent): string[] {
     const cmd = IS_MAC ? e.metaKey : e.ctrlKey;
     const canonical = canonicalEvent(e, cmd);
-    const set = this.chordToActions.get(canonical);
-    return set ? [...set] : [];
+    const exact = this.chordToActions.get(canonical);
+    if (exact) return [...exact];
+
+    const fallback = fallbackCanonicalEvent(e, cmd, canonical);
+    if (fallback) {
+      const set = this.chordToActions.get(fallback);
+      if (set) return [...set];
+    }
+
+    return [];
   }
 
   /** All chords currently bound — for conflict detection in future shortcut UI. */
@@ -342,9 +347,8 @@ function canonicalKey(p: ParsedChord): string {
   const parts: string[] = [];
   if (p.mod) parts.push("mod");
   if (p.alt) parts.push("alt");
-  // Shift is only meaningful for non-printable leaves
   const isPrintable = p.key.length === 1;
-  if (p.shift && !isPrintable) parts.push("shift");
+  if (p.shift && shouldPreserveShift(isPrintable, p.key)) parts.push("shift");
   parts.push(isPrintable ? p.key.toLowerCase() : p.key);
   return parts.join("+");
 }
@@ -355,7 +359,23 @@ function canonicalEvent(e: KeyboardEvent, cmd: boolean): string {
   const parts: string[] = [];
   if (cmd) parts.push("mod");
   if (e.altKey) parts.push("alt");
-  if (e.shiftKey && !isPrintable) parts.push("shift");
+  if (e.shiftKey && shouldPreserveShift(isPrintable, leaf)) parts.push("shift");
   parts.push(isPrintable ? leaf.toLowerCase() : leaf);
   return parts.join("+");
+}
+
+function fallbackCanonicalEvent(e: KeyboardEvent, cmd: boolean, exact: string): string | null {
+  if (!e.shiftKey || cmd || e.altKey) return null;
+  const leaf = e.code === "Space" ? "Space" : e.key;
+  if (!isLetterLeaf(leaf)) return null;
+  const fallback = leaf.toLowerCase();
+  return fallback === exact ? null : fallback;
+}
+
+function shouldPreserveShift(isPrintable: boolean, leaf: string): boolean {
+  return !isPrintable || isLetterLeaf(leaf);
+}
+
+function isLetterLeaf(leaf: string): boolean {
+  return /^[a-z]$/i.test(leaf);
 }

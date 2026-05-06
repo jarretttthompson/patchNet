@@ -102,7 +102,7 @@ This is more than a deployment detail. It changes how the tool gets used:
 
 **Control / utility:** `button`, `toggle`, `slider`, `ezSlider`, `ezScale`, `metro`, `timer`, `count`, `drunk`, `pack`, `unpack`, `prepend`, `append`, `trigger`, `int`, `float`, `f`, `+`, `-`, `*`, `/`, `s`, `r`, `comment`, `message`.
 
-**Audio:** `click~`, `wave~`, `lfo~`, `adsr~`, `transientFollower~`, `mixer~`, `buffer~`, `vbuf*`, `fft~`, `js~` (JSFX), `adc~ N`, `dac~ N`.
+**Audio:** `click~`, `noise~`, `wave~`, `lfo~`, `adsr~`, `transientFollower~`, `mixer~`, `buffer~`, `vbuf*`, `fft~`, `js~` (JSFX), `adc~ N`, `dac~ N`.
 
 **Video / visuals:** `cam*`, `frame*`, `browser~*`, `youtube~*`, `mediaVideo*`, `mediaImage*`, `imageFX*`, `vfxCRT*`, `vfxBlur*`, `shaderToy*` (GLSL), `reaperVideo*`, `layer*`, `visualizer*`.
 

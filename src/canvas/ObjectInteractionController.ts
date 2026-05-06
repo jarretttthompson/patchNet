@@ -80,6 +80,11 @@ function splitOnComma(content: string): string[] {
   return content.split(",").map((segment) => segment.trim()).filter(Boolean);
 }
 
+function normalizeNoiseColor(raw: string | undefined): "white" | "pink" | "brown" {
+  const color = (raw ?? "white").trim().toLowerCase();
+  return color === "pink" || color === "brown" ? color : "white";
+}
+
 /** Coerce a string-on-the-wire value into the typed payload shape that
  *  netsend forwards. A bare token may be a number, symbol, or empty (treated
  *  as bang); whitespace-separated tokens become a list. */
@@ -1748,6 +1753,50 @@ export class ObjectInteractionController {
         } else if (wHead === "gate") {
           const g = parseFloat(wRest[0] ?? "");
           if (Number.isFinite(g)) setGate(g !== 0);
+        }
+        break;
+      }
+
+      case "noise~": {
+        // Continuous signal source. Inlet 0 accepts lightweight control
+        // selectors (`color white|pink|brown`, `level <0..1>`), plus a bare
+        // float as shorthand for level.
+        if (inlet !== 0) break;
+        const nTokens = value.trim().split(/\s+/);
+        const nHead   = nTokens[0] ?? "";
+        const nRest   = nTokens.slice(1);
+        const nn = this.audioGraph?.getNoiseNode(node.id);
+
+        const refreshFace = () => {
+          const el = this.panGroup.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`);
+          const colorEl = el?.querySelector<HTMLElement>('[data-noise-readout="color"]');
+          const levelEl = el?.querySelector<HTMLElement>('[data-noise-readout="level"]');
+          if (colorEl) colorEl.textContent = normalizeNoiseColor(node.args[0]);
+          if (levelEl) {
+            const lvl = parseFloat(node.args[1] ?? "0.25");
+            levelEl.textContent = `L:${formatLevel(lvl)}`;
+          }
+        };
+
+        if (nHead === "color" || nHead === "white" || nHead === "pink" || nHead === "brown") {
+          const color = normalizeNoiseColor(nHead === "color" ? nRest[0] : nHead);
+          node.args[0] = color;
+          nn?.setColor(color);
+          refreshFace();
+          this.graph.emit("display");
+          return;
+        }
+
+        if (nHead === "level" || Number.isFinite(parseFloat(nHead))) {
+          const raw = parseFloat(nHead === "level" ? (nRest[0] ?? "") : nHead);
+          if (Number.isFinite(raw)) {
+            const level = Math.max(0, Math.min(1, raw));
+            node.args[1] = level.toFixed(4);
+            nn?.setLevel(level);
+            refreshFace();
+            this.graph.emit("display");
+            return;
+          }
         }
         break;
       }

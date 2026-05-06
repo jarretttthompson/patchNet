@@ -23,6 +23,68 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-06] COMPLETED | Patch terminal (Shift+T) with `{ ... }` patch-phrase DSL
+**Agent:** Claude Code
+**Phase:** Live-coding surface — Milestone 1
+
+**Done:**
+- New overlay panel (`PatchTerminalController`) with prompt input, scrolling log (cap 80 rows), status row, and ↑/↓ history (cap 100). Shown/hidden via the new builtin action `app.terminal.toggle` bound to `Shift+T`; Esc and the close button also dismiss it.
+- `PatchTerminalEngine` parses six commands: `add <type> [args] [as alias]`, `connect <ref>.<outlet> -> <ref>.<inlet>`, `select <ref...>`, `delete <ref...> | delete selection`, `move <ref> <x> <y>`, `run <action id|title query>`. References resolve in order: alias → `last` → `selected` (single-node only) → unique node-id prefix.
+- Aliases live in a `WeakMap<PatchGraph, TerminalSessionState>` so each tab/scratch session has its own namespace and they get GC'd with the graph. Pruned on delete.
+- Added a `{ ... }` braced patch-phrase DSL: builds a vertical signal chain plus its connections in one expression. 1-based ports inside braces (Max/Pd convention). Whole phrase is validated against a throwaway `PatchGraph` first — nothing commits if any edge would error. Runs inside one `graph.batchChange(...)`, so a phrase undoes in one step.
+- `ActionKeymap`: explicit `Shift+letter` chords now beat bare letters, with fall-through to the unshifted binding when no Shift+ binding exists. `Shift` is preserved in canonical chords for letter leaves; non-letter printables (`?`, `+`) keep the old behavior because shift is already encoded in `e.key`.
+- Added `defaultKeys: ["C"]` to `app.view.toggleConsole` while editing the keymap.
+
+**Changed files:**
+- src/terminal/PatchTerminalController.ts — new overlay UI (prompt, log, history, focus).
+- src/terminal/PatchTerminalEngine.ts — tokenizer, parser, command dispatch, alias state, phrase planner.
+- src/actions/builtinActions.ts — new `app.terminal.toggle` action; `C` default for `toggleConsole`.
+- src/actions/types.ts — `togglePatchTerminal()` on `AppActionsAPI`.
+- src/actions/ActionKeymap.ts — Shift+letter binding precedence + canonical-chord rules + bare-letter fallback.
+- src/main.ts — construct controller, wire `togglePatchTerminal` into the action context.
+- src/shell.css — `.pn-terminal*` styles.
+- tests/actions.test.ts — Shift+letter precedence + chord round-trip cases.
+- tests/terminal.test.ts — tokenizer + Phase-1 commands + braced phrases + undo coverage.
+
+**Notes / decisions:**
+- Why two port conventions: bare `connect` keeps 0-based ports because that's what the canvas exposes; `{ ... }` uses 1-based because it reads naturally as a chain ("out 1 -> in 1") and matches Max/Pd literature.
+- Why `WeakMap`-keyed sessions: tabs each own a `PatchGraph`; per-graph aliases keep the namespace local, and we never have to manually flush state on tab close.
+- Validate-then-commit on phrases keeps the graph from ever holding a half-built phrase, which would have been visible in the text panel and a mess to undo.
+- `app.view.toggleConsole`'s new `C` default is a low-risk filler — it was previously unbound. Easy to override via the action list if it conflicts with anything user-added.
+
+**Next needed:**
+- Browser smoke test: `Shift+T`, type `{ toggle (t) out 1 -> in 1 metro [500] (m) out 1 -> in 1 click~ (c) out 1 -> in 1 dac~ }`, then `t.0 -> m.0` toggle on/off, then undo to verify single-step rollback.
+- Future milestones: tab completion (objects + aliases + actions), saved phrase macros (the disabled "New action…" button in the action list dialog is reserved for this), inline `help`.
+
+## [2026-05-06] COMPLETED | noise~ audio source
+**Agent:** Codex
+**Phase:** Object suite — audio source
+
+**Done:**
+- Added `noise~`, a continuous procedural audio source with white/pink/brown color modes, level control, one control inlet, and one signal outlet.
+- Added a compact live scope/readout face so the object has visible DSP feedback in the canvas.
+- Wired `noise~` through `AudioGraph` as a signal source for `dac~`, `fft~`, `js~`, `mixer~`, `wave~` CV, `adsr~`, `lfo~`, `transientFollower~`, and `buffer~` destinations.
+- Added object docs and focused round-trip/default-port tests.
+
+**Changed files:**
+- src/graph/objectDefs.ts — registered `noise~` ObjectSpec.
+- src/runtime/NoiseNode.ts — new procedural noise runtime node.
+- src/runtime/AudioGraph.ts — runtime ownership, display loop, and routing.
+- src/canvas/ObjectRenderer.ts — `noise~` face rendering.
+- src/canvas/ObjectInteractionController.ts — `color` / `level` control messages.
+- src/shell.css — scoped `noise~` face styles.
+- src/main.ts — rAF display update.
+- tests/noise-object.test.ts — default spec + patch-text round-trip coverage.
+- docs/objects/noise~.md — object reference page.
+- README.md — audio object suite update.
+
+**Notes / decisions:**
+- `noise~` is continuous when DSP is on, like Max/Pd noise sources. Default level is `0.25` so a direct `noise~ → dac~` patch is audible without being full-scale by default.
+- Color changes swap the looping noise buffer and restart the internal `AudioBufferSourceNode`; level changes ramp a GainNode for click-free control.
+
+**Next needed:**
+- Browser smoke test with DSP on: `noise~ white 0.15 → dac~`, then send `pink`, `brown`, and `level 0.05` messages to verify spectrum/level changes by ear.
+
 ## [2026-05-06] COMPLETED | Collapsible section headers in action list
 **Agent:** Claude Code
 **Phase:** Action system — Milestone 1e
