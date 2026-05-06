@@ -1556,6 +1556,7 @@ export function renderObject(node: PatchNode): HTMLDivElement {
 
   el.dataset.nodeId   = node.id;
   el.dataset.nodeType = node.type;
+  if (node.name) el.dataset.nodeName = node.name;
   el.style.left = `${Math.round(node.x)}px`;
   el.style.top = `${Math.round(node.y)}px`;
 
@@ -1565,7 +1566,8 @@ export function renderObject(node: PatchNode): HTMLDivElement {
   el.style.width = `${w}px`;
   el.style.height = `${h}px`;
 
-  el.setAttribute("aria-label", `${node.type} object`);
+  el.setAttribute("aria-label", node.name ? `${node.name}: ${node.type} object` : `${node.type} object`);
+  if (node.name) el.title = `${node.name} (${node.type})`;
 
   const topInlets = node.inlets.filter(p => !p.side || p.side === "top");
   const sideInlets = node.inlets.filter(p => p.side === "left");

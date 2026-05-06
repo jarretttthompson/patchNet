@@ -3,6 +3,7 @@ import { audioPortDefaultWidth, canonicalizeType, deriveAdcPorts, deriveBufferPo
 import { PatchNode } from "../graph/PatchNode";
 import type { PortType } from "../graph/PatchNode";
 import { derivePortsFromCode } from "../canvas/codeboxPorts";
+import { validateNodeName } from "../graph/nodeNames";
 import { isBlobPlaceholder } from "./serialize";
 
 export class PatchParseError extends Error {
@@ -60,6 +61,7 @@ export function parsePatch(text: string): ParsedPatch {
     panelH?: number;
   }> = [];
   const pendingIds: Array<{ nodeIndex: number; id: string; lineNumber: number }> = [];
+  const pendingNames: Array<{ nodeIndex: number; name: string; lineNumber: number }> = [];
   const pendingGroups: Array<{ indices: number[]; lineNumber: number }> = [];
   let sawCanvasHeader = false;
 
@@ -358,6 +360,25 @@ export function parsePatch(text: string): ParsedPatch {
       continue;
     }
 
+    if (parts[1] === "name") {
+      requireParts(parts, 4, lineNumber, "Name lines must include node index and name");
+      const nodeIndex = Number(parts[2]);
+      const name = parts[3];
+      if (!Number.isInteger(nodeIndex)) {
+        throw new PatchParseError(lineNumber, "Name node index must be an integer");
+      }
+      try {
+        validateNodeName(name);
+      } catch (err) {
+        throw new PatchParseError(
+          lineNumber,
+          err instanceof Error ? err.message : "Invalid object name",
+        );
+      }
+      pendingNames.push({ nodeIndex, name, lineNumber });
+      continue;
+    }
+
     if (parts[1] === "size") {
       requireParts(parts, 5, lineNumber, "Size lines must include node index, width, and height");
       const nodeIndex = Number(parts[2]);
@@ -406,6 +427,11 @@ export function parsePatch(text: string): ParsedPatch {
   for (const { nodeIndex, id } of pendingIds) {
     const node = nodes[nodeIndex];
     if (node) node.id = id;
+  }
+
+  for (const { nodeIndex, name } of pendingNames) {
+    const node = nodes[nodeIndex];
+    if (node) node.name = name;
   }
 
   pendingConnections.forEach((connection) => {

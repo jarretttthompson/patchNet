@@ -32,11 +32,6 @@ export class PatchTerminalController {
     spacer.className = "pn-terminal__spacer";
     header.appendChild(spacer);
 
-    const shortcut = document.createElement("span");
-    shortcut.className = "pn-terminal__shortcut";
-    shortcut.textContent = "Shift+T";
-    header.appendChild(shortcut);
-
     const closeBtn = document.createElement("button");
     closeBtn.className = "pn-terminal__close";
     closeBtn.type = "button";
@@ -65,7 +60,7 @@ export class PatchTerminalController {
     this.inputEl.type = "text";
     this.inputEl.autocomplete = "off";
     this.inputEl.spellcheck = false;
-    this.inputEl.placeholder = "add button as trig";
+    this.inputEl.placeholder = "";
     promptRow.appendChild(this.inputEl);
 
     this.statusEl = document.createElement("div");

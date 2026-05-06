@@ -47,6 +47,18 @@ const MENU_STYLE = `
   background: var(--pn-hover-accent);
   color: var(--pn-accent);
 }
+.pn-context-menu-note {
+  padding: 6px 14px 8px;
+  color: var(--pn-text-dim);
+  border-bottom: 1px solid var(--pn-border);
+  margin-bottom: 4px;
+  user-select: text;
+  letter-spacing: 0.04em;
+}
+.pn-context-menu-note strong {
+  color: var(--pn-text);
+  font-weight: 700;
+}
 `;
 
 function injectMenuStyles(): void {
@@ -838,6 +850,14 @@ export class CanvasController {
     menu.className = "pn-context-menu";
     menu.style.left = `${screenX}px`;
     menu.style.top = `${screenY}px`;
+
+    const nameNote = document.createElement("div");
+    nameNote.className = "pn-context-menu-note";
+    nameNote.append("name: ");
+    const nameValue = document.createElement("strong");
+    nameValue.textContent = node.name ?? "(unnamed)";
+    nameNote.appendChild(nameValue);
+    menu.appendChild(nameNote);
 
     const addItem = (label: string, onClick: () => void): void => {
       const btn = document.createElement("button");

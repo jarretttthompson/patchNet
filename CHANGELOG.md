@@ -23,6 +23,44 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-06] COMPLETED | Persistent object names + phrases that attach to existing nodes
+**Agent:** Claude Code
+**Phase:** Live-coding surface — Milestone 2
+
+**Done:**
+- New `PatchNode.name` field. Every node carries a unique, human-readable name (e.g. `metro1`, `metro2`, `dac1`, `clock`) auto-allocated at create time via `src/graph/nodeNames.ts`. `~` and `*` are stripped from the type for the base; counter is per-graph and reuses freed indices.
+- New serialization line: `#X name <i> <name>;` written after the matching `#X id` line. `parsePatch` collects pending names and applies them after node creation.
+- `assignMissingNodeNames` runs after every `deserialize` and `applyDiff` so legacy patches without name lines pick up auto-generated names; duplicate or invalid names in input are renamed to the next free auto-name.
+- Terminal `as <alias>` now writes through to `PatchGraph.addNode(... name)`. Aliases survive reload, share, and copy/paste; the session-alias map is kept as a back-compat / ephemeral layer.
+- Reference resolution updated: session alias → node `name` → `last` → `selected` (single) → unique id prefix. Reserved-word and validation errors switched to "object name" wording.
+- Patch phrases can reference existing nodes as elements: `{ integer (int1) out 1 -> in 2 metro1 }` attaches a fresh `integer` to an existing `metro1`. New ↔ existing mixing is supported on either side; existing-refs cannot carry args/aliases. Validation runs against a hybrid graph (existing nodes proxy through to the live graph for inlet/outlet counts) so failures abort with no half-built phrase. Aliases on new objects in the phrase are not reserved until validation passes.
+- Port-aware placement: when a new phrase object wires into an existing target, the new object is positioned so its outlet port lands `PHRASE_GAP_Y` (32 px) above the target's inlet via `getPortPos` from `CableRenderer`. Side-mounted hot/cold inlets use a 24 px right-side gap instead.
+- Right-click canvas menu shows the node name in a header (`name: metro1`). `data-node-name`, ARIA label, and title tooltip carry the name in the DOM.
+- Result-message pluralization: `1 object` / `2 objects`, `1 cable` / `N cables`. Removed the now-redundant `Shift+T` chip and placeholder text from the terminal header.
+
+**Changed files:**
+- src/graph/nodeNames.ts — new module: validation, auto-allocation, fill-in helpers.
+- src/graph/PatchNode.ts — `name?: string` field on the data class.
+- src/graph/PatchGraph.ts — `addNode(... name?)`, `reserveNodeName`, `assignMissingNodeNames` calls in `deserialize` / `applyDiff` / `clonePartial`.
+- src/serializer/serialize.ts — emit `#X name` after `#X id`.
+- src/serializer/parse.ts — `#X name` line handler with `validateNodeName` guard.
+- src/terminal/PatchTerminalEngine.ts — phrase elements split into `new` vs `existing`, hybrid validation, port-aware placement, name-aware reference resolution, name-vs-alias error wording.
+- src/terminal/PatchTerminalController.ts — drop redundant Shift+T chip + placeholder.
+- src/canvas/CanvasController.ts — context-menu name header.
+- src/canvas/ObjectRenderer.ts — `data-node-name`, ARIA, title.
+- tests/node-names.test.ts — allocation, round-trip, legacy-load, dup-rename coverage.
+- tests/terminal.test.ts — phrase-with-existing-target, phrase-from-existing-source, name-resolves-after-load, validation-aborts-cleanly.
+
+**Notes / decisions:**
+- Why a name layer at all: UUIDs are bad keys for humans typing into the terminal. Names give the user a stable handle that round-trips through save/load, while UUIDs continue to anchor graph integrity (peer networking, edge endpoints).
+- Why fall through legacy patches silently: refusing to load a patch that lacks `#X name` lines would break every previously-saved patch. Filling in names on first load is a strict superset of the old behavior; re-saving makes them deterministic.
+- Why existing-refs can't carry args/aliases: those would be a no-op on an already-created node and silently confusing — better to reject the syntax. The original `add` is the one place to set args.
+- Port-aware placement uses the node's actual port geometry (`getPortPos`) rather than a width-based heuristic, so it stays correct for objects with side-mounted ports (hot/cold inlets on `pack`/`prepend`/`append`, etc.).
+
+**Next needed:**
+- Browser smoke test: build a `{ metro [500] (clock) out 1 -> in 1 click~ out 1 -> in 1 dac~ }` chain, save, reload — verify `clock` is still the object's name in the right-click menu and that `connect clock.0 -> dac1.0` resolves. Then attach via `{ integer (cv) out 1 -> in 2 clock }` and check the integer lands aligned to the metro's hot inlet.
+- "Rename object…" UX (currently names are set only by `add ... as ...` or auto-allocated).
+
 ## [2026-05-06] COMPLETED | Patch terminal (Shift+T) with `{ ... }` patch-phrase DSL
 **Agent:** Claude Code
 **Phase:** Live-coding surface — Milestone 1

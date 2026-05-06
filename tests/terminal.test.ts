@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ActionKeymap } from "../src/actions/ActionKeymap";
 import { ActionRegistry } from "../src/actions/ActionRegistry";
 import type { ActionContext, AppActionsAPI, PatchAction } from "../src/actions/types";
+import { getObjectDef } from "../src/graph/objectDefs";
 import { PatchGraph } from "../src/graph/PatchGraph";
 import { UndoManager } from "../src/graph/UndoManager";
 import { PatchTerminalEngine, tokenizeTerminalCommand } from "../src/terminal/PatchTerminalEngine";
@@ -255,6 +256,104 @@ describe("PatchTerminalEngine braced patch phrases", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toMatch(/Invalid inlet/);
     expect(harness.ctx.graph.getNodes()).toHaveLength(0);
+  });
+
+  it("attaches a new object to an existing alias with 1-based inlet syntax", async () => {
+    const engine = new PatchTerminalEngine();
+    const harness = makeHarness();
+
+    await engine.execute(phrase, harness.ctx);
+    const metro = harness.ctx.graph.getNodes().find((node) => node.type === "metro")!;
+
+    const result = await engine.execute("{ integer (int1) out 1 -> in 2 metro1 }", harness.ctx);
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("built patch phrase: 1 object, 1 cable");
+    const nodes = harness.ctx.graph.getNodes();
+    expect(nodes).toHaveLength(5);
+
+    const integer = nodes.find((node) => node.type === "integer")!;
+    const integerHeight = integer.height ?? getObjectDef(integer.type).defaultHeight;
+    expect(engine.aliasesFor(harness.ctx.graph).get("int1")).toBe(integer.id);
+    expect(integer.x).toBe(metro.x + 124);
+    expect(integer.y + integerHeight).toBe(metro.y);
+
+    const edge = harness.ctx.graph.getEdges().find((candidate) =>
+      candidate.fromNodeId === integer.id && candidate.toNodeId === metro.id,
+    );
+    expect(edge).toMatchObject({
+      fromOutlet: 0,
+      toInlet: 1,
+    });
+    expect([...harness.selected]).toEqual([integer.id]);
+  });
+
+  it("resolves persisted object names after loading a patch", async () => {
+    const engine = new PatchTerminalEngine();
+    const graph = new PatchGraph();
+    graph.deserialize([
+      "#N canvas;",
+      "#X obj 200 120 metro 1000;",
+    ].join("\n"));
+    const harness = makeHarness(graph);
+    const metro = graph.getNodes()[0];
+
+    const result = await engine.execute("{ integer (int1) out 1 -> in 2 metro1 }", harness.ctx);
+
+    expect(result.ok).toBe(true);
+    const integer = graph.getNodes().find((node) => node.type === "integer")!;
+    const integerHeight = integer.height ?? getObjectDef(integer.type).defaultHeight;
+    expect(integer.name).toBe("int1");
+    expect(integer.x).toBe(metro.x + 124);
+    expect(integer.y + integerHeight).toBe(metro.y);
+    expect(graph.getEdges()[0]).toMatchObject({
+      fromNodeId: integer.id,
+      fromOutlet: 0,
+      toNodeId: metro.id,
+      toInlet: 1,
+    });
+  });
+
+  it("can use an existing alias as the source for a new phrase object", async () => {
+    const engine = new PatchTerminalEngine();
+    const harness = makeHarness();
+
+    await engine.execute(phrase, harness.ctx);
+    const metro = harness.ctx.graph.getNodes().find((node) => node.type === "metro")!;
+
+    const result = await engine.execute("{ metro1 out 1 -> in 1 integer (int2) }", harness.ctx);
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe("built patch phrase: 1 object, 1 cable");
+    const integer = harness.ctx.graph.getNodes().find((node) =>
+      node.type === "integer" && engine.aliasesFor(harness.ctx.graph).get("int2") === node.id,
+    )!;
+    expect(integer.y).toBeGreaterThan(metro.y);
+
+    const edge = harness.ctx.graph.getEdges().find((candidate) =>
+      candidate.fromNodeId === metro.id && candidate.toNodeId === integer.id,
+    );
+    expect(edge).toMatchObject({
+      fromOutlet: 0,
+      toInlet: 0,
+    });
+  });
+
+  it("validates existing-alias phrase connections before creating new objects", async () => {
+    const engine = new PatchTerminalEngine();
+    const harness = makeHarness();
+
+    await engine.execute(phrase, harness.ctx);
+    const beforeNodeCount = harness.ctx.graph.getNodes().length;
+    const beforeEdgeCount = harness.ctx.graph.getEdges().length;
+
+    const result = await engine.execute("{ integer (int1) out 1 -> in 3 metro1 }", harness.ctx);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toMatch(/Invalid inlet/);
+    expect(harness.ctx.graph.getNodes()).toHaveLength(beforeNodeCount);
+    expect(harness.ctx.graph.getEdges()).toHaveLength(beforeEdgeCount);
+    expect(engine.aliasesFor(harness.ctx.graph).get("int1")).toBeUndefined();
   });
 
   it("treats a patch phrase as one undo step", async () => {

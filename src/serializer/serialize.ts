@@ -212,6 +212,9 @@ function serializeInternal(graph: PatchGraph, opts: SerializeOptions): string {
     lines.push(serializeNode(node, opts));
     // Persist node identity so diff-based deserialize can preserve runtime state.
     lines.push(`#X id ${index} ${node.id};`);
+    if (node.name) {
+      lines.push(`#X name ${index} ${node.name};`);
+    }
     if (node.width !== undefined && node.height !== undefined) {
       lines.push(`#X size ${index} ${node.width} ${node.height};`);
     }

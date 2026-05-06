@@ -4,6 +4,7 @@ import { PatchNode, type PatchNodeData } from "./PatchNode";
 import { parsePatch } from "../serializer/parse";
 import { getBlobSchema, isBlobPlaceholder, serializePatch, serializePatchForDisplay } from "../serializer/serialize";
 import { findFreePlacement, objectIgnoresOverlap } from "../canvas/OverlapGuard";
+import { assignMissingNodeNames, isValidNodeName, nextNodeName, usedNodeNames, validateNodeName } from "./nodeNames";
 
 type PatchGraphEvent = "change" | "display";
 type ChangeHandler = () => void;
@@ -15,7 +16,7 @@ export class PatchGraph {
   private readonly listeners = new Set<ChangeHandler>();
   private readonly displayListeners = new Set<ChangeHandler>();
 
-  addNode(type: string, x: number, y: number, args: string[] = []): PatchNode {
+  addNode(type: string, x: number, y: number, args: string[] = [], name?: string | null): PatchNode {
     type = canonicalizeType(type);
     const objectDef = getObjectDef(type);
     args = fillCreationDefaults(objectDef, args);
@@ -73,8 +74,10 @@ export class PatchGraph {
         ? audioPortDefaultWidth(Math.max(inlets.length, outlets.length))
         : undefined;
 
+    const nodeName = this.reserveNodeName(type, name);
     const node = new PatchNode({
       id: crypto.randomUUID(),
+      name: nodeName,
       type,
       x: placeX,
       y: placeY,
@@ -247,6 +250,8 @@ export class PatchGraph {
       resolvedNodes.push(parsedNode);
     }
 
+    assignMissingNodeNames(resolvedNodes);
+
     // ── Build a map from parsed.id → resolved.id for edge rewriting ──
     const parsedIdToResolvedId = new Map<string, string>();
     parsed.nodes.forEach((parsedNode, index) => {
@@ -299,6 +304,7 @@ export class PatchGraph {
 
     target.x       = parsed.x;
     target.y       = parsed.y;
+    target.name    = parsed.name;
     target.args    = args;
     target.groupId = parsed.groupId;
 
@@ -420,6 +426,7 @@ export class PatchGraph {
     data.nodes.forEach((nodeData) => {
       this.nodes.set(nodeData.id, new PatchNode(nodeData));
     });
+    assignMissingNodeNames(this.nodes.values());
 
     data.edges.forEach((edgeData) => {
       this.edges.set(edgeData.id, new PatchEdge(edgeData));
@@ -454,6 +461,7 @@ export class PatchGraph {
 
       const cloned = new PatchNode({
         id: crypto.randomUUID(),
+        name: this.reserveNodeName(src.type),
         type: src.type,
         x: src.x + dx,
         y: src.y + dy,
@@ -506,5 +514,22 @@ export class PatchGraph {
     }
 
     return node;
+  }
+
+  private reserveNodeName(type: string, requested?: string | null): string {
+    const used = usedNodeNames(this.nodes.values());
+    if (requested) {
+      validateNodeName(requested);
+      if (used.has(requested)) {
+        throw new Error(`object name already exists: ${requested}`);
+      }
+      return requested;
+    }
+
+    const name = nextNodeName(type, used);
+    if (!isValidNodeName(name)) {
+      throw new Error(`could not generate object name for ${type}`);
+    }
+    return name;
   }
 }

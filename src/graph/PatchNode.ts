@@ -12,6 +12,7 @@ export interface PortDef {
 
 export interface PatchNodeData {
   id: string;
+  name?: string;
   type: string;
   x: number;
   y: number;
@@ -30,6 +31,7 @@ export interface PatchNodeData {
 
 export class PatchNode implements PatchNodeData {
   id: string;
+  name?: string;
   type: string;
   x: number;
   y: number;
@@ -48,6 +50,7 @@ export class PatchNode implements PatchNodeData {
 
   constructor(data: PatchNodeData) {
     this.id = data.id;
+    this.name = data.name;
     this.type = data.type;
     this.x = data.x;
     this.y = data.y;

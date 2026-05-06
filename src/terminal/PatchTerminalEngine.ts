@@ -1,4 +1,6 @@
 import type { ActionContext } from "../actions/types";
+import { getPortPos } from "../canvas/CableRenderer";
+import { validateNodeName } from "../graph/nodeNames";
 import { canonicalizeType, getObjectDef, OBJECT_DEFS } from "../graph/objectDefs";
 import { PatchGraph } from "../graph/PatchGraph";
 import type { PatchNode } from "../graph/PatchNode";
@@ -26,15 +28,19 @@ interface EndpointRef {
   port: number;
 }
 
+type PhraseElement =
+  | { kind: "new"; spec: AddSpec }
+  | { kind: "existing"; ref: string; nodeId: string };
+
 interface PatchPhrasePlan {
-  objects: AddSpec[];
+  elements: PhraseElement[];
   connections: PhraseConnection[];
 }
 
 interface PhraseConnection {
-  fromObjectIndex: number;
+  fromElementIndex: number;
   fromOutlet: number;
-  toObjectIndex: number;
+  toElementIndex: number;
   toInlets: number[];
 }
 
@@ -46,9 +52,9 @@ type PhraseToken =
 
 const RESERVED_REFS = new Set(["last", "selected", "selection", "out", "in"]);
 const COMMANDS = new Set(["add", "connect", "select", "delete", "move", "run"]);
-const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const NODE_GAP_X = 56;
-const PHRASE_GAP_Y = 56;
+const PHRASE_GAP_X = 24;
+const PHRASE_GAP_Y = 32;
 
 export class TerminalCommandError extends Error {}
 
@@ -89,18 +95,18 @@ export class PatchTerminalEngine {
   }
 
   aliasesFor(graph: PatchGraph): ReadonlyMap<string, string> {
-    return this.stateFor(graph).aliases;
+    return this.nameMapFor(graph);
   }
 
   private add(tokens: string[], ctx: ActionContext): TerminalResult {
     const spec = this.parseAddSpec(tokens);
     const def = getObjectDef(spec.type);
     const state = this.stateFor(ctx.graph);
-    if (spec.alias) this.ensureAliasAvailable(state, spec.alias);
+    if (spec.alias) this.ensureAliasAvailable(ctx.graph, state, spec.alias);
 
     const node = ctx.graph.batchChange(() => {
       const { x, y } = this.nextPlacement(ctx, def.defaultWidth, def.defaultHeight);
-      return ctx.graph.addNode(spec.type, x, y, spec.args);
+      return ctx.graph.addNode(spec.type, x, y, spec.args, spec.alias);
     });
 
     state.lastNodeId = node.id;
@@ -215,51 +221,84 @@ export class PatchTerminalEngine {
   }
 
   private buildPatchPhrase(input: string, ctx: ActionContext): TerminalResult {
-    const plan = this.parsePatchPhrase(input);
+    const plan = this.parsePatchPhrase(input, ctx);
     const state = this.stateFor(ctx.graph);
-    for (const spec of plan.objects) {
-      if (spec.alias) this.ensureAliasAvailable(state, spec.alias);
+    for (const element of plan.elements) {
+      if (element.kind === "new" && element.spec.alias) {
+        this.ensureAliasAvailable(ctx.graph, state, element.spec.alias);
+      }
     }
-    this.validatePatchPhrase(plan);
+    this.validatePatchPhrase(plan, ctx);
 
     const created: PatchNode[] = [];
+    const touchedNodeIds = new Set<string>();
+    const nodeByElementIndex = new Map<number, PatchNode>();
     ctx.graph.batchChange(() => {
-      const firstDef = getObjectDef(plan.objects[0].type);
-      const start = this.nextPlacement(ctx, firstDef.defaultWidth, firstDef.defaultHeight);
-      let y = start.y;
+      const firstSpec = plan.elements.find((element): element is { kind: "new"; spec: AddSpec } =>
+        element.kind === "new",
+      )?.spec;
+      const firstDef = firstSpec ? getObjectDef(firstSpec.type) : null;
+      const start = firstDef
+        ? this.nextPlacement(ctx, firstDef.defaultWidth, firstDef.defaultHeight)
+        : { x: 0, y: 0 };
 
-      for (const spec of plan.objects) {
-        const node = ctx.graph.addNode(spec.type, start.x, y, spec.args);
+      for (let i = 0; i < plan.elements.length; i++) {
+        const element = plan.elements[i];
+        if (element.kind === "existing") {
+          const node = ctx.graph.nodes.get(element.nodeId);
+          if (!node) throw new TerminalCommandError(`unknown node: ${element.ref}`);
+          nodeByElementIndex.set(i, node);
+          touchedNodeIds.add(node.id);
+          continue;
+        }
+
+        const spec = element.spec;
+        const placement = this.nextPhraseElementPlacement(i, spec, plan, nodeByElementIndex, ctx, start);
+        const node = ctx.graph.addNode(spec.type, placement.x, placement.y, spec.args, spec.alias);
         created.push(node);
-        const def = getObjectDef(node.type);
-        y = node.y + (node.height ?? def.defaultHeight) + PHRASE_GAP_Y;
+        touchedNodeIds.add(node.id);
+        nodeByElementIndex.set(i, node);
       }
 
       for (const connection of plan.connections) {
-        const from = created[connection.fromObjectIndex];
-        const to = created[connection.toObjectIndex];
+        const from = nodeByElementIndex.get(connection.fromElementIndex);
+        const to = nodeByElementIndex.get(connection.toElementIndex);
+        if (!from || !to) throw new TerminalCommandError("invalid patch phrase connection");
+        touchedNodeIds.add(from.id);
+        touchedNodeIds.add(to.id);
         for (const inlet of connection.toInlets) {
           ctx.graph.addEdge(from.id, connection.fromOutlet, to.id, inlet);
         }
       }
     });
 
-    for (let i = 0; i < plan.objects.length; i++) {
-      const alias = plan.objects[i].alias;
-      if (alias) state.aliases.set(alias, created[i].id);
+    let createdIndex = 0;
+    for (const element of plan.elements) {
+      if (element.kind !== "new") continue;
+      const alias = element.spec.alias;
+      const node = created[createdIndex];
+      if (alias && node) state.aliases.set(alias, node.id);
+      createdIndex += 1;
     }
-    state.lastNodeId = created[created.length - 1]?.id ?? state.lastNodeId;
-    ctx.canvas.selectNodes(new Set(created.map((node) => node.id)));
+    const lastElementNode = nodeByElementIndex.get(plan.elements.length - 1);
+    state.lastNodeId = lastElementNode?.id ?? state.lastNodeId;
+
+    if (created.length > 0) {
+      ctx.canvas.selectNodes(new Set(created.map((node) => node.id)));
+    } else {
+      ctx.canvas.selectNodes(touchedNodeIds);
+    }
 
     const cableCount = plan.connections.reduce((count, c) => count + c.toInlets.length, 0);
+    const objectLabel = created.length === 1 ? "object" : "objects";
     return {
       ok: true,
-      message: `built patch phrase: ${created.length} objects, ${cableCount} cable${cableCount === 1 ? "" : "s"}`,
-      touchedNodeIds: created.map((node) => node.id),
+      message: `built patch phrase: ${created.length} ${objectLabel}, ${cableCount} cable${cableCount === 1 ? "" : "s"}`,
+      touchedNodeIds: [...touchedNodeIds],
     };
   }
 
-  private parsePatchPhrase(input: string): PatchPhrasePlan {
+  private parsePatchPhrase(input: string, ctx: ActionContext): PatchPhrasePlan {
     const trimmed = input.trim();
     if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
       throw new TerminalCommandError("patch phrases must be wrapped in { ... }");
@@ -278,19 +317,27 @@ export class PatchTerminalEngine {
       return token?.kind === "word" ? token.value : null;
     };
 
-    const parseObjectSpec = (): AddSpec => {
+    const parseElement = (): PhraseElement => {
       const typeToken = read();
       if (typeToken?.kind !== "word") {
-        throw new TerminalCommandError("expected object type in patch phrase");
+        throw new TerminalCommandError("expected object type or node reference in patch phrase");
       }
       if (typeToken.value === "out" || typeToken.value === "in") {
-        throw new TerminalCommandError(`expected object type, got ${typeToken.value}`);
+        throw new TerminalCommandError(`expected object type or node reference, got ${typeToken.value}`);
       }
 
       const type = canonicalizeType(typeToken.value);
-      if (!OBJECT_DEFS[type]) throw new TerminalCommandError(`unknown object type: ${typeToken.value}`);
-      index += 1;
+      if (!OBJECT_DEFS[type]) {
+        const nodeId = this.resolveSingleNode(typeToken.value, ctx);
+        index += 1;
+        const next = read();
+        if (next?.kind === "arg" || next?.kind === "alias") {
+          throw new TerminalCommandError(`existing node reference cannot have args or alias: ${typeToken.value}`);
+        }
+        return { kind: "existing", ref: typeToken.value, nodeId };
+      }
 
+      index += 1;
       const args: string[] = [];
       let alias: string | null = null;
       while (index < tokens.length) {
@@ -312,10 +359,10 @@ export class PatchTerminalEngine {
         break;
       }
 
-      return { type, args, alias };
+      return { kind: "new", spec: { type, args, alias } };
     };
 
-    const objects: AddSpec[] = [parseObjectSpec()];
+    const elements: PhraseElement[] = [parseElement()];
     const connections: PhraseConnection[] = [];
 
     while (index < tokens.length) {
@@ -335,31 +382,45 @@ export class PatchTerminalEngine {
       }
       if (toInlets.length === 0) throw new TerminalCommandError("expected at least one in <n> after ->");
 
-      const fromObjectIndex = objects.length - 1;
-      const target = parseObjectSpec();
-      objects.push(target);
+      const fromElementIndex = elements.length - 1;
+      const target = parseElement();
+      elements.push(target);
       connections.push({
-        fromObjectIndex,
+        fromElementIndex,
         fromOutlet,
-        toObjectIndex: objects.length - 1,
+        toElementIndex: elements.length - 1,
         toInlets,
       });
     }
 
-    return { objects, connections };
+    return { elements, connections };
   }
 
-  private validatePatchPhrase(plan: PatchPhrasePlan): void {
+  private validatePatchPhrase(plan: PatchPhrasePlan, ctx: ActionContext): void {
     const temp = new PatchGraph();
-    const tempNodes = plan.objects.map((spec, index) =>
-      temp.addNode(spec.type, 0, index * 100, spec.args),
-    );
+    const nodes = new Map<number, PatchNode>();
     try {
+      plan.elements.forEach((element, index) => {
+        if (element.kind === "new") {
+          nodes.set(index, temp.addNode(element.spec.type, 0, index * 100, element.spec.args));
+          return;
+        }
+        const node = ctx.graph.nodes.get(element.nodeId);
+        if (!node) throw new Error(`Unknown node: ${element.ref}`);
+        nodes.set(index, node);
+      });
+
       for (const connection of plan.connections) {
-        const from = tempNodes[connection.fromObjectIndex];
-        const to = tempNodes[connection.toObjectIndex];
+        const from = nodes.get(connection.fromElementIndex);
+        const to = nodes.get(connection.toElementIndex);
+        if (!from || !to) throw new Error("invalid patch phrase connection");
+        if (connection.fromOutlet < 0 || connection.fromOutlet >= from.outlets.length) {
+          throw new Error(`Invalid outlet ${connection.fromOutlet} for node ${from.type}`);
+        }
         for (const inlet of connection.toInlets) {
-          temp.addEdge(from.id, connection.fromOutlet, to.id, inlet);
+          if (inlet < 0 || inlet >= to.inlets.length) {
+            throw new Error(`Invalid inlet ${inlet} for node ${to.type}`);
+          }
         }
       }
     } catch (err) {
@@ -417,6 +478,80 @@ export class PatchTerminalEngine {
     };
   }
 
+  private nextPhraseElementPlacement(
+    index: number,
+    spec: AddSpec,
+    plan: PatchPhrasePlan,
+    nodeByElementIndex: ReadonlyMap<number, PatchNode>,
+    ctx: ActionContext,
+    fallbackStart: { x: number; y: number },
+  ): { x: number; y: number } {
+    const existingTarget = index === 0 ? this.existingTargetForNewSource(index, plan, ctx) : null;
+    if (existingTarget) {
+      const targetDef = getObjectDef(existingTarget.node.type);
+      const targetWidth = existingTarget.node.width ?? targetDef.defaultWidth;
+      const firstInlet = Math.min(...existingTarget.toInlets);
+      const targetPort = getPortPos(existingTarget.node, "inlet", firstInlet);
+      const previewSource = this.previewNode(spec);
+      const sourcePort = getPortPos(previewSource, "outlet", existingTarget.fromOutlet);
+      const sourcePortOffset = {
+        x: sourcePort.x - previewSource.x,
+        y: sourcePort.y - previewSource.y,
+      };
+
+      if (firstInlet > 0) {
+        return {
+          x: Math.round(existingTarget.node.x + targetWidth + PHRASE_GAP_X),
+          y: Math.max(0, Math.round(targetPort.y - sourcePortOffset.y)),
+        };
+      }
+
+      return {
+        x: Math.max(0, Math.round(targetPort.x - sourcePortOffset.x)),
+        y: Math.max(0, Math.round(targetPort.y - sourcePortOffset.y - PHRASE_GAP_Y)),
+      };
+    }
+
+    const previous = this.previousPhraseNode(index, nodeByElementIndex);
+    if (previous) {
+      const previousDef = getObjectDef(previous.type);
+      return {
+        x: Math.round(previous.x),
+        y: Math.round(previous.y + (previous.height ?? previousDef.defaultHeight) + PHRASE_GAP_Y),
+      };
+    }
+
+    return fallbackStart;
+  }
+
+  private existingTargetForNewSource(
+    index: number,
+    plan: PatchPhrasePlan,
+    ctx: ActionContext,
+  ): { node: PatchNode; fromOutlet: number; toInlets: number[] } | null {
+    const connection = plan.connections.find((candidate) => candidate.fromElementIndex === index);
+    if (!connection) return null;
+    const target = plan.elements[connection.toElementIndex];
+    if (target?.kind !== "existing") return null;
+    const node = ctx.graph.nodes.get(target.nodeId);
+    return node ? { node, fromOutlet: connection.fromOutlet, toInlets: connection.toInlets } : null;
+  }
+
+  private previewNode(spec: AddSpec): PatchNode {
+    return new PatchGraph().addNode(spec.type, 0, 0, spec.args, null);
+  }
+
+  private previousPhraseNode(
+    index: number,
+    nodeByElementIndex: ReadonlyMap<number, PatchNode>,
+  ): PatchNode | null {
+    for (let i = index - 1; i >= 0; i--) {
+      const node = nodeByElementIndex.get(i);
+      if (node) return node;
+    }
+    return null;
+  }
+
   private resolveEndpoint(token: string, ctx: ActionContext, label: "inlet" | "outlet"): EndpointRef {
     const dot = token.lastIndexOf(".");
     if (dot <= 0 || dot === token.length - 1) {
@@ -441,8 +576,11 @@ export class PatchTerminalEngine {
     if (alias && ctx.graph.nodes.has(alias)) return alias;
     if (alias) {
       state.aliases.delete(key);
-      throw new TerminalCommandError(`alias points to a missing node: ${key}`);
     }
+
+    const namedMatches = ctx.graph.getNodes().filter((node) => node.name === key);
+    if (namedMatches.length === 1) return namedMatches[0].id;
+    if (namedMatches.length > 1) throw new TerminalCommandError(`ambiguous object name: ${key}`);
 
     if (key === "last") {
       if (state.lastNodeId && ctx.graph.nodes.has(state.lastNodeId)) return state.lastNodeId;
@@ -477,9 +615,12 @@ export class PatchTerminalEngine {
     throw new TerminalCommandError(`ambiguous action: ${query} (${preview})`);
   }
 
-  private ensureAliasAvailable(state: TerminalSessionState, alias: string): void {
+  private ensureAliasAvailable(graph: PatchGraph, state: TerminalSessionState, alias: string): void {
     const existing = state.aliases.get(alias);
-    if (existing) throw new TerminalCommandError(`alias already exists: ${alias}`);
+    if (existing && graph.nodes.has(existing)) throw new TerminalCommandError(`object name already exists: ${alias}`);
+    if (graph.getNodes().some((node) => node.name === alias)) {
+      throw new TerminalCommandError(`object name already exists: ${alias}`);
+    }
   }
 
   private pruneAliases(state: TerminalSessionState, graph: PatchGraph): void {
@@ -489,12 +630,25 @@ export class PatchTerminalEngine {
   }
 
   private describeNode(id: string, graph: PatchGraph): string {
+    const node = graph.nodes.get(id);
+    if (node?.name) return node.name;
     const state = this.stateFor(graph);
     for (const [alias, nodeId] of state.aliases.entries()) {
       if (nodeId === id) return alias;
     }
-    const node = graph.nodes.get(id);
     return node ? `${node.type} ${shortId(id)}` : shortId(id);
+  }
+
+  private nameMapFor(graph: PatchGraph): ReadonlyMap<string, string> {
+    const state = this.stateFor(graph);
+    const names = new Map<string, string>();
+    for (const node of graph.getNodes()) {
+      if (node.name) names.set(node.name, node.id);
+    }
+    for (const [alias, nodeId] of state.aliases.entries()) {
+      if (graph.nodes.has(nodeId)) names.set(alias, nodeId);
+    }
+    return names;
   }
 
   private stateFor(graph: PatchGraph): TerminalSessionState {
@@ -638,11 +792,13 @@ function parsePortToken(token: PhraseToken | undefined, label: "inlet" | "outlet
 }
 
 function validateAlias(alias: string): void {
-  if (!ALIAS_RE.test(alias)) {
-    throw new TerminalCommandError(`invalid alias: ${alias}`);
+  try {
+    validateNodeName(alias);
+  } catch {
+    throw new TerminalCommandError(`invalid object name: ${alias}`);
   }
   if (RESERVED_REFS.has(alias) || COMMANDS.has(alias.toLowerCase())) {
-    throw new TerminalCommandError(`reserved alias: ${alias}`);
+    throw new TerminalCommandError(`reserved object name: ${alias}`);
   }
 }
 
