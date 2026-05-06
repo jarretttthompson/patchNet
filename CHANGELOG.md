@@ -23,6 +23,27 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-06] COMPLETED | PatchGraph.batchChange + compound undo
+**Agent:** Claude Code
+**Phase:** Action system — Milestone 1b
+
+**Done:**
+- `PatchGraph.batchChange(fn)` defers nested `"change"` emits until the outermost batch closes. Nested batches collapse into a single flush. Display events are not batched.
+- `CanvasController.deleteSelection` wraps multi-node deletes in `batchChange`, so the UndoManager records one history entry instead of N.
+- Group/ungroup already emits exactly once and didn't need wrapping.
+
+**Changed files:**
+- src/graph/PatchGraph.ts — batchChange(); change emits gated on batchDepth
+- src/canvas/CanvasController.ts — deleteSelection batches removals
+- tests/batch-change.test.ts — single-emit, no-emit, nested, undo-as-one, return value
+
+**Notes / decisions:**
+- batchChange returns the inner function's value so future macros can compute and return without needing a separate stash variable.
+- Display events stay un-batched because the text panel mirrors edits live; making it lag would break the canvas↔text-panel bond.
+
+**Next needed:**
+- Commit (c): plugin actions + generated `canvas.object.create:<type>` actions
+
 ## [2026-05-06] COMPLETED | Action system (registry + keymap + palette)
 **Agent:** Claude Code
 **Phase:** Action system — Milestone 1a

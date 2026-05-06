@@ -380,7 +380,36 @@ export class PatchGraph {
       return;
     }
     if (event === "change") {
+      if (this.batchDepth > 0) {
+        this.batchHadChange = true;
+        return;
+      }
       for (const handler of this.listeners) handler();
+    }
+  }
+
+  private batchDepth = 0;
+  private batchHadChange = false;
+
+  /**
+   * Run `fn` with all "change" events deferred until completion. Nested calls
+   * are coalesced — only the outermost batch flushes. Used for compound
+   * mutations (multi-node delete, group/ungroup, future macros) so the
+   * UndoManager treats them as one history step instead of N.
+   *
+   * Display events are not batched — text-panel updates still tick during a
+   * batch, but the visible canvas re-render and undo snapshot wait for flush.
+   */
+  batchChange<T>(fn: () => T): T {
+    this.batchDepth += 1;
+    try {
+      return fn();
+    } finally {
+      this.batchDepth -= 1;
+      if (this.batchDepth === 0 && this.batchHadChange) {
+        this.batchHadChange = false;
+        for (const handler of this.listeners) handler();
+      }
     }
   }
 

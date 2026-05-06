@@ -539,13 +539,16 @@ export class CanvasController {
     this.openEntryBox(...this.centerEntryBox(x, y));
   }
 
-  /** Delete every selected node, or the selected edge in patch mode. */
+  /** Delete every selected node, or the selected edge in patch mode.
+   *  Multi-node deletes are batched so the UndoManager records one step. */
   deleteSelection(): void {
     if (!this._active) return;
     if (this.selectedNodeIds.size > 0) {
       const ids = [...this.selectedNodeIds];
       this.selectNode(null);
-      for (const id of ids) this.graph.removeNode(id);
+      this.graph.batchChange(() => {
+        for (const id of ids) this.graph.removeNode(id);
+      });
     } else if (this.patchMode && this.cables?.getSelectedEdgeId()) {
       const edgeId = this.cables.getSelectedEdgeId()!;
       this.cables.selectEdge(null);
