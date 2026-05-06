@@ -11,7 +11,15 @@ import { DragController } from "./canvas/DragController";
 import { CableDrawController } from "./canvas/CableDrawController";
 import { ResizeController } from "./canvas/ResizeController";
 import { ObjectInteractionController } from "./canvas/ObjectInteractionController";
-import { ShortcutsPanel } from "./canvas/ShortcutsPanel";
+import {
+  ActionRegistry,
+  ActionKeymap,
+  ActionDispatcher,
+  ActionListDialog,
+  BUILTIN_ACTIONS,
+  type ActionContext,
+  type AppActionsAPI,
+} from "./actions";
 import { PortTooltip } from "./canvas/PortTooltip";
 import { VisualizerObjectUI } from "./canvas/VisualizerObjectUI";
 import { CodeboxController } from "./canvas/CodeboxController";
@@ -744,18 +752,6 @@ function setPatchModeUi(on: boolean): void {
 
 patchModeBtn?.addEventListener("click", () => setPatchModeUi(!getPatchMode()));
 
-document.addEventListener("keydown", (e) => {
-  if (e.key.toLowerCase() !== "p") return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const t = e.target;
-  if (t instanceof HTMLElement &&
-      (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
-    return;
-  }
-  e.preventDefault();
-  setPatchModeUi(!getPatchMode());
-});
-
 // Output device selector
 audioDeviceSel?.addEventListener("change", () => {
   audioRuntime.setOutputDevice(audioDeviceSel.value);
@@ -1018,11 +1014,11 @@ textArea.addEventListener("input", () => {
   }, 350);
 });
 
-// ── Shortcuts panel ──────────────────────────────────────────────────────────
-
-const shortcuts = new ShortcutsPanel();
+// ── Action list (replaces shortcuts panel) ───────────────────────────────────
+// The action system is constructed below once flashStatus, savePatchToFile,
+// and the other app fns are defined. This anchor just keeps the toolbar
+// button wiring discoverable here next to the other toolbar wiring.
 const shortcutsBtn = document.getElementById("shortcuts-btn");
-shortcutsBtn?.addEventListener("click", () => shortcuts.toggle());
 
 // ── Console collapse ──────────────────────────────────────────────────────────
 
@@ -1073,18 +1069,6 @@ function toggleToolbarCollapse(): void {
 }
 
 toolbarCollapseBtn?.addEventListener("click", toggleToolbarCollapse);
-
-document.addEventListener("keydown", (e) => {
-  if (e.key.toLowerCase() !== "q") return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const t = e.target;
-  if (t instanceof HTMLElement &&
-      (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
-    return;
-  }
-  e.preventDefault();
-  toggleToolbarCollapse();
-});
 
 // ── Persistence ──────────────────────────────────────────────────────────────
 
@@ -1222,7 +1206,7 @@ function flashStatus(msg: string): void {
 
 const shareBtn = document.getElementById("share-btn") as HTMLButtonElement | null;
 
-shareBtn?.addEventListener("click", async () => {
+async function sharePatch(): Promise<void> {
   const result = await buildShareUrl(graph);
   if ("error" in result) {
     flashStatus(result.error);
@@ -1236,7 +1220,9 @@ shareBtn?.addEventListener("click", async () => {
     flashStatus("COPY FAILED — check console");
     console.info("[patchNet] Share URL:", result.url);
   }
-});
+}
+
+shareBtn?.addEventListener("click", sharePatch);
 
 // ── File save / load ─────────────────────────────────────────────────────────
 
@@ -1376,23 +1362,6 @@ const loadFileInput = document.getElementById("load-file-input") as HTMLInputEle
 
 saveBtn?.addEventListener("click", savePatchToFile);
 
-document.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "s") {
-    e.preventDefault();
-    savePatchToFile();
-  }
-});
-
-document.addEventListener("keydown", (e) => {
-  if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
-  if (e.key.toLowerCase() !== "t") return;
-  // Browsers reserve Cmd/Ctrl+T for "new browser tab" in regular pages and the
-  // event isn't always cancellable. preventDefault is best-effort — the "+"
-  // button is the reliable path.
-  e.preventDefault();
-  addNewScratchTab();
-});
-
 loadBtn?.addEventListener("click", () => {
   if (loadFileInput) {
     loadFileInput.value = "";
@@ -1404,6 +1373,65 @@ loadFileInput?.addEventListener("change", () => {
   const file = loadFileInput?.files?.[0];
   if (file) loadPatchFromFile(file);
 });
+
+// ── Action system ────────────────────────────────────────────────────────────
+// Single registry+keymap+dispatcher pair. Active session (main / scratch /
+// subpatch) is resolved through TabManager on every dispatch, so a chord
+// pressed while a scratch tab is focused targets that scratch's graph.
+
+const actionRegistry = new ActionRegistry();
+actionRegistry.registerAll(BUILTIN_ACTIONS);
+
+const actionKeymap = new ActionKeymap(actionRegistry);
+actionKeymap.rebuildFromDefaults();
+
+const appActions: AppActionsAPI = {
+  saveToFile: () => savePatchToFile(),
+  openLoadPicker: () => {
+    if (loadFileInput) {
+      loadFileInput.value = "";
+      loadFileInput.click();
+    }
+  },
+  share: () => sharePatch(),
+  toggleDsp: () => { if (!dspOn) startAudio(); else stopAudio(); },
+  isDspOn: () => dspOn,
+  togglePatchMode: () => setPatchModeUi(!getPatchMode()),
+  isPatchMode: () => getPatchMode(),
+  toggleToolbar: toggleToolbarCollapse,
+  toggleConsole,
+  newScratchTab: () => { addNewScratchTab(); },
+};
+
+function buildActionContext(): ActionContext {
+  const session = tabManager.getActiveSession();
+  const activeGraph = session?.graph ?? graph;
+  const activeCanvas = session?.canvasController ?? canvas;
+  const activeInteraction = session?.interaction ?? objectInteraction;
+  const activeUndo = session?.undo ?? undoManager;
+  return {
+    graph: activeGraph,
+    canvas: activeCanvas,
+    interaction: activeInteraction,
+    undo: activeUndo,
+    app: appActions,
+    openActionList: () => actionListDialog.toggle(),
+    flashStatus,
+    registry: actionRegistry,
+    keymap: actionKeymap,
+  };
+}
+
+const actionDispatcher = new ActionDispatcher(actionRegistry, actionKeymap, buildActionContext);
+const actionListDialog = new ActionListDialog(
+  actionRegistry,
+  actionKeymap,
+  buildActionContext,
+  (id) => actionDispatcher.run(id),
+);
+
+actionDispatcher.attachToDocument();
+shortcutsBtn?.addEventListener("click", () => actionListDialog.toggle());
 
 // Restore saved patch — prefer a shared URL, then localStorage, then blank slate.
 (async () => {

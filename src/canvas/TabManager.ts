@@ -299,4 +299,11 @@ export class TabManager {
   getActiveId(): string {
     return this.activeId;
   }
+
+  /** Active tab's session (subpatch or scratch). null when "main" is active —
+   *  the caller resolves main's graph/canvas/interaction from app singletons. */
+  getActiveSession(): SubPatchSession | ScratchTabSession | null {
+    if (this.activeId === "main") return null;
+    return this.tabs.find(t => t.id === this.activeId)?.session ?? null;
+  }
 }

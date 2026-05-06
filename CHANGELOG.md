@@ -23,6 +23,37 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-06] COMPLETED | Action system (registry + keymap + palette)
+**Agent:** Claude Code
+**Phase:** Action system — Milestone 1a
+
+**Done:**
+- New `src/actions/` module: `ActionRegistry`, `ActionKeymap`, `ActionDispatcher`, `ActionListDialog`, `BUILTIN_ACTIONS`, plus shared types.
+- Keymap normalizes chords across platforms (`Mod` = Meta on macOS, Ctrl elsewhere). Single `keydown` listener replaces four scattered handlers in `main.ts` (P / Q / Mod+S / Mod+T) and the command shortcuts inside `CanvasController.handleKeyDown`. Editable-target gating (INPUT/TEXTAREA/SELECT/contenteditable) lives in one place.
+- Action list dialog (palette) opens on `?`, the toolbar `?` button, or via the `app.actions.open` action. Search matches title, id, keywords, category, section. Arrow keys navigate, Enter runs, Escape closes.
+- `CanvasController` now exposes `placeObject`, `openObjectEntryAtCursor`, `deleteSelection`, `selectAllNodes`, `clearSelectionAndEntry`, `toggleGroupSelection`, `undo`. Local `handleKeyDown` keeps only Space-pan gesture state.
+- Active session resolves through `TabManager.getActiveSession()` on every dispatch — chords pressed while a scratch/subpatch tab is focused target that tab's graph.
+- Replaces `ShortcutsPanel` (deleted). Static cheatsheet drift is gone — palette rows are derived from the registry, so adding a new action is the only registration point.
+
+**Changed files:**
+- src/actions/types.ts, ActionRegistry.ts, ActionKeymap.ts, ActionDispatcher.ts, ActionListDialog.ts, builtinActions.ts, index.ts — new module
+- src/canvas/CanvasController.ts — extracted public command methods; stripped command shortcuts from handleKeyDown
+- src/canvas/SubPatchSession.ts — exposed `undo` as a readonly field (was local `const`)
+- src/canvas/TabManager.ts — added `getActiveSession()`
+- src/canvas/ShortcutsPanel.ts — deleted
+- src/main.ts — removed 4 document keydown handlers + ShortcutsPanel; added action-system bootstrap and `AppActionsAPI` adapter
+- tests/actions.test.ts — registry / keymap / built-in coverage
+
+**Notes / decisions:**
+- Behaviour change: previously `Cmd+Shift+S` and `Cmd+Shift+T` were no-ops (the old handlers required `!shiftKey`). Now they fire `Mod+S` / `Mod+T` because shift is dropped on printable letter leaves. Acceptable for now; if a future action wants `Mod+Shift+S` (Save As), revisit shift-significance for letter leaves.
+- Custom keybindings (M2) and macros (M3) defer to later commits. The registry/keymap/dispatcher contract is the foundation.
+- `?` is the canonical entry point for new users — the palette is both command runner and discovery surface, replacing the static shortcuts cheatsheet.
+
+**Next needed:**
+- Commit (b): `PatchGraph.batchChange()` + compound undo
+- Commit (c): plugin actions (`LocalPlugin.actions?`) + generated `canvas.object.create:<type>` for every `OBJECT_DEFS` key
+- Later: user keymap persistence (M2), macros (M3)
+
 ## [2026-05-06] COMPLETED | Scratch tabs (independent top-level patches)
 **Agent:** Claude Code
 

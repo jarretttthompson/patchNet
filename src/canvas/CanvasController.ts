@@ -383,6 +383,13 @@ export class CanvasController {
     this.openEntryBox(...this.centerEntryBox(x, y));
   }
 
+  /**
+   * Local key handler — only gesture state (Space for pan).
+   * Command shortcuts (Delete, Mod+Z, Mod+A, zoom, N/B/T/S/A/M, G) are
+   * handled by the action keymap so they live in one place and can be
+   * rebound. Space is intentionally local because it modifies the cursor
+   * and is intimately tied to the pan drag mechanic.
+   */
   private handleKeyDown(e: KeyboardEvent): void {
     if (!this._active) return;
     if (this.isEditableTarget(e.target)) return;
@@ -391,101 +398,6 @@ export class CanvasController {
       this.spaceHeld = true;
       this.updateCursor();
       e.preventDefault();
-      return;
-    }
-
-    if (e.key === "Escape") {
-      this.entryBox?.destroy();
-      this.entryBox = null;
-      this.selectNode(null);
-      this.cables?.selectEdge(null);
-      return;
-    }
-
-    if (e.key === "Delete" || e.key === "Backspace") {
-      if (this.selectedNodeIds.size > 0) {
-        e.preventDefault();
-        const ids = [...this.selectedNodeIds];
-        this.selectNode(null);
-        for (const id of ids) this.graph.removeNode(id);
-      } else if (this.patchMode && this.cables?.getSelectedEdgeId()) {
-        e.preventDefault();
-        const edgeId = this.cables.getSelectedEdgeId()!;
-        this.cables.selectEdge(null);
-        this.graph.removeEdge(edgeId);
-      }
-      return;
-    }
-
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
-      e.preventDefault();
-      this.undoManager?.undo();
-      return;
-    }
-
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === "a") {
-      e.preventDefault();
-      this.selectNodes(new Set(this.graph.getNodes().map((node) => node.id)));
-      return;
-    }
-
-    if ((e.metaKey || e.ctrlKey) && (e.key === "=" || e.key === "+")) {
-      e.preventDefault();
-      this.zoomBy(1.15);
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.key === "-") {
-      e.preventDefault();
-      this.zoomBy(1 / 1.15);
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.key === "0") {
-      e.preventDefault();
-      this.resetZoom();
-      return;
-    }
-
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-
-    switch (e.key.toLowerCase()) {
-      case "n": {
-        if (!this.isCursorOverCanvas()) return;
-        e.preventDefault();
-        const { x, y } = this.getGraphCoords(this.lastMouseClientX, this.lastMouseClientY);
-        this.openEntryBox(...this.centerEntryBox(x, y));
-        break;
-      }
-      case "b":
-        e.preventDefault();
-        this.placeObject("button");
-        break;
-      case "t":
-        e.preventDefault();
-        this.placeObject("toggle");
-        break;
-      case "s":
-        e.preventDefault();
-        this.placeObject("slider");
-        break;
-      case "a":
-        e.preventDefault();
-        this.placeObject("attribute");
-        break;
-      case "m":
-        if (!this.isCursorOverCanvas()) return;
-        e.preventDefault();
-        this.placeObject("message");
-        break;
-      case "g": {
-        const canGroup = this.selectedNodeIds.size >= 2;
-        const canUngroup = this.selectedNodeIds.size >= 1 &&
-          [...this.selectedNodeIds].some(id => this.graph.nodes.get(id)?.groupId);
-        if (canGroup || canUngroup) {
-          e.preventDefault();
-          this.toggleGroup();
-        }
-        break;
-      }
     }
   }
 
@@ -595,7 +507,19 @@ export class CanvasController {
     );
   }
 
-  private placeObject(type: string): void {
+  /**
+   * Place a new object of `type` at the keyboard spawn anchor: cursor if
+   * over canvas, otherwise viewport center. Used by both the legacy
+   * inline shortcuts and the action system's canvas.object.create.* family.
+   *
+   * If `requireCursorOverCanvas` is true and the cursor isn't over the
+   * canvas, the call is a no-op (matches legacy n/m behavior — those
+   * keys also exist as text characters and shouldn't spawn objects out
+   * of nowhere when typed somewhere unrelated).
+   */
+  placeObject(type: string, opts: { requireCursorOverCanvas?: boolean } = {}): void {
+    if (!this._active) return;
+    if (opts.requireCursorOverCanvas && !this.isCursorOverCanvas()) return;
     const { x, y } = this.spawnAnchor();
     const def = getObjectDef(type);
     const w = def?.defaultWidth ?? 80;
@@ -604,6 +528,60 @@ export class CanvasController {
     const ny = y - Math.round(h / 2);
     const node = this.graph.addNode(type, nx, ny);
     this.onObjectPlaced?.(type, node.id);
+  }
+
+  /** Open the object entry box at the cursor (N key). No-op if cursor is
+   *  off-canvas — N is also a typeable letter. */
+  openObjectEntryAtCursor(): void {
+    if (!this._active) return;
+    if (!this.isCursorOverCanvas()) return;
+    const { x, y } = this.getGraphCoords(this.lastMouseClientX, this.lastMouseClientY);
+    this.openEntryBox(...this.centerEntryBox(x, y));
+  }
+
+  /** Delete every selected node, or the selected edge in patch mode. */
+  deleteSelection(): void {
+    if (!this._active) return;
+    if (this.selectedNodeIds.size > 0) {
+      const ids = [...this.selectedNodeIds];
+      this.selectNode(null);
+      for (const id of ids) this.graph.removeNode(id);
+    } else if (this.patchMode && this.cables?.getSelectedEdgeId()) {
+      const edgeId = this.cables.getSelectedEdgeId()!;
+      this.cables.selectEdge(null);
+      this.graph.removeEdge(edgeId);
+    }
+  }
+
+  /** Select every node in the active graph. */
+  selectAllNodes(): void {
+    if (!this._active) return;
+    this.selectNodes(new Set(this.graph.getNodes().map((node) => node.id)));
+  }
+
+  /** Dismiss any open entry box and clear node + edge selection. */
+  clearSelectionAndEntry(): void {
+    if (!this._active) return;
+    this.entryBox?.destroy();
+    this.entryBox = null;
+    this.selectNode(null);
+    this.cables?.selectEdge(null);
+  }
+
+  /** Group / ungroup selected nodes (G). */
+  toggleGroupSelection(): void {
+    if (!this._active) return;
+    const canGroup = this.selectedNodeIds.size >= 2;
+    const canUngroup = this.selectedNodeIds.size >= 1 &&
+      [...this.selectedNodeIds].some(id => this.graph.nodes.get(id)?.groupId);
+    if (!canGroup && !canUngroup) return;
+    this.toggleGroup();
+  }
+
+  /** Trigger undo through the bound UndoManager (Mod+Z). */
+  undo(): void {
+    if (!this._active) return;
+    this.undoManager?.undo();
   }
 
   /**

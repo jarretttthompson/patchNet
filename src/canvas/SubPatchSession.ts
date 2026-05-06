@@ -22,6 +22,7 @@ export class SubPatchSession {
   readonly canvasController: CanvasController;
   readonly interaction: ObjectInteractionController;
   readonly vizGraph: VisualizerGraph;
+  readonly undo: UndoManager;
   /** Live GUI panel — mounted into the subPatch box body on the main canvas. */
   readonly presentationEl: HTMLDivElement;
   /** true = interact mode (GUI works, drag blocked); false = edit mode (drag works, GUI blocked). */
@@ -71,8 +72,8 @@ export class SubPatchSession {
       this.cables.render();
     });
 
-    const undo = new UndoManager(this.graph);
-    this.canvasController.setUndoManager(undo);
+    this.undo = new UndoManager(this.graph);
+    this.canvasController.setUndoManager(this.undo);
 
     this.interaction.setOutletCallback((idx, value) => {
       this.onOutletFire?.(idx, value);
