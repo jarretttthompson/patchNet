@@ -23,6 +23,28 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-06] COMPLETED | Plugin actions + generated object-create rows
+**Agent:** Claude Code
+**Phase:** Action system — Milestone 1c
+
+**Done:**
+- `LocalPlugin.actions?(): PatchAction[]` extension point. Plugins can contribute searchable rows to the palette without touching `src/actions/`. Action ids must use the `plugin.<type>.` prefix.
+- `collectLocalPluginActions()` walks the registry once at boot; failures from one plugin are caught and logged, never block the others.
+- `generateObjectCreateActions()` emits one `canvas.object.create.<type>` per `OBJECT_DEFS` key (which already includes local-plugin specs). Section "Place object". B/T/S/A/M default keys baked into the generated set via a small lookup map. Replaces the inline B/T/S/A/M actions in BUILTIN_ACTIONS — single registration point per type.
+- New users typing into the palette can now discover every available object by name even when they don't know its keybinding (or it has none).
+
+**Changed files:**
+- src/actions/objectCreateActions.ts — new generator
+- src/actions/builtinActions.ts — removed B/T/S/A/M (now generated)
+- src/actions/index.ts — export generateObjectCreateActions
+- src/graph/localPlugins.ts — `actions?` hook + `collectLocalPluginActions()` + re-export of action types
+- src/main.ts — registers built-in → generated → plugin actions in order
+- tests/actions.test.ts — coverage for the generated set
+
+**Notes / decisions:**
+- Generated rows only carry a default key when listed in `QUICK_PLACE_KEYS`. Other types are palette-only — keeps the keymap small and avoids accidental collisions on letters.
+- `message` keeps `requireCursorOverCanvas: true` so single-letter keybindings don't surprise users typing in non-canvas contexts. Other quick-place keys spawn at viewport center if the cursor is off-canvas (existing behavior).
+
 ## [2026-05-06] COMPLETED | PatchGraph.batchChange + compound undo
 **Agent:** Claude Code
 **Phase:** Action system — Milestone 1b

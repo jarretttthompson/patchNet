@@ -189,3 +189,38 @@ describe("Built-in action IDs", () => {
       .toContain("app.actions.open");
   });
 });
+
+describe("Generated object-create actions", () => {
+  it("emit one canvas.object.create.<type> per OBJECT_DEFS key", async () => {
+    const { generateObjectCreateActions } = await import("../src/actions/objectCreateActions");
+    const { OBJECT_DEFS } = await import("../src/graph/objectDefs");
+
+    const actions = generateObjectCreateActions();
+    const types = Object.keys(OBJECT_DEFS).sort();
+
+    expect(actions.length).toBe(types.length);
+    expect(actions.map((a) => a.id).sort()).toEqual(
+      types.map((t) => `canvas.object.create.${t}`).sort(),
+    );
+  });
+
+  it("preserve B/T/S/A/M default keys", async () => {
+    const { generateObjectCreateActions } = await import("../src/actions/objectCreateActions");
+    const map = new Map(generateObjectCreateActions().map((a) => [a.id, a]));
+    expect(map.get("canvas.object.create.button")?.defaultKeys).toEqual(["B"]);
+    expect(map.get("canvas.object.create.toggle")?.defaultKeys).toEqual(["T"]);
+    expect(map.get("canvas.object.create.slider")?.defaultKeys).toEqual(["S"]);
+    expect(map.get("canvas.object.create.attribute")?.defaultKeys).toEqual(["A"]);
+    expect(map.get("canvas.object.create.message")?.defaultKeys).toEqual(["M"]);
+  });
+
+  it("registers cleanly alongside built-ins (no id collisions)", async () => {
+    const { BUILTIN_ACTIONS } = await import("../src/actions/builtinActions");
+    const { generateObjectCreateActions } = await import("../src/actions/objectCreateActions");
+    const r = new ActionRegistry();
+    expect(() => {
+      r.registerAll(BUILTIN_ACTIONS);
+      r.registerAll(generateObjectCreateActions());
+    }).not.toThrow();
+  });
+});

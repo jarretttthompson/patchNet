@@ -2,6 +2,7 @@ import type { PatchNode } from "./PatchNode";
 import type { PatchGraph } from "./PatchGraph";
 import type { ObjectSpec } from "./objectDefs";
 import type { VisualizerGraph } from "../runtime/VisualizerGraph";
+import type { PatchAction, ActionContext } from "../actions/types";
 
 /**
  * Local object plugin contract.
@@ -30,6 +31,10 @@ export interface LocalPlugin {
   mount(panGroup: HTMLElement, ctx: LocalPluginContext): void;
   /** Called every render() with the set of node IDs still in the graph. */
   prune(activeNodeIds: Set<string>): void;
+  /** Optional: contribute searchable actions to the action list / palette.
+   *  Called once at app boot. Action ids must use the "plugin.<type>." prefix
+   *  so they don't collide with built-ins. */
+  actions?(ctx: { type: string }): PatchAction[];
 }
 
 const modules = import.meta.glob<{ default: LocalPlugin }>(
@@ -73,3 +78,23 @@ export function mountLocalPlugins(
 export function pruneLocalPlugins(activeNodeIds: Set<string>): void {
   for (const plugin of registry.values()) plugin.prune(activeNodeIds);
 }
+
+/** Collect every plugin's contributed actions for registration with the
+ *  ActionRegistry. Plugins without an `actions` hook contribute nothing. */
+export function collectLocalPluginActions(): PatchAction[] {
+  const out: PatchAction[] = [];
+  for (const plugin of registry.values()) {
+    if (!plugin.actions) continue;
+    try {
+      out.push(...plugin.actions({ type: plugin.type }));
+    } catch (err) {
+      console.warn(`[localPlugins] ${plugin.type}.actions() threw`, err);
+    }
+  }
+  return out;
+}
+
+// Re-export so localObjects/*.ts plugin files can author actions without
+// reaching into src/actions/ directly. ActionContext travels with the run()
+// callback, never needs to be constructed by plugin code.
+export type { PatchAction, ActionContext };

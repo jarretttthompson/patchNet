@@ -183,6 +183,9 @@ export const BUILTIN_ACTIONS: PatchAction[] = [
   },
 
   // ── Object placement ────────────────────────────────────────────────
+  // The N key opens the entry box; the per-type "Place <type>" actions
+  // (canvas.object.create.<type>) are generated from OBJECT_DEFS in
+  // objectCreateActions.ts and registered alongside these built-ins.
   {
     id: "canvas.object.entry",
     title: "New object… (entry box)",
@@ -190,48 +193,5 @@ export const BUILTIN_ACTIONS: PatchAction[] = [
     defaultKeys: ["N"],
     keywords: ["create", "place", "type"],
     run: (ctx) => ctx.canvas.openObjectEntryAtCursor(),
-  },
-  // Quick-place shortcuts — preserve B/T/S/A/M behavior. Each one is also
-  // exposed as canvas.object.create:<type> with no default key (added in
-  // commit (c)) so the palette has parameterized rows for every object.
-  {
-    id: "canvas.object.create.button",
-    title: "Place button",
-    section: CANVAS,
-    category: "Place object",
-    defaultKeys: ["B"],
-    run: (ctx) => ctx.canvas.placeObject("button"),
-  },
-  {
-    id: "canvas.object.create.toggle",
-    title: "Place toggle",
-    section: CANVAS,
-    category: "Place object",
-    defaultKeys: ["T"],
-    run: (ctx) => ctx.canvas.placeObject("toggle"),
-  },
-  {
-    id: "canvas.object.create.slider",
-    title: "Place slider",
-    section: CANVAS,
-    category: "Place object",
-    defaultKeys: ["S"],
-    run: (ctx) => ctx.canvas.placeObject("slider"),
-  },
-  {
-    id: "canvas.object.create.attribute",
-    title: "Place attribute",
-    section: CANVAS,
-    category: "Place object",
-    defaultKeys: ["A"],
-    run: (ctx) => ctx.canvas.placeObject("attribute"),
-  },
-  {
-    id: "canvas.object.create.message",
-    title: "Place message",
-    section: CANVAS,
-    category: "Place object",
-    defaultKeys: ["M"],
-    run: (ctx) => ctx.canvas.placeObject("message", { requireCursorOverCanvas: true }),
   },
 ];

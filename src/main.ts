@@ -17,6 +17,7 @@ import {
   ActionDispatcher,
   ActionListDialog,
   BUILTIN_ACTIONS,
+  generateObjectCreateActions,
   type ActionContext,
   type AppActionsAPI,
 } from "./actions";
@@ -27,7 +28,7 @@ import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvas/canvasSpac
 import { getZoom } from "./canvas/zoomState";
 import { getPatchMode, setPatchModeState } from "./canvas/patchModeState";
 import { getObjectDef, bufferRange } from "./graph/objectDefs";
-import { mountLocalPlugins, pruneLocalPlugins } from "./graph/localPlugins";
+import { mountLocalPlugins, pruneLocalPlugins, collectLocalPluginActions } from "./graph/localPlugins";
 import { UndoManager } from "./graph/UndoManager";
 import { AudioRuntime } from "./runtime/AudioRuntime";
 import { AudioGraph } from "./runtime/AudioGraph";
@@ -1381,6 +1382,16 @@ loadFileInput?.addEventListener("change", () => {
 
 const actionRegistry = new ActionRegistry();
 actionRegistry.registerAll(BUILTIN_ACTIONS);
+// Generated rows: one canvas.object.create.<type> per OBJECT_DEFS key
+// (which already includes local-plugin object specs). B/T/S/A/M default
+// keybindings are baked into the generated set.
+actionRegistry.registerAll(generateObjectCreateActions());
+// Local plugin contributions — last so plugins can shadow generated rows
+// only by using a different id (registry rejects duplicates).
+for (const a of collectLocalPluginActions()) {
+  try { actionRegistry.register(a); }
+  catch (err) { console.warn("[actions] plugin action skipped", err); }
+}
 
 const actionKeymap = new ActionKeymap(actionRegistry);
 actionKeymap.rebuildFromDefaults();
