@@ -1,5 +1,5 @@
 import { PatchEdge } from "../graph/PatchEdge";
-import { canonicalizeType, deriveBufferPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
+import { audioPortDefaultWidth, canonicalizeType, deriveAdcPorts, deriveBufferPorts, deriveDacPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
 import { PatchNode } from "../graph/PatchNode";
 import type { PortType } from "../graph/PatchNode";
 import { derivePortsFromCode } from "../canvas/codeboxPorts";
@@ -290,6 +290,19 @@ export function parsePatch(text: string): ParsedPatch {
         ({ inlets, outlets } = deriveMixerPorts(args));
       }
 
+      if (type === "adc~") {
+        ({ inlets, outlets } = deriveAdcPorts(args));
+      }
+
+      if (type === "dac~") {
+        ({ inlets, outlets } = deriveDacPorts(args));
+      }
+
+      const adcDacWidth =
+        (type === "adc~" || type === "dac~") && (inlets.length > 2 || outlets.length > 2)
+          ? audioPortDefaultWidth(Math.max(inlets.length, outlets.length))
+          : undefined;
+
       nodes.push(
         new PatchNode({
           id: crypto.randomUUID(),
@@ -299,6 +312,7 @@ export function parsePatch(text: string): ParsedPatch {
           args,
           inlets,
           outlets,
+          width: adcDacWidth,
         }),
       );
 

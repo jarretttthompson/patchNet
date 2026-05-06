@@ -128,6 +128,14 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* Disable trackpad two-finger swipe → browser back/forward navigation
+     across the entire app. patchNet uses horizontal pan/scroll heavily,
+     and accidental nav-aways have lost work. */
+  overscroll-behavior-x: none;
+}
+
+html {
+  overscroll-behavior-x: none;
 }
 
 /* Block cursor: native browser caret styled as a glowing block.
@@ -205,6 +213,100 @@ body {
   -webkit-user-drag: none;
   transform-origin: center center;
   transform: translate(41px, 0px) scale(1.85, 1.15);
+}
+
+/* Tab-bar row: tab list on the left, patch-name field pinned on the right. */
+.pn-tab-row {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--pn-surface);
+  border-bottom: 1px solid var(--pn-border);
+  flex-shrink: 0;
+}
+.pn-tab-row > #pn-tab-bar {
+  flex: 1;
+  border-bottom: none;
+}
+
+/* Editable patch-name field on the right of the tab bar. Used as save title.
+   Uses a contenteditable span + sibling block-caret span so we can render
+   a guaranteed phosphor-style block cursor (caret-shape:block isn't reliable
+   across browsers). The caret blinks via CSS only while the field is focused
+   and parks itself at the trailing edge of the typed text. */
+.patch-name-wrap {
+  flex-shrink: 0;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  margin: 0 8px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  background: transparent;
+  max-width: 360px;
+  min-width: 200px;
+  transition: border-color 0.12s, background 0.12s;
+}
+.patch-name-wrap:hover { border-color: var(--pn-border); }
+.patch-name-wrap:focus-within {
+  border-color: var(--pn-accent);
+  background: rgba(0, 255, 0, 0.04);
+}
+
+.patch-name-input {
+  flex: 1;
+  min-width: 0;
+  outline: none;
+  color: var(--pn-accent);
+  font-family: "Vulf Mono", var(--pn-font-mono);
+  font-size: var(--pn-type-body);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
+  text-shadow: 0 0 6px rgba(0, 255, 0, 0.55);
+  caret-color: transparent; /* native caret hidden — block caret below replaces it */
+}
+.patch-name-input:empty::before {
+  content: attr(data-placeholder);
+  color: var(--pn-muted);
+  opacity: 0.6;
+  text-shadow: none;
+  pointer-events: none;
+}
+
+/* Phosphor block cursor — only visible while the field has focus. */
+.patch-name-caret {
+  flex-shrink: 0;
+  width: 0.55em;
+  height: 1.05em;
+  margin-left: 1px;
+  background: var(--pn-accent);
+  box-shadow: 0 0 6px rgba(0, 255, 0, 0.55);
+  visibility: hidden;
+}
+.patch-name-wrap:focus-within .patch-name-caret {
+  visibility: visible;
+  animation: pn-patch-name-blink 1.05s steps(2, jump-none) infinite;
+}
+@keyframes pn-patch-name-blink {
+  0%   { opacity: 1; }
+  50%  { opacity: 0; }
+  100% { opacity: 1; }
+}
+.patch-name-input::placeholder {
+  color: var(--pn-muted);
+  opacity: 0.6;
+  text-shadow: none;
+}
+.patch-name-input:hover {
+  border-color: var(--pn-border);
+}
+.patch-name-input:focus {
+  border-color: var(--pn-accent);
+  background: rgba(0, 255, 0, 0.04);
 }
 
 /* ── Toolbar separator ───────────────────────────────────────────────── */
@@ -339,6 +441,9 @@ body {
   background-color: var(--pn-surface);
   overflow: scroll;
   min-width: 0;
+  /* Block the trackpad two-finger swipe → browser back/forward gesture
+     when the user is scrolling around inside the patch. */
+  overscroll-behavior-x: contain;
   /* Thin scrollbars — hidden until hover so they don't clutter the canvas */
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
@@ -746,7 +851,7 @@ body {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  border: 10px solid var(--pn-bg);
+  border: 4px solid var(--pn-bg);
   padding: 0;
   background: transparent;
   position: relative; /* anchor for the typing overlay */
@@ -1371,6 +1476,24 @@ body {
   border-color: var(--pn-border-accent);
   box-shadow: 0 0 8px rgba(0, 255, 0, 0.35);
   text-shadow: 0 0 8px var(--pn-accent);
+}
+.toolbar-icon-btn--toggle[aria-pressed="true"] {
+  color: var(--pn-accent);
+  border-color: var(--pn-border-accent);
+  box-shadow:
+    0 0 8px rgba(0, 255, 0, 0.40),
+    0 0 16px rgba(0, 255, 0, 0.42);
+  text-shadow: 0 0 6px var(--pn-accent);
+}
+
+/* Patch mode OFF: cables drop behind objects, lose hit-testing, and dim */
+[data-canvas-root].is-patch-locked .pn-cable-svg {
+  z-index: -1 !important;
+  pointer-events: none;
+  opacity: 0.6;
+}
+[data-canvas-root].is-patch-locked .pn-cable-hit {
+  pointer-events: none;
 }
 
 /* ── Resize handle ───────────────────────────────────────────────────── */
@@ -2902,6 +3025,353 @@ body {
   user-select: none;
 }
 
+/* ── wave~ — morphing oscillator with built-in scope ─────────────────── */
+.pn-wave-body {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.pn-wave-panel {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 7px 5px;
+  gap: 5px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px;
+}
+
+.pn-wave-scope-bezel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  padding: 3px;
+  box-shadow:
+    inset 0 1px 4px rgba(0, 0, 0, 0.8),
+    inset 0 0 0 1px var(--pn-border-subtle);
+}
+
+.pn-wave-scope {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 1px;
+  box-shadow: inset 0 0 10px var(--pn-surface-glow);
+}
+
+.pn-wave-knobs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  width: 100%;
+}
+
+.pn-wave-knob {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  background: var(--pn-surface);
+  border: 1px solid var(--pn-border-subtle);
+  border-radius: 3px;
+  padding: 3px 0 2px;
+  cursor: ns-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pn-wave-knob:hover {
+  border-color: var(--pn-border-accent-soft);
+}
+
+.pn-wave-knob__dial {
+  width: 32px;
+  height: 32px;
+  display: block;
+  filter: drop-shadow(0 0 3px var(--pn-accent-glow));
+}
+
+.pn-wave-knob__dial svg {
+  display: block;
+}
+
+.pn-wave-knob__ring {
+  fill: var(--pn-bg-deep);
+  stroke: var(--pn-border-accent-soft);
+  stroke-width: 1.25;
+}
+
+.pn-wave-knob__pointer {
+  stroke: var(--pn-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  /* Rotation pivot is set explicitly by the SVG `transform="rotate(a 16 16)"`
+     attribute — do NOT add transform-box / transform-origin here, they'd
+     override the SVG-attribute pivot and rotate the line around its own
+     midpoint instead of the dial center. */
+}
+
+.pn-wave-knob__label {
+  font-family: var(--pn-font-mono);
+  font-size: 6px;
+  letter-spacing: 0.12em;
+  color: var(--pn-border-accent-soft);
+  margin-top: 1px;
+}
+
+.pn-wave-knob__value {
+  font-family: var(--pn-font-mono);
+  font-size: 8px;
+  color: var(--pn-accent);
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+}
+
+.pn-wave-body[data-wave-locked="1"] .pn-wave-knob {
+  cursor: inherit;
+  pointer-events: none;
+}
+
+/* ── lfo~ tile ─────────────────────────────────────────────────────────── */
+
+.pn-lfo-body {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.pn-lfo-panel {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 7px 5px;
+  gap: 5px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px;
+}
+
+.pn-lfo-scope-bezel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  padding: 3px;
+  box-shadow:
+    inset 0 1px 4px rgba(0, 0, 0, 0.8),
+    inset 0 0 0 1px var(--pn-border-subtle);
+}
+
+.pn-lfo-scope {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 1px;
+  box-shadow: inset 0 0 10px var(--pn-surface-glow);
+}
+
+.pn-lfo-knobs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  width: 100%;
+}
+
+.pn-lfo-knob {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  background: var(--pn-surface);
+  border: 1px solid var(--pn-border-subtle);
+  border-radius: 3px;
+  padding: 3px 0 2px;
+  cursor: ns-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.pn-lfo-knob:hover {
+  border-color: var(--pn-border-accent-soft);
+}
+
+.pn-lfo-knob__dial {
+  width: 32px;
+  height: 32px;
+  display: block;
+  filter: drop-shadow(0 0 3px var(--pn-accent-glow));
+}
+
+.pn-lfo-knob__dial svg {
+  display: block;
+}
+
+.pn-lfo-knob__ring {
+  fill: var(--pn-bg-deep);
+  stroke: var(--pn-border-accent-soft);
+  stroke-width: 1.25;
+}
+
+.pn-lfo-knob__pointer {
+  stroke: var(--pn-accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  /* Rotation pivot set by SVG transform attribute — do NOT add transform-box /
+     transform-origin here, they'd override the SVG-attribute pivot. */
+}
+
+.pn-lfo-knob__label {
+  font-family: var(--pn-font-mono);
+  font-size: 6px;
+  letter-spacing: 0.12em;
+  color: var(--pn-border-accent-soft);
+  margin-top: 1px;
+}
+
+.pn-lfo-knob__value {
+  font-family: var(--pn-font-mono);
+  font-size: 8px;
+  color: var(--pn-accent);
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+}
+
+.pn-lfo-body[data-lfo-locked="1"] .pn-lfo-knob {
+  cursor: inherit;
+  pointer-events: none;
+}
+
+/* ── transientFollower~ tile ───────────────────────────────────────────── */
+
+.pn-tf-body {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.pn-tf-panel {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 7px 5px;
+  gap: 4px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px;
+}
+
+.pn-tf-scope-bezel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  padding: 3px;
+  box-shadow:
+    inset 0 1px 4px rgba(0, 0, 0, 0.8),
+    inset 0 0 0 1px var(--pn-border-subtle);
+}
+
+.pn-tf-scope-live {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 1px;
+  box-shadow: inset 0 0 10px var(--pn-surface-glow);
+}
+
+/* ── adsr~ envelope editor ─────────────────────────────────────────────── */
+
+.pn-adsr-body {
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+.pn-adsr-panel {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 7px 5px;
+  gap: 4px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px;
+}
+
+.pn-adsr-editor-bezel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  padding: 3px;
+  box-shadow:
+    inset 0 1px 4px rgba(0, 0, 0, 0.8),
+    inset 0 0 0 1px var(--pn-border-subtle);
+}
+
+.pn-adsr-svg {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  border-radius: 1px;
+  box-shadow: inset 0 0 10px var(--pn-surface-glow);
+}
+
+.pn-adsr-line {
+  stroke: var(--pn-accent);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 2px var(--pn-accent-glow));
+}
+
+.pn-adsr-handle {
+  fill: var(--pn-accent);
+  stroke: none;
+  cursor: grab;
+  transition: r 0.08s ease-out;
+}
+
+.pn-adsr-handle:hover {
+  r: 5;
+  filter: drop-shadow(0 0 3px var(--pn-accent-glow));
+}
+
+.pn-adsr-handle:active {
+  cursor: grabbing;
+}
+
+.pn-adsr-readouts {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  font-family: var(--pn-font-mono);
+  font-size: 8px;
+  color: var(--pn-accent);
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+}
+
+.pn-adsr-readouts span {
+  white-space: nowrap;
+}
+
+.pn-adsr-body[data-adsr-locked="1"] .pn-adsr-handle {
+  pointer-events: none;
+  cursor: inherit;
+}
+
 /* ── mediaImage polaroid frame ───────────────────────────────────────────── */
 
 .patch-object-mediaimage-body {
@@ -3185,6 +3655,23 @@ body {
   border-radius: 2px;
 }
 .pn-tab-close:hover { opacity: 1; background: var(--pn-border); }
+
+.pn-tab-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  background: none;
+  border: none;
+  border-right: 1px solid var(--pn-border);
+  color: var(--pn-muted);
+  font-family: var(--pn-font-mono);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.pn-tab-add:hover { color: var(--pn-accent); background: var(--pn-hover-accent); }
 
 .pn-tab-context-menu {
   position: fixed;

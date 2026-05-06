@@ -32,6 +32,7 @@ export class ObjectEntryBox {
    * Filtering keeps using this so previewing doesn't collapse the match set.
    */
   private userPrefix = "";
+  private inChannelMode = false;
 
   constructor(
     panGroup: HTMLElement,
@@ -39,6 +40,7 @@ export class ObjectEntryBox {
     y: number,
     onConfirm: (type: string, args: string[]) => void,
     onCancel: () => void,
+    private readonly getChannels?: () => string[],
   ) {
     // ── Wrapper ──────────────────────────────────────────────────────
     this.el = document.createElement("div");
@@ -96,8 +98,14 @@ export class ObjectEntryBox {
       }
       if (e.key === "Enter") {
         e.preventDefault();
-        // Arrow-key preview already filled input.value with the highlighted
-        // match, so Enter always just commits whatever's currently shown.
+        // First Enter while the dropdown is open: accept the top (or arrow-
+        // highlighted) suggestion — user must press Enter again, or click
+        // outside, to actually create the object.
+        if (this.matches.length > 0) {
+          const idx = this.activeIndex >= 0 ? this.activeIndex : 0;
+          this.acceptSuggestion(this.matches[idx]);
+          return;
+        }
         const tokens = this.input.value.trim().split(/\s+/);
         const type = tokens[0] ?? "";
         if (!VALID_TYPES.includes(type)) return;
@@ -111,13 +119,20 @@ export class ObjectEntryBox {
       }
     });
 
-    // Click outside = cancel
+    // Click outside = commit if input holds a valid type, otherwise cancel.
     const onOutside = (e: MouseEvent) => {
       if (this.destroyed) return;
       if (!this.el.contains(e.target as Node)) {
         document.removeEventListener("mousedown", onOutside, true);
-        this.destroy();
-        onCancel();
+        const tokens = this.input.value.trim().split(/\s+/);
+        const type = tokens[0] ?? "";
+        if (VALID_TYPES.includes(type)) {
+          this.destroy();
+          onConfirm(type, tokens.slice(1));
+        } else {
+          this.destroy();
+          onCancel();
+        }
       }
     };
     setTimeout(() => {
@@ -141,22 +156,26 @@ export class ObjectEntryBox {
   private refreshDropdown(): void {
     const raw = this.userPrefix.trim();
     const typePart = raw.split(/\s+/)[0] ?? "";
-
-    // Only show dropdown while user is still typing the type name
-    // (no space yet — once they type a space they're on args)
     const onArgs = raw.includes(" ");
 
-    this.matches = onArgs
-      ? []
-      : VALID_TYPES.filter(
-          (t) => typePart === "" || t.startsWith(typePart),
-        );
+    this.inChannelMode = false;
 
-    // Validate error state on the wrapper
-    const hasArgs = raw.includes(" ");
+    if (!onArgs && typePart !== "") {
+      this.matches = VALID_TYPES.filter((t) => t.startsWith(typePart));
+    } else if (onArgs && (typePart === "s" || typePart === "r") && this.getChannels) {
+      this.inChannelMode = true;
+      const argPart = raw.slice(typePart.length).trimStart();
+      const channels = this.getChannels();
+      this.matches = channels
+        .filter((ch) => ch.startsWith(argPart))
+        .map((ch) => `${typePart} ${ch}`);
+    } else {
+      this.matches = [];
+    }
+
     const knownType = VALID_TYPES.includes(typePart);
     const unknown = typePart.length > 0 && !knownType;
-    this.el.classList.toggle("pn-object-entry--error", unknown && !hasArgs);
+    this.el.classList.toggle("pn-object-entry--error", unknown && !onArgs);
 
     this.activeIndex = -1;
     this.renderDropdown();
@@ -204,11 +223,15 @@ export class ObjectEntryBox {
   private previewActiveMatch(): void {
     if (this.activeIndex < 0) return;
     const match = this.matches[this.activeIndex];
-    const userTokens = this.userPrefix.trim().split(/\s+/);
-    const userArgs = userTokens.slice(1);
-    this.input.value = userArgs.length ? `${match} ${userArgs.join(" ")}` : match;
-    const caret = match.length;
-    this.input.setSelectionRange(caret, caret);
+    if (this.inChannelMode) {
+      this.input.value = match;
+      this.input.setSelectionRange(match.length, match.length);
+    } else {
+      const userTokens = this.userPrefix.trim().split(/\s+/);
+      const userArgs = userTokens.slice(1);
+      this.input.value = userArgs.length ? `${match} ${userArgs.join(" ")}` : match;
+      this.input.setSelectionRange(match.length, match.length);
+    }
     this.el.classList.remove("pn-object-entry--error");
   }
 
@@ -219,16 +242,20 @@ export class ObjectEntryBox {
     });
   }
 
-  private acceptSuggestion(type: string): void {
-    // Keep any args the user already typed after the old type name
-    const tokens = this.input.value.trim().split(/\s+/);
-    const args = tokens.slice(1);
-    this.input.value = args.length ? `${type} ${args.join(" ")}` : type;
+  private acceptSuggestion(suggestion: string): void {
+    if (this.inChannelMode) {
+      this.input.value = suggestion;
+      this.userPrefix = suggestion;
+    } else {
+      const tokens = this.input.value.trim().split(/\s+/);
+      const args = tokens.slice(1);
+      this.input.value = args.length ? `${suggestion} ${args.join(" ")}` : suggestion;
+    }
     this.activeIndex = -1;
     this.matches = [];
+    this.inChannelMode = false;
     this.dropdown.classList.remove("pn-object-ac--visible");
     this.el.classList.remove("pn-object-entry--error");
-    // Move cursor to end
     this.input.selectionStart = this.input.selectionEnd = this.input.value.length;
   }
 }

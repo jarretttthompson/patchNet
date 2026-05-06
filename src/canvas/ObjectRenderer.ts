@@ -70,6 +70,284 @@ export function formatMaxLen(seconds: number): string {
   return r === 0 ? `${m}m` : `${m}m${r}s`;
 }
 
+export function formatFreq(hz: number): string {
+  const v = Number.isFinite(hz) ? hz : 0;
+  if (v >= 1000) return `${(v / 1000).toFixed(2)}k`;
+  if (v >= 100)  return v.toFixed(0);
+  if (v >= 10)   return v.toFixed(1);
+  return v.toFixed(2);
+}
+
+export function formatMorph(v: number): string {
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)).toFixed(2) : "0.00";
+}
+
+export function formatLevel(v: number): string {
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)).toFixed(2) : "0.00";
+}
+
+/** Build a wave~ knob: SVG dial + label + readout. The dial pointer angle
+ *  is set inline from the knob's normalized 0..1 fraction. Param-space →
+ *  fraction conversion lives in waveKnobFraction(). */
+export function waveKnobHtml(
+  nodeId: string,
+  knob: "freq" | "morph" | "level",
+  label: string,
+  rawValue: number,
+  readout: string,
+): string {
+  const frac = waveKnobFraction(knob, rawValue);
+  // Pointer arc: start at 7 o'clock (angle -135°), sweep 270° clockwise to 5 o'clock (+135°).
+  const angleDeg = -135 + frac * 270;
+  return `
+    <div class="pn-wave-knob" data-wave-node-id="${nodeId}" data-wave-knob="${knob}" data-wave-frac="${frac.toFixed(4)}" data-wave-value="${rawValue}">
+      <div class="pn-wave-knob__dial">
+        <svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
+          <circle cx="16" cy="16" r="13" class="pn-wave-knob__ring"></circle>
+          <line x1="16" y1="16" x2="16" y2="5" class="pn-wave-knob__pointer" transform="rotate(${angleDeg.toFixed(2)} 16 16)"></line>
+        </svg>
+      </div>
+      <div class="pn-wave-knob__label">${label}</div>
+      <div class="pn-wave-knob__value">${readout}</div>
+    </div>`;
+}
+
+/** Map a wave~ knob value to its 0..1 dial fraction. freq is exponential
+ *  over [1, 20000]; morph and level are linear over [0, 1]. */
+export function waveKnobFraction(knob: "freq" | "morph" | "level", value: number): number {
+  const v = Number.isFinite(value) ? value : 0;
+  if (knob === "freq") {
+    const lo = Math.log(1);
+    const hi = Math.log(20000);
+    const x = Math.log(Math.max(1, Math.min(20000, v)));
+    return Math.max(0, Math.min(1, (x - lo) / (hi - lo)));
+  }
+  return Math.max(0, Math.min(1, v));
+}
+
+/** Inverse of waveKnobFraction — turn a 0..1 dial fraction back into a param value. */
+export function waveKnobValueFromFraction(knob: "freq" | "morph" | "level", frac: number): number {
+  const f = Math.max(0, Math.min(1, frac));
+  if (knob === "freq") {
+    const lo = Math.log(1);
+    const hi = Math.log(20000);
+    return Math.exp(lo + f * (hi - lo));
+  }
+  return f;
+}
+
+// ── lfo~ tile helpers ──────────────────────────────────────────────────
+
+export function formatRate(hz: number): string {
+  const v = Number.isFinite(hz) ? Math.max(0.01, Math.min(20, hz)) : 1;
+  return v >= 10 ? `${v.toFixed(1)}Hz` : `${v.toFixed(2)}Hz`;
+}
+
+export function formatDepth(v: number): string {
+  const d = Number.isFinite(v) ? Math.max(0, Math.min(1000, v)) : 100;
+  if (d >= 100) return String(Math.round(d));
+  if (d >= 10)  return d.toFixed(1);
+  return d.toFixed(2);
+}
+
+export function formatShape(v: number): string {
+  return Number.isFinite(v) ? Math.max(0, Math.min(1, v)).toFixed(2) : "0.00";
+}
+
+/** Build an lfo~ knob: SVG dial + label + readout. */
+export function lfoKnobHtml(
+  nodeId: string,
+  knob: "rate" | "depth" | "shape",
+  label: string,
+  rawValue: number,
+  readout: string,
+): string {
+  const frac = lfoKnobFraction(knob, rawValue);
+  const angleDeg = -135 + frac * 270;
+  return `
+    <div class="pn-lfo-knob" data-lfo-node-id="${nodeId}" data-lfo-knob="${knob}" data-lfo-frac="${frac.toFixed(4)}" data-lfo-value="${rawValue}">
+      <div class="pn-lfo-knob__dial">
+        <svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
+          <circle cx="16" cy="16" r="13" class="pn-lfo-knob__ring"></circle>
+          <line x1="16" y1="16" x2="16" y2="5" class="pn-lfo-knob__pointer" transform="rotate(${angleDeg.toFixed(2)} 16 16)"></line>
+        </svg>
+      </div>
+      <div class="pn-lfo-knob__label">${label}</div>
+      <div class="pn-lfo-knob__value">${readout}</div>
+    </div>`;
+}
+
+/** Map lfo~ knob value to 0..1 dial fraction. rate is log over [0.01, 20];
+ *  depth is linear over [0, 1000]; shape is linear over [0, 1]. */
+export function lfoKnobFraction(knob: "rate" | "depth" | "shape", value: number): number {
+  const v = Number.isFinite(value) ? value : 0;
+  if (knob === "rate") {
+    const lo = Math.log(0.01);
+    const hi = Math.log(20);
+    return Math.max(0, Math.min(1, (Math.log(Math.max(0.01, Math.min(20, v))) - lo) / (hi - lo)));
+  }
+  if (knob === "depth") return Math.max(0, Math.min(1, v / 1000));
+  return Math.max(0, Math.min(1, v));
+}
+
+/** Inverse of lfoKnobFraction. */
+export function lfoKnobValueFromFraction(knob: "rate" | "depth" | "shape", frac: number): number {
+  const f = Math.max(0, Math.min(1, frac));
+  if (knob === "rate") {
+    const lo = Math.log(0.01);
+    const hi = Math.log(20);
+    return Math.exp(lo + f * (hi - lo));
+  }
+  if (knob === "depth") return f * 1000;
+  return f;
+}
+
+// ── adsr~ envelope editor ──────────────────────────────────────────────
+// Fixed SVG layout. The viewBox is 160×50 with a 2px inner padding so
+// handles at x=0 / x=158 don't clip. Time axis spans [PAD_X, ADSR_W - PAD_X];
+// envelope amplitude maps top=ADSR_TOP (1.0) to bottom=ADSR_BOTTOM (0.0).
+export const ADSR_W = 160;
+export const ADSR_H = 50;
+export const ADSR_PAD_X = 2;
+export const ADSR_TOP = 4;
+export const ADSR_BOTTOM = 46;
+export const ADSR_USABLE_W = ADSR_W - 2 * ADSR_PAD_X;
+
+/** Compact time readout: "50" / "1.2s" / "10s". */
+export function formatAdsrTime(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0";
+  if (ms < 1000) return Math.round(ms).toString();
+  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+}
+
+/** Sustain-level readout: 0..1 with two decimals. */
+export function formatAdsrLevel(v: number): string {
+  if (!Number.isFinite(v)) return "0.00";
+  return Math.max(0, Math.min(1, v)).toFixed(2);
+}
+
+/** transientFollower~ sensitivity readout: 0..64, max one decimal,
+ *  trailing zeros stripped ("1", "2.5", "16"). */
+export function formatTfSensitivity(v: number): string {
+  if (!Number.isFinite(v)) return "0";
+  const c = v < 0 ? 0 : v > 64 ? 64 : v;
+  return c.toFixed(1).replace(/\.?0+$/, "") || "0";
+}
+
+/** Update transientFollower~ face readouts in place from current node.args.
+ *  Called during attribute-panel drag so the face stays in sync without
+ *  waiting for a full re-render at commit time. */
+export function refreshTransientFollowerReadouts(bodyEl: HTMLElement, node: PatchNode): void {
+  const a    = parseFloat(node.args[0] ?? "5");
+  const r    = parseFloat(node.args[1] ?? "80");
+  const sens = parseFloat(node.args[2] ?? "1");
+  const flr  = parseFloat(node.args[3] ?? "0");
+  const set = (key: string, text: string) => {
+    const el = bodyEl.querySelector<HTMLElement>(`.pn-tf-readouts[data-tf-node-id="${node.id}"] [data-tf-readout="${key}"]`);
+    if (el) el.textContent = text;
+  };
+  set("attack",      `A:${formatAdsrTime(a)}`);
+  set("release",     `R:${formatAdsrTime(r)}`);
+  set("sensitivity", `S:${formatTfSensitivity(sens)}`);
+  set("floor",       `F:${formatAdsrLevel(flr)}`);
+}
+
+/** Compute the SVG geometry for an ADSR envelope so the editor and the
+ *  drag handler agree on pixel↔time mapping. `sustainTime` is the real
+ *  one-shot hold duration in ms (drag-controlled by the user, persisted
+ *  into args). */
+export function adsrGeometry(
+  attackMs: number,
+  decayMs: number,
+  sustain: number,
+  releaseMs: number,
+  sustainTimeMs: number,
+) {
+  const a  = Math.max(0, attackMs);
+  const d  = Math.max(0, decayMs);
+  const r  = Math.max(0, releaseMs);
+  const sh = Math.max(0, sustainTimeMs);
+  const s  = Math.max(0, Math.min(1, sustain));
+  const displayedTime = a + d + sh + r;
+  const pxPerMs = ADSR_USABLE_W / Math.max(0.0001, displayedTime);
+  const xA   = ADSR_PAD_X + a * pxPerMs;
+  const xAD  = xA + d * pxPerMs;
+  const xADS = xAD + sh * pxPerMs;
+  const xEnd = xADS + r * pxPerMs;
+  const ySustain = ADSR_TOP + (1 - s) * (ADSR_BOTTOM - ADSR_TOP);
+  return { a, d, r, s, sh, displayedTime, pxPerMs, xA, xAD, xADS, xEnd, ySustain };
+}
+
+/** Inner SVG markup for the adsr~ envelope editor. */
+export function adsrEditorSvg(node: PatchNode): string {
+  const a  = parseFloat(node.args[0] ?? "50");
+  const d  = parseFloat(node.args[1] ?? "100");
+  const s  = parseFloat(node.args[2] ?? "0.7");
+  const r  = parseFloat(node.args[3] ?? "200");
+  const sh = parseFloat(node.args[4] ?? "200");
+  const g = adsrGeometry(a, d, s, r, sh);
+  const points = [
+    `${ADSR_PAD_X},${ADSR_BOTTOM}`,
+    `${g.xA.toFixed(2)},${ADSR_TOP}`,
+    `${g.xAD.toFixed(2)},${g.ySustain.toFixed(2)}`,
+    `${g.xADS.toFixed(2)},${g.ySustain.toFixed(2)}`,
+    `${g.xEnd.toFixed(2)},${ADSR_BOTTOM}`,
+  ].join(" ");
+  return `
+    <polyline class="pn-adsr-line" points="${points}" fill="none"></polyline>
+    <circle class="pn-adsr-handle" data-adsr-handle="attack"     cx="${g.xA.toFixed(2)}"   cy="${ADSR_TOP}" r="3.5"></circle>
+    <circle class="pn-adsr-handle" data-adsr-handle="decay"      cx="${g.xAD.toFixed(2)}"  cy="${g.ySustain.toFixed(2)}" r="3.5"></circle>
+    <circle class="pn-adsr-handle" data-adsr-handle="sustainEnd" cx="${g.xADS.toFixed(2)}" cy="${g.ySustain.toFixed(2)}" r="3.5"></circle>
+    <circle class="pn-adsr-handle" data-adsr-handle="release"    cx="${g.xEnd.toFixed(2)}" cy="${ADSR_BOTTOM}" r="3.5"></circle>`;
+}
+
+/** Update the line + handle positions in an existing SVG without rebuilding
+ *  the wrapping DOM. Called by the drag handler to redraw live. */
+export function refreshAdsrEditorDom(svgEl: SVGSVGElement, node: PatchNode): void {
+  const a  = parseFloat(node.args[0] ?? "50");
+  const d  = parseFloat(node.args[1] ?? "100");
+  const s  = parseFloat(node.args[2] ?? "0.7");
+  const r  = parseFloat(node.args[3] ?? "200");
+  const sh = parseFloat(node.args[4] ?? "200");
+  const g = adsrGeometry(a, d, s, r, sh);
+  const line = svgEl.querySelector<SVGPolylineElement>("polyline.pn-adsr-line");
+  if (line) {
+    const points = [
+      `${ADSR_PAD_X},${ADSR_BOTTOM}`,
+      `${g.xA.toFixed(2)},${ADSR_TOP}`,
+      `${g.xAD.toFixed(2)},${g.ySustain.toFixed(2)}`,
+      `${g.xADS.toFixed(2)},${g.ySustain.toFixed(2)}`,
+      `${g.xEnd.toFixed(2)},${ADSR_BOTTOM}`,
+    ].join(" ");
+    line.setAttribute("points", points);
+  }
+  const setHandle = (which: string, cx: number, cy: number) => {
+    const h = svgEl.querySelector<SVGCircleElement>(`circle.pn-adsr-handle[data-adsr-handle="${which}"]`);
+    if (h) {
+      h.setAttribute("cx", cx.toFixed(2));
+      h.setAttribute("cy", cy.toFixed(2));
+    }
+  };
+  setHandle("attack",     g.xA,   ADSR_TOP);
+  setHandle("decay",      g.xAD,  g.ySustain);
+  setHandle("sustainEnd", g.xADS, g.ySustain);
+  setHandle("release",    g.xEnd, ADSR_BOTTOM);
+
+  // Update the readouts row if it's a sibling of the SVG.
+  const panel = svgEl.closest(".pn-adsr-panel");
+  if (panel) {
+    const readouts = panel.querySelector(".pn-adsr-readouts");
+    if (readouts) {
+      readouts.innerHTML = `
+        <span>A:${formatAdsrTime(a)}</span>
+        <span>D:${formatAdsrTime(d)}</span>
+        <span>S:${formatAdsrLevel(s)}</span>
+        <span>H:${formatAdsrTime(sh)}</span>
+        <span>R:${formatAdsrTime(r)}</span>`;
+    }
+  }
+}
+
 function applyStage(body: HTMLDivElement, designW: number, designH: number): void {
   if (body.querySelector(":scope > .pn-stage")) return;  // already staged
   const stage = document.createElement("div");
@@ -850,6 +1128,94 @@ function buildBody(node: PatchNode): HTMLDivElement {
     stage.appendChild(info);
 
     body.appendChild(stage);
+
+  } else if (node.type === "wave~") {
+    body.classList.add("pn-wave-body");
+    const freq  = parseFloat(node.args[0] ?? "220");
+    const morph = parseFloat(node.args[1] ?? "0");
+    const level = parseFloat(node.args[2] ?? "0.5");
+    const locked = (node.args[3] ?? "0") !== "0";
+    body.dataset.waveLocked = locked ? "1" : "0";
+    body.innerHTML = `
+      <div class="pn-wave-panel">
+        <div class="pn-wave-scope-bezel">
+          <canvas class="pn-wave-scope" data-wave-node-id="${node.id}" width="320" height="96"></canvas>
+        </div>
+        <div class="pn-wave-scope-bezel pn-wave-scope-bezel--live">
+          <canvas class="pn-wave-scope-live" data-wave-node-id="${node.id}" width="320" height="96"></canvas>
+        </div>
+        <div class="pn-wave-knobs">
+          ${waveKnobHtml(node.id, "freq",  "FREQ",  freq,  formatFreq(freq))}
+          ${waveKnobHtml(node.id, "morph", "MORPH", morph, formatMorph(morph))}
+          ${waveKnobHtml(node.id, "level", "LEVEL", level, formatLevel(level))}
+        </div>
+      </div>`;
+
+  } else if (node.type === "lfo~") {
+    body.classList.add("pn-lfo-body");
+    const rate  = parseFloat(node.args[0] ?? "1");
+    const depth = parseFloat(node.args[1] ?? "100");
+    const shape = parseFloat(node.args[2] ?? "0");
+    const locked = (node.args[3] ?? "0") !== "0";
+    body.dataset.lfoLocked = locked ? "1" : "0";
+    body.innerHTML = `
+      <div class="pn-lfo-panel">
+        <div class="pn-lfo-scope-bezel">
+          <canvas class="pn-lfo-scope" data-lfo-node-id="${node.id}" width="320" height="96"></canvas>
+        </div>
+        <div class="pn-lfo-scope-bezel pn-lfo-scope-bezel--live">
+          <canvas class="pn-lfo-scope-live" data-lfo-node-id="${node.id}" width="320" height="96"></canvas>
+        </div>
+        <div class="pn-lfo-knobs">
+          ${lfoKnobHtml(node.id, "rate",  "RATE",  rate,  formatRate(rate))}
+          ${lfoKnobHtml(node.id, "depth", "DEPTH", depth, formatDepth(depth))}
+          ${lfoKnobHtml(node.id, "shape", "SHAPE", shape, formatShape(shape))}
+        </div>
+      </div>`;
+
+  } else if (node.type === "transientFollower~") {
+    body.classList.add("pn-tf-body");
+    const a    = parseFloat(node.args[0] ?? "5");
+    const r    = parseFloat(node.args[1] ?? "80");
+    const sens = parseFloat(node.args[2] ?? "1");
+    const flr  = parseFloat(node.args[3] ?? "0");
+    body.innerHTML = `
+      <div class="pn-tf-panel">
+        <div class="pn-tf-scope-bezel">
+          <canvas class="pn-tf-scope-live" data-tf-node-id="${node.id}" width="320" height="120"></canvas>
+        </div>
+        <div class="pn-tf-readouts pn-adsr-readouts" data-tf-node-id="${node.id}">
+          <span data-tf-readout="attack">A:${formatAdsrTime(a)}</span>
+          <span data-tf-readout="release">R:${formatAdsrTime(r)}</span>
+          <span data-tf-readout="sensitivity">S:${formatTfSensitivity(sens)}</span>
+          <span data-tf-readout="floor">F:${formatAdsrLevel(flr)}</span>
+        </div>
+      </div>`;
+
+  } else if (node.type === "adsr~") {
+    body.classList.add("pn-adsr-body");
+    const a  = parseFloat(node.args[0] ?? "50");
+    const d  = parseFloat(node.args[1] ?? "100");
+    const s  = parseFloat(node.args[2] ?? "0.7");
+    const r  = parseFloat(node.args[3] ?? "200");
+    const sh = parseFloat(node.args[4] ?? "200");
+    const locked = (node.args[5] ?? "0") !== "0";
+    body.dataset.adsrLocked = locked ? "1" : "0";
+    body.innerHTML = `
+      <div class="pn-adsr-panel">
+        <div class="pn-adsr-editor-bezel">
+          <svg class="pn-adsr-svg" data-adsr-node-id="${node.id}" viewBox="0 0 ${ADSR_W} ${ADSR_H}" preserveAspectRatio="none">
+            ${adsrEditorSvg(node)}
+          </svg>
+        </div>
+        <div class="pn-adsr-readouts">
+          <span>A:${formatAdsrTime(a)}</span>
+          <span>D:${formatAdsrTime(d)}</span>
+          <span>S:${formatAdsrLevel(s)}</span>
+          <span>H:${formatAdsrTime(sh)}</span>
+          <span>R:${formatAdsrTime(r)}</span>
+        </div>
+      </div>`;
 
   } else if (node.type === "fft~") {
     body.classList.add("pn-fft-body");

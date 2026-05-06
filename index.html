@@ -22,16 +22,6 @@
         >▾</button>
       </div>
       <div class="toolbar toolbar--controls toolbar--collapsed" id="toolbar-controls">
-        <span
-          style="
-            color: var(--pn-muted);
-            font-size: var(--pn-type-micro);
-            font-family: var(--pn-font-mono);
-          "
-          >EDIT MODE</span>
-
-        <div class="toolbar-separator"></div>
-
         <!-- Audio controls -->
         <button id="audio-toggle-btn" class="toolbar-audio-btn" title="Toggle audio (DSP on/off)" aria-pressed="false">
           <span class="toolbar-audio-icon">▶</span>
@@ -74,6 +64,17 @@
         <div class="toolbar-separator"></div>
 
         <button
+          id="patch-mode-btn"
+          class="toolbar-icon-btn toolbar-icon-btn--toggle"
+          type="button"
+          aria-pressed="true"
+          title="Patch mode (P) — toggle cable drawing/interaction"
+          aria-label="Toggle patch mode"
+        ><svg viewBox="0 0 24 12" width="20" height="10" aria-hidden="true"><circle cx="3" cy="6" r="2.5" fill="currentColor"/><circle cx="21" cy="6" r="2.5" fill="currentColor"/><line x1="5.5" y1="6" x2="18.5" y2="6" stroke="currentColor" stroke-width="1.5"/></svg></button>
+
+        <div class="toolbar-separator"></div>
+
+        <button
           id="shortcuts-btn"
           class="toolbar-icon-btn"
           aria-label="Keyboard shortcuts"
@@ -81,7 +82,21 @@
           >?</button>
         <input type="file" id="load-file-input" accept=".patchnet,.txt" style="display:none" />
       </div>
-      <div id="pn-tab-bar"></div>
+      <div class="pn-tab-row">
+        <div id="pn-tab-bar"></div>
+        <div class="patch-name-wrap">
+          <span
+            id="patch-name-input"
+            class="patch-name-input"
+            contenteditable="plaintext-only"
+            spellcheck="false"
+            autocomplete="off"
+            role="textbox"
+            aria-label="Patch name"
+            data-placeholder="untitled patch"
+          ></span><span class="patch-name-caret" aria-hidden="true"></span>
+        </div>
+      </div>
       <div class="workspace">
         <div class="canvas-area" data-canvas-root>
           <div class="canvas-grid"></div>

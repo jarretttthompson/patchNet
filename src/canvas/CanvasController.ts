@@ -5,7 +5,9 @@ import type { VisualizerGraph } from "../runtime/VisualizerGraph";
 import { ObjectEntryBox } from "./ObjectEntryBox";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvasSpace";
 import { getZoom, setZoomValue, MIN_ZOOM, MAX_ZOOM } from "./zoomState";
-import { OBJECT_DEFS, getObjectDef } from "../graph/objectDefs";
+import { getPatchMode, subscribePatchMode } from "./patchModeState";
+import { OBJECT_DEFS, audioPortDefaultWidth, deriveAdcPorts, deriveDacPorts, getObjectDef } from "../graph/objectDefs";
+import type { AudioGraph } from "../runtime/AudioGraph";
 import { startDragSession, type DragSession } from "./dragSession";
 import {
   getUserDefaultSize,
@@ -64,6 +66,8 @@ export class CanvasController {
   private selectedNodeIds = new Set<string>();
 
   private _active = true;
+  private patchMode = getPatchMode();
+  private unsubscribePatchMode: (() => void) | null = null;
   private undoManager?: { undo: () => void };
   private menuEl: HTMLElement | null = null;
   private cables: CableRenderer | null = null;
@@ -71,6 +75,7 @@ export class CanvasController {
   private panGroup: HTMLElement | null = null;
   private scrollSpacer: HTMLElement | null = null;
   private vizGraph: VisualizerGraph | null = null;
+  private audioGraph: AudioGraph | null = null;
   private entryBox: ObjectEntryBox | null = null;
   private isPanning = false;
   private spaceHeld = false;
@@ -136,6 +141,8 @@ export class CanvasController {
     document.addEventListener("keydown", this.onKeyDown);
     document.addEventListener("keyup", this.onKeyUp);
     document.addEventListener("click", this.onDocClick, true);
+
+    this.unsubscribePatchMode = subscribePatchMode((on) => this.setPatchMode(on));
   }
 
   // ── Public API ─────────────────────────────────────────────────────
@@ -243,6 +250,16 @@ export class CanvasController {
 
   setCableDrawController(controller: CableDrawController | null): void {
     this.cableDraw = controller;
+    controller?.setPatchMode(this.patchMode);
+  }
+
+  setPatchMode(on: boolean): void {
+    this.patchMode = on;
+    this.cableDraw?.setPatchMode(on);
+    if (!on) {
+      this.cables?.selectEdge(null);
+      this.cableDraw?.cancel();
+    }
   }
 
   setUndoManager(um: { undo: () => void }): void {
@@ -252,6 +269,10 @@ export class CanvasController {
   setVisualizerGraph(vg: VisualizerGraph): void {
     this.vizGraph = vg;
     this.setupDragDrop();
+  }
+
+  setAudioGraph(ag: AudioGraph | null): void {
+    this.audioGraph = ag;
   }
 
   /** Returns the primary selected node ID (first in set), or null. */
@@ -318,6 +339,8 @@ export class CanvasController {
     this.panSession = null;
     this.cables?.getSVGElement().removeEventListener("click", this.onCableClick);
     this.cableDraw = null;
+    this.unsubscribePatchMode?.();
+    this.unsubscribePatchMode = null;
     this.endPan();
     this.endRubberBand(false);
     this.closeMenu();
@@ -385,7 +408,7 @@ export class CanvasController {
         const ids = [...this.selectedNodeIds];
         this.selectNode(null);
         for (const id of ids) this.graph.removeNode(id);
-      } else if (this.cables?.getSelectedEdgeId()) {
+      } else if (this.patchMode && this.cables?.getSelectedEdgeId()) {
         e.preventDefault();
         const edgeId = this.cables.getSelectedEdgeId()!;
         this.cables.selectEdge(null);
@@ -525,6 +548,7 @@ export class CanvasController {
 
   private handleCableClick(e: MouseEvent): void {
     if (!this.cables) return;
+    if (!this.patchMode) return;
     if (this.cableDraw?.consumeCableClickSuppression()) return;
 
     const edgeId = this.cables.edgeIdFromEvent(e);
@@ -559,6 +583,15 @@ export class CanvasController {
       () => {
         this.entryBox = null;
       },
+      () => {
+        const seen = new Set<string>();
+        for (const node of this.graph.getNodes()) {
+          if ((node.type === "s" || node.type === "r") && node.args[0]) {
+            seen.add(node.args[0]);
+          }
+        }
+        return Array.from(seen).sort();
+      },
     );
   }
 
@@ -567,8 +600,8 @@ export class CanvasController {
     const def = getObjectDef(type);
     const w = def?.defaultWidth ?? 80;
     const h = def?.defaultHeight ?? 40;
-    const nx = Math.max(0, x - Math.round(w / 2));
-    const ny = Math.max(0, y - Math.round(h / 2));
+    const nx = x - Math.round(w / 2);
+    const ny = y - Math.round(h / 2);
     const node = this.graph.addNode(type, nx, ny);
     this.onObjectPlaced?.(type, node.id);
   }
@@ -602,11 +635,11 @@ export class CanvasController {
    * near its lower edge instead of overlapping the input.
    */
   private centerEntryBox(x: number, y: number): [number, number] {
-    return [Math.max(0, x - 40), Math.max(0, y - 22)];
+    return [x - 40, y - 22];
   }
 
   /** World-space center of the currently visible canvas area. */
-  private viewportCenter(): [number, number] {
+  viewportCenter(): [number, number] {
     const z = getZoom();
     const x = Math.max(0, Math.round((this.canvasEl.scrollLeft + this.canvasEl.clientWidth  / 2 - CANVAS_LEFT_GUTTER_PX) / z));
     const y = Math.max(0, Math.round((this.canvasEl.scrollTop  + this.canvasEl.clientHeight / 2 - CANVAS_TOP_GUTTER_PX) / z));
@@ -837,6 +870,18 @@ export class CanvasController {
       menu.appendChild(btn);
     };
 
+    if ((node.type === "adc~" || node.type === "dac~") && this.audioGraph) {
+      const detected = node.type === "adc~"
+        ? this.audioGraph.getAdcNode(node.id)?.detectedChannelCount ?? 0
+        : this.audioGraph.getMaxOutputChannels();
+
+      const labelN = detected > 0 ? `${detected} ch` : "device not ready";
+      addItem(`Rebuild ${node.type} from device (${labelN})`, () => {
+        if (detected <= 0) return;
+        this.rebuildAudioNodeFromDevice(node.id, detected);
+      });
+    }
+
     addItem(`Set default size for ${node.type} (${width}×${height})`, () => {
       setUserDefaultSize(node.type, width, height);
       this.graph.emit("change");
@@ -860,6 +905,31 @@ export class CanvasController {
   private closeMenu(): void {
     this.menuEl?.remove();
     this.menuEl = null;
+  }
+
+  /**
+   * Apply detected channel count to an adc~ / dac~ node: rewrite args,
+   * regenerate ports, resize, prune now-out-of-range edges.
+   */
+  private rebuildAudioNodeFromDevice(nodeId: string, channels: number): void {
+    const node = this.graph.nodes.get(nodeId);
+    if (!node) return;
+    if (node.type !== "adc~" && node.type !== "dac~") return;
+
+    const n = Math.max(1, Math.min(32, channels | 0));
+    node.args[0] = String(n);
+
+    const derived = node.type === "adc~" ? deriveAdcPorts(node.args) : deriveDacPorts(node.args);
+    node.inlets  = derived.inlets;
+    node.outlets = derived.outlets;
+    node.width   = audioPortDefaultWidth(Math.max(node.inlets.length, node.outlets.length));
+
+    for (const edge of this.graph.getEdges()) {
+      if (edge.fromNodeId === nodeId && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
+      if (edge.toNodeId   === nodeId && edge.toInlet    >= node.inlets.length)  this.graph.removeEdge(edge.id);
+    }
+
+    this.graph.emit("change");
   }
 
   // ── Helpers ────────────────────────────────────────────────────────
@@ -894,14 +964,8 @@ export class CanvasController {
     const rect = this.canvasEl.getBoundingClientRect();
     const z = getZoom();
     return {
-      x: Math.max(
-        0,
-        Math.round((clientX - rect.left + this.canvasEl.scrollLeft - CANVAS_LEFT_GUTTER_PX) / z),
-      ),
-      y: Math.max(
-        0,
-        Math.round((clientY - rect.top + this.canvasEl.scrollTop - CANVAS_TOP_GUTTER_PX) / z),
-      ),
+      x: Math.round((clientX - rect.left + this.canvasEl.scrollLeft - CANVAS_LEFT_GUTTER_PX) / z),
+      y: Math.round((clientY - rect.top + this.canvasEl.scrollTop - CANVAS_TOP_GUTTER_PX) / z),
     };
   }
 

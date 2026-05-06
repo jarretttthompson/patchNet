@@ -1,5 +1,5 @@
 import { PatchEdge, type PatchEdgeData } from "./PatchEdge";
-import { canonicalizeType, deriveBufferPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, fillCreationDefaults, getObjectDef } from "./objectDefs";
+import { audioPortDefaultWidth, canonicalizeType, deriveAdcPorts, deriveBufferPorts, deriveDacPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, fillCreationDefaults, getObjectDef } from "./objectDefs";
 import { PatchNode, type PatchNodeData } from "./PatchNode";
 import { parsePatch } from "../serializer/parse";
 import { getBlobSchema, isBlobPlaceholder, serializePatch, serializePatchForDisplay } from "../serializer/serialize";
@@ -40,6 +40,12 @@ export class PatchGraph {
     if (type === "mixer~") {
       ({ inlets, outlets } = deriveMixerPorts(args));
     }
+    if (type === "adc~") {
+      ({ inlets, outlets } = deriveAdcPorts(args));
+    }
+    if (type === "dac~") {
+      ({ inlets, outlets } = deriveDacPorts(args));
+    }
     if (type === "js~") {
       ({ inlets, outlets } = deriveJsEffectPorts(args));
     }
@@ -62,6 +68,11 @@ export class PatchGraph {
       ({ x: placeX, y: placeY } = findFreePlacement(this, x, y, w, h));
     }
 
+    const adcDacWidth =
+      (type === "adc~" || type === "dac~") && (inlets.length > 2 || outlets.length > 2)
+        ? audioPortDefaultWidth(Math.max(inlets.length, outlets.length))
+        : undefined;
+
     const node = new PatchNode({
       id: crypto.randomUUID(),
       type,
@@ -70,6 +81,7 @@ export class PatchGraph {
       args,
       inlets,
       outlets,
+      width: adcDacWidth,
     });
 
     this.nodes.set(node.id, node);

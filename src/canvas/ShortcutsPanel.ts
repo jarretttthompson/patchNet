@@ -19,6 +19,7 @@ const GROUPS: ShortcutGroup[] = [
       ["S", "Place slider"],
       ["M", "Place metro"],
       ["Double-click", "New object at cursor"],
+      ["⌘T", "New subPatch tab"],
     ],
   },
   {
@@ -35,6 +36,7 @@ const GROUPS: ShortcutGroup[] = [
     rows: [
       ["Drag outlet →  inlet", "Draw cable"],
       ["Click cable", "Select cable"],
+      ["P", "Toggle patch mode (lock cables)"],
     ],
   },
   {
@@ -42,6 +44,7 @@ const GROUPS: ShortcutGroup[] = [
     rows: [
       ["Space + drag", "Pan canvas"],
       ["Middle-click drag", "Pan canvas"],
+      ["Q", "Toggle toolbar"],
     ],
   },
 ];

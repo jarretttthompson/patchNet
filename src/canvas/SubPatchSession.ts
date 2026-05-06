@@ -11,6 +11,7 @@ import { getObjectDef } from "../graph/objectDefs";
 import { startDragSession } from "./dragSession";
 import { VisualizerGraph } from "../runtime/VisualizerGraph";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvasSpace";
+import { registerSession, unregisterSession } from "./patchSessionRegistry";
 
 const PANEL_GUI_TYPES = new Set(["button", "toggle", "slider", "message", "integer", "float", "attribute"]);
 
@@ -100,6 +101,9 @@ export class SubPatchSession {
       this.render();
       this.syncPorts();
     });
+
+    // Register so global `s`/`r` and AudioGraph see this subpatch.
+    registerSession({ id: nodeId, graph: this.graph, oic: this.interaction });
 
     this.render();
   }
@@ -336,6 +340,7 @@ export class SubPatchSession {
   }
 
   destroy(): void {
+    unregisterSession(this.nodeId);
     this.vizGraph.destroy();
     this.interaction.destroy();
     this.canvasController.destroy();

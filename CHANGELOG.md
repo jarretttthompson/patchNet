@@ -23,6 +23,225 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-06] COMPLETED | Scratch tabs (independent top-level patches)
+**Agent:** Claude Code
+
+**Done:**
+- New `+` button + ⌘T shortcut create a blank top-level scratch tab. Each scratch tab has its own `PatchGraph`, panGroup, `CanvasController`, cables, OIC, undo, and `VisualizerGraph` — modeled on `SubPatchSession` but without parent-node ties.
+- `patchSessionRegistry` tracks every top-level session (main + scratch tabs + subpatches). Single source of truth for global features.
+- `s` / `r` are now globally routed via `broadcastSendReceive` — a sender in any tab fires every matching `r` across all tabs (and inside subpatches).
+- `AudioGraph` pulls graphs from the registry, materialising audio nodes for every tab against one shared `AudioContext`. Subscribes to each tab's graph so scratch-tab edits trigger sync.
+- localStorage now uses a v1 JSON envelope `{v:1, main, scratchTabs:[]}`. Legacy bare-text values are still loaded as main-only. `saveAllTabs` runs on every per-tab graph change.
+- `TabManager` learns three tab kinds (`main`, `subpatch`, `scratch`). `closeTab(userInitiated)` destroys scratch sessions outright (via `onScratchClose`); subpatch close still preserves the canvas object via the `closedSubpatchTabs` flag.
+- `+` previously created a `subPatch` *node* on the main canvas. That flow is replaced — `+`/⌘T no longer mutates the main graph.
+
+**Changed files:**
+- src/canvas/patchSessionRegistry.ts — new global registry + s/r broadcast
+- src/canvas/ScratchTabSession.ts — new top-level scratch session class
+- src/canvas/TabManager.ts — multi-kind tabs, scratch close lifecycle
+- src/canvas/SubPatchSession.ts — register/unregister with the registry
+- src/canvas/ObjectInteractionController.ts — `s` now delegates to `broadcastSendReceive`
+- src/runtime/AudioGraph.ts — sources graphs from registry, subscribes to each
+- src/main.ts — wires `addNewScratchTab`, multi-tab persistence, audio-graph plumbing per scratch
+- CHANGELOG.md — this entry
+
+**Notes / decisions:**
+- Subpatch tabs still work today (double-click a subPatch object → opens a tab). The user has asked for that flow to be replaced with a popup window editor + right-click "promote to tab" — deferred to phase 2.
+- Text panel is still bound to main's graph only. When a scratch tab is active, the side panel keeps showing main. Full per-tab text panel sync is a follow-up; CLAUDE.md's bidirectional bond is preserved (textPanel ↔ main remains lossless).
+- Save-to-file (`cmd+s`) currently only writes main's graph. Scratch tabs persist via localStorage only. Multi-tab file format is a follow-up.
+- Share URLs remain main-only.
+- Closing a scratch tab destroys its session and cannot be undone — the user is warned by the X glyph.
+
+**Next needed:**
+- Phase 2: replace subpatch tab integration with a floating popup window editor; add right-click on the popup titlebar → "add to tab bar" promotion.
+- Per-tab text panel + per-tab object count / status indicators.
+- Multi-tab save-to-file format.
+
+## [2026-05-06] COMPLETED | Patch mode toggle (lock cables)
+**Agent:** Claude Code
+
+**Done:**
+- New toolbar icon button (port-line-port glyph) and `P` keyboard shortcut toggle a global patch mode. Default ON (preserves prior behavior).
+- When OFF: cable drawing, re-patch from cable stroke, cable hover/select, alt-click delete, and Delete-key cable removal are all gated. The cable SVG is also dropped behind objects (`z-index: -1` via `[data-canvas-root].is-patch-locked`), pointer-events disabled on cable hit areas, and dimmed to `opacity: 0.6` so the locked state reads at a glance. Toggling OFF clears any cable selection and cancels an in-progress ghost.
+- State lives in a tiny `patchModeState` module so every CanvasController (main + each subpatch tab session) subscribes and stays in sync without threading callbacks through TabManager / SubPatchManager.
+- The `P` shortcut is wired at the document level in `main.ts` (with editable-target + modifier guards) so it works regardless of which tab is active. Status bar flashes `patch: on` / `patch: off` on toggle.
+
+**Changed files:**
+- `index.html` — new `#patch-mode-btn` toolbar icon button before `#shortcuts-btn`.
+- `src/shell.css` — `.toolbar-icon-btn--toggle[aria-pressed="true"]` accent state; `.is-patch-locked` rules for cable z-index, pointer-events, and dim.
+- `src/canvas/patchModeState.ts` — new module with `getPatchMode` / `setPatchModeState` / `subscribePatchMode`.
+- `src/canvas/CanvasController.ts` — subscribes to patch-mode changes; `setPatchMode` clears cable selection and cancels in-progress draws when OFF; `handleCableClick` and the Delete-key cable branch gate on the flag.
+- `src/canvas/CableDrawController.ts` — `setPatchMode` field + early return in `handleMouseDown`; `cancel()` made public so the controller can clear ghosts on toggle.
+- `src/main.ts` — `setPatchModeUi` button + status wiring + global `P` keydown handler.
+- `src/canvas/ShortcutsPanel.ts` — new `P — Toggle patch mode (lock cables)` row in the Connect group.
+
+**Notes / decisions:**
+- Patch mode state is intentionally not persisted across reloads or saved into `.patchnet` files; it always boots ON.
+- The state module + subscriber pattern mirrors `zoomState.ts` and means new subpatch sessions opened mid-session immediately respect the current mode without any extra wiring.
+
+**Next needed:**
+- Smoke-test in browser (user-driven): toggle on/off, draw/click cables in both states, press `P` over canvas vs inside an entry box / patch-name input, toggle mid-drag.
+
+## [2026-05-05] COMPLETED | adc~ / dac~ multichannel + Audio Status panel
+**Agent:** Claude Code
+
+**Done:**
+- `adc~` and `dac~` accept an optional `channels` arg (1–32). Defaults to 2 to keep existing patches stereo. Inlets/outlets are derived from the arg via new `deriveAdcPorts` / `deriveDacPorts` helpers next to `deriveMixerPorts`. Object width grows with channel count via `audioPortDefaultWidth` so 32 ports stay clickable.
+- Double-click on an `adc~` or `dac~` opens `AudioConfigPanel`, a Max-style "Audio Status" modal: input/output device pickers, current sample rate, max output channel count from `destination.maxChannelCount`, requested vs detected channel count for the clicked node, and an apply button to commit a new channel count to `node.args[0]`.
+- Right-click on `adc~` / `dac~` adds a "Rebuild from device (N ch)" menu item that snaps the node to the device's actually-delivered channel count (post-`getUserMedia` track settings for adc~, hardware ceiling for dac~) and prunes any now-out-of-range edges.
+- `AdcNode` requests `channelCount: { ideal: N }` with `echoCancellation/autoGainControl/noiseSuppression: false` so the browser delivers raw multichannel from interfaces like an X32. Per-channel splitter + analyser. `detectedChannelCount` reflects what the MediaStreamTrack actually granted.
+- `DacNode` builds a wide `ChannelMergerNode(N)` with per-channel level analysers. `AudioGraph.applyDestinationChannelCount()` sets `destination.channelCount` to the widest dac~ in the patch (capped at `maxChannelCount`) with `channelCountMode = "explicit"` and `channelInterpretation = "discrete"` so channel N routes straight to physical output N.
+- `AudioGraph.sync()` rebuilds `AdcNode` / `DacNode` instances when `node.args[0]` channel count changes, mirroring how mixer~ already handles dynamic channel counts.
+
+**Changed files:**
+- `src/graph/objectDefs.ts` — `channels` arg on adc~/dac~; `adcChannelCount` / `dacChannelCount` / `audioPortDefaultWidth` / `deriveAdcPorts` / `deriveDacPorts` helpers.
+- `src/graph/PatchGraph.ts` — wire derive helpers + width into `addNode`.
+- `src/serializer/parse.ts` — same wiring for round-trips through the text panel.
+- `src/runtime/AdcNode.ts` — N-channel constructor; processing-disabled `getUserMedia` constraints; per-channel meters; `detectedChannelCount`.
+- `src/runtime/DacNode.ts` — N-channel merger + per-channel analysers.
+- `src/runtime/AudioGraph.ts` — rebuild-on-channel-count change in `sync()`; new `applyDestinationChannelCount()`; `getMaxAdcDetectedChannels` / `getMaxOutputChannels` / `getAdcNode` / `getDacNode` / `getRuntime` getters.
+- `src/canvas/AudioConfigPanel.ts` — new modal, reuses pn-imgfx-* styles.
+- `src/canvas/ObjectInteractionController.ts` — adc~/dac~ branch in `handleDblClick`.
+- `src/canvas/CanvasController.ts` — `setAudioGraph`; "Rebuild from device" item; `rebuildAudioNodeFromDevice`.
+- `src/main.ts` — wire `audioGraph` into CanvasController.
+
+**Notes / decisions:**
+- Initial default stays `channels = 2` so old patches load as stereo. Users explicitly opt in to higher counts via right-click rebuild, the modal, or the inline `adc~ 32` arg.
+- `destination.channelCount` is global; the highest-channel `dac~` in the patch wins. Multi-`dac~` patches with different counts will all see the widest.
+- Web Audio multichannel output is uneven across browsers — Chrome+CoreAudio with the X32 as system default exposes ~32; Safari/Firefox typically clamp at 2. The modal surfaces `maxChannelCount` so this is visible.
+
+**Next needed:**
+- Optional: per-channel level meters in the modal so users can visually identify which physical channel is which.
+
+## [2026-05-05] COMPLETED | transientFollower~ — envelope follower + VCA
+**Agent:** Claude Code
+
+**Done:**
+- New `transientFollower~` audio object: takes two audio inputs and uses the amplitude envelope of the second to shape the gain of the first. Drop-in replacement for an `[adsr~] → [*~]` chain when the envelope should come from a real-world sound (e.g. a microphone via `[adc~]`). The face shows a scrolling envelope-history trace (~4 sec at 60 Hz rAF), so the user can watch transients flow through the VCA in real time.
+- Two signal inlets: 0 = source signal (carrier to be shaped), 1 = shape source (envelope detection input). Two signal outlets: 0 = shaped audio (`source × envelope`), 1 = envelope as an audio-rate signal — also available for routing into other CV destinations (e.g. `wave~` freq inlet, `lfo~` rate inlet, another VCA).
+- Four positional args: `attack` ms (default 5, rise time-constant), `release` ms (default 80, fall time-constant), `sensitivity` (default 1.0, pre-detection input gain — 0–64), `floor` (default 0, gate threshold below which the envelope clamps to 0). All exposed as live readouts on the face.
+
+**DSP:**
+- New AudioWorklet `transient-follower` (`src/runtime/transientFollower/transient-follower-worklet.js`). Per-sample asymmetric one-pole envelope detector: `env += (target - env) * coef` where `coef` differs between rising (`attackCoef`) and falling (`releaseCoef`), each derived from `1 - exp(-1 / (timeMs * 0.001 * sampleRate))`. Stock `BiquadFilter` lowpass uses one time-constant for both directions, so a worklet was the right tool. Worklet-side params are k-rate `AudioParam`s for sample-rate-agnostic config.
+- VCA wiring trick (already used elsewhere for CV): `vcaGain.gain.value = 0`, then connect the worklet's audio output to `vcaGain.gain` as an AudioParam target. Web Audio sums the AudioParam connection with the default value, so the envelope drives gain at audio rate. The carrier passes `sourceInput → vcaGain → shapedOutput`.
+
+**Visualization:**
+- Internal `AnalyserNode` taps the worklet output; `drawLiveScope(canvas)` is called once per rAF from main.ts, samples the analyser peak, appends to a 240-frame circular buffer, redraws the full history as a filled green area chart with a bright glowing top edge — same visual language as `wave~` / `lfo~` live scopes.
+
+**Changed files:**
+- src/runtime/transientFollower/transient-follower-worklet.js — **new**. AudioWorkletProcessor with 4 k-rate params (attackMs, releaseMs, sensitivity, floor); abs → sensitivity → floor → asymmetric one-pole; releases toward 0 when no input is connected.
+- src/runtime/TransientFollowerNode.ts — **new**. Wraps the worklet plus `sourceInput` / `shapeInput` inlet GainNodes, `vcaGain` (with the audio-param-modulation trick), `shapedOutput` / `envelopeOutput` outlet GainNodes, `envAnalyser`, and a 240-slot Float32Array history buffer. Implements `connect(dest, outletIndex, inputIndex)` so callers select which outlet to wire (0 = shaped, 1 = envelope).
+- src/graph/objectDefs.ts — registered `"transientFollower~"` ObjectSpec (single registration point; autocomplete + context menu derive from it automatically).
+- src/runtime/AudioGraph.ts — added `transientFollowerNodes` map + `transientFollowerPending` set + `ensureTransientFollowerWorklet()` lazy module loader (mirrors the buffer~/jsfx~ pattern); `sync()` instantiates async after the worklet module loads, re-reads args at completion time, then triggers `rewireConnections()`; `rewireConnections()` handles transientFollower~ as both source (every existing sink branch) and destination (inlet 0 → sourceInput, inlet 1 → shapeInput); `getTransientFollowerNode()` accessor; `updateTransientFollowerDisplay()` rAF helper; `destroy()` cleanup.
+- src/canvas/ObjectRenderer.ts — `transientFollower~` tile branch (live scope canvas + A/R/S/F readouts). New exported helper `formatTfSensitivity`.
+- src/main.ts — added `audioGraph.updateTransientFollowerDisplay(panGroup)` call to the rAF tick alongside `updateWaveDisplay` / `updateLfoDisplay`.
+- src/shell.css — `.pn-tf-body` / `.pn-tf-panel` / `.pn-tf-scope-bezel` / `.pn-tf-scope-live` (mirrors `.pn-lfo-*` styling); readouts reuse `.pn-adsr-readouts`.
+
+**Notes / decisions:**
+- Asymmetric A/R required a worklet — stock Web Audio nodes can't express different rise/fall time-constants in one filter.
+- Outlet 1 (envelope as signal) was added so the detected envelope can be routed elsewhere — into another VCA, into `wave~` freq CV, etc. Costs nothing since the envelope is already an audio-rate signal internally.
+- Sensitivity max set to 64 so ultra-quiet input devices can be boosted enough to register; floor lets the user gate out the resulting noise.
+- Stereo shape inputs are summed to mono before detection — a single envelope drives the VCA.
+- Worklet file is under Vite's 4 KB inline threshold so it ships as a `data:` URL — already the convention here.
+
+**Next needed:**
+- Manual smoke test in the browser: build `[wave~ 220] → transientFollower~(0)`, `[adc~] → transientFollower~(1)`, `transientFollower~(0) → [dac~]`, toggle audio, allow mic, verify synth speaks the voice envelope and the face traces transients.
+- Future polish: drag-to-edit knobs on the face (currently args are edited via the text panel only); name-prefixed messages on inlet 0 (`attack 12`, `release 200`) for live tweaks during performance.
+
+## [2026-05-04] COMPLETED | lfo~ — sub-audio LFO modulation source
+**Agent:** Claude Code
+
+**Done:**
+- New `lfo~` audio object: a sub-audio morphing LFO (0.01–20 Hz) that outputs a slow modulation signal for FM, morph CV, tremolo, or any other signal destination. Three knobs on the tile: RATE (logarithmic 0.01–20 Hz), DEPTH (linear 0–1000 Hz — peak output amplitude), SHAPE (0–1 morph: sine → tri → saw → square). Same eurorack-VCO knob design and still-analytic scope preview as `wave~`, but scope always renders exactly 3 cycles (rate is sub-audio so fixed cycle count is more informative than frequency-scaled).
+- Inlet 0: control messages (`rate <hz>`, `depth <v>`, `shape <0..1>`). Inlet 1: signal — rate CV in Hz, summed onto base rate (enables LFO-of-LFO patching). Outlet 0: signal at ±depth peak amplitude. No gate — LFO always runs.
+- Registered as a signal source in `AudioGraph.rewireConnections()` so it routes correctly into every sink type: `dac~`, `fft~`, `js~`, `mixer~`, `wave~` (both freq and morph inlets), `adsr~`, `buffer~`, and other `lfo~` (rate CV inlet). The lfo~ destination block mirrors wave~'s to-node handler for its rate CV inlet (inlet 1).
+- Tile lock state (args[3]) makes knobs inert and the body draggable from anywhere, matching `wave~` and `mixer~` convention.
+
+**Changed files:**
+- src/runtime/LfoNode.ts — **new**. DSP class: 4 `OscillatorNode`s → 4 GainNodes (crossfade weights) → sumGain → depthGain → output. `connect`/`disconnect`/`destroy` mirror `WaveNode`; `setRate`/`setDepth`/`setShape` are message-handler entry points; `drawScope(canvas)` renders still analytic preview, called once per rAF.
+- src/graph/objectDefs.ts — registered `"lfo~"` ObjectSpec (single registration point; autocomplete + context menu derive from it automatically).
+- src/runtime/AudioGraph.ts — added `lfoNodes` map; `sync()` instantiates and live-updates from args; `rewireConnections()` handles lfo~ as both source (all existing sink types) and destination (inlet 1 → rateInput); `getLfoNode()` accessor; `updateLfoDisplay()` rAF helper; `destroy()` cleanup.
+- src/canvas/ObjectRenderer.ts — lfo~ tile branch (scope canvas + 3 knobs). New exported helpers: `formatRate`, `formatDepth`, `formatShape`, `lfoKnobHtml`, `lfoKnobFraction`, `lfoKnobValueFromFraction`.
+- src/canvas/ObjectInteractionController.ts — `lfoKnobDrag` interaction state; branches in `handleSliderMove`/`handleSliderUp`/`cancelWidgetDrag`; `updateLfoKnobFromEvent`/`refreshLfoKnobDom`; `case "lfo~"` in inlet-0 message dispatch; imported new ObjectRenderer helpers.
+- src/main.ts — rAF loop calls `audioGraph.updateLfoDisplay(panGroup)`.
+- src/shell.css — `.pn-lfo-*` rules: scope bezel, knob row, SVG dial styling. All colors via `--pn-*` tokens.
+
+**Notes / decisions:**
+- Depth unit is Hz, not normalized 0..1 — because the primary use case is FM into wave~'s freq CV inlet (which sums Hz linearly onto the base frequency). depth=100 → oscillates ±100 Hz from carrier base. For AM/tremolo into adsr~ inlet 0, users scale with ezScale.
+- No gate — LFO always runs after start. Standard LFO convention; controlling depth via the DEPTH knob to 0 is the equivalent of muting.
+- Rate CV (inlet 1) connects to rateInput GainNode which drives all 4 oscillator frequency AudioParams, just like wave~'s freqInput drives its oscillators.
+- Morph math (morphWeights/waveSample) is duplicated from WaveNode rather than extracted to a shared util; deferred as a refactor when a third object needs it.
+
+**Next needed:**
+- Wiki page at `patchNet-Vault/wiki/entities/object-lfo.md`.
+- Demo patch: `lfo~ → wave~ (inlet 0)` for vibrato; `lfo~ → wave~ (inlet 1)` for morph modulation.
+- Deferred: unipolar mode (output 0..1 instead of ±depth), phase reset via bang, tempo sync.
+
+## [2026-05-04] COMPLETED | adsr~ — envelope generator with draggable shape editor
+**Agent:** Claude Code
+
+**Done:**
+- New `adsr~` audio object: combined ADSR envelope generator + VCA. Audio passes through inlet 0; signal is multiplied by an attack/decay/sustain-hold/release envelope and exits outlet 0. Inlet 1 accepts `bang` (one-shot A → D → hold sustain → R), float 1/0 (gate-on/off, sustain held until 0), or selectors `attack/decay/sustain/sustainTime/release <v>`. Outlet 1 fires a bang at the end of one-shot completion (chain to the next envelope, sequencer step, etc.).
+- Tile body is a draggable envelope editor: SVG polyline with **four** handles (attack peak, decay/sustain breakpoint, sustain-end, release end). Drag attack/release/sustain-end horizontally, drag decay both axes (Y = sustain level). Compact A/D/S/H/R readouts beneath. Visual time axis = real `A + D + sustainTime + R`, so dragging the sustain-end handle horizontally directly sets how long the plateau holds before release.
+- Bug fix: bang routing — `deliverBang` switch had no `adsr~` case, so a `button → adsr~ inlet 1` cable did nothing. Now triggers a one-shot envelope on inlet-1 bangs.
+- DSP: pure Web Audio AudioParam automation (no AudioWorklet). `linearRampToValueAtTime` chain on a single GainNode multiplies the input. Click-free re-trigger via `cancelScheduledValues` + `setValueAtTime(currentValue, now)` snapshot. `MIN_RAMP=0.5ms` floor keeps ramp ordering monotonic when params are 0.
+- Outlet-1 done bangs are scheduled by `AudioGraph.triggerAdsr()` pushing a `(nodeId, deadlineMs)` entry into a pending-completions queue; `flushAdsrCompletions(performance.now())` runs in the rAF loop and dispatches via the registered `setAdsrDoneCallback` → OIC `fireBang(nodeId, 1)`.
+
+**Changed files:**
+- src/graph/objectDefs.ts — registered `adsr~` ObjectSpec
+- src/runtime/AdsrNode.ts — NEW DSP class
+- src/runtime/AudioGraph.ts — adsr nodes map; sync()/destroy()/rewireConnections() (source + destination); triggerAdsr/gateOnAdsr/gateOffAdsr/setAdsrDoneCallback/flushAdsrCompletions
+- src/canvas/ObjectRenderer.ts — adsr~ body branch + helpers (formatAdsrTime, formatAdsrLevel, adsrGeometry, adsrEditorSvg, refreshAdsrEditorDom)
+- src/canvas/ObjectInteractionController.ts — adsrHandleDrag state + drag math; case "adsr~" inlet message dispatch; public fireBang
+- src/main.ts — rAF flushAdsrCompletions; setAdsrDoneCallback wiring outlet-1 bangs through OIC
+- src/shell.css — `.pn-adsr-*` rules using --pn-* tokens
+
+**Notes / decisions:**
+- Linear ramps (not exponential) — exponential can't reach exact 0, leaving residue at long releases.
+- "Apply to NEXT trigger" semantics for setters — Web Audio doesn't let us cleanly rewrite an in-flight envelope without worse glitches.
+- Inlet 1 bare `bang` defaults to one-shot trigger; bare floats route to gate-on/off so the standard Max convention holds.
+
+**Next needed:**
+- Optional Phase 2: per-stage curve shapes (lin/exp/log), live envelope-position dot during playback, click-to-insert custom breakpoints, velocity-sensitive amplitude scaling.
+
+## [2026-05-04] COMPLETED | wave~ — morphing oscillator with built-in scope
+**Agent:** Claude Code
+
+**Done:**
+- New `wave~` audio object: morphing oscillator with a built-in oscilloscope tile in the eurorack-VCO mold. Crossfades sine → triangle → saw → square via a continuous morph knob (or audio-rate morph CV). Three knobs on the tile: FREQ (1–20kHz, exponential drag), MORPH (0–1, linear), LEVEL (0–1, linear). Vertical drag with optional shift for fine control. Knobs persist into args; saved patches restore exact knob positions.
+- Two signal inlets (freq CV in Hz, summed onto base; morph CV added to base morph) and one signal outlet. Freq CV is wired directly into each `OscillatorNode.frequency` AudioParam — Web Audio sums the modulating signal natively. Morph CV is sampled per-rAF via an `AnalyserNode` tap and folded into the crossfade weights.
+- Built-in scope: `AnalyserNode` time-domain tap drawn each rAF. Trigger-synced on the first positive-going zero crossing in the front half of the buffer so the trace stays still. Acid-green trace with soft glow over a transparent bezel — same accent + glow recipe as `ezSlider` and `fft~`.
+- Lock-state convention matches `mixer~` / `youtube~*`: when `args[3]` (locked) is `1`, knobs become inert and the tile is draggable from anywhere.
+
+**Changed files:**
+- src/runtime/WaveNode.ts — **new**. DSP class: 4 `OscillatorNode`s → 4 GainNodes (crossfade weights) → sumGain → levelGain → AnalyserNode → output. `connect`/`disconnect`/`destroy` mirror the `ClickNode` idiom; `setFreq`/`setMorph`/`setLevel` are message-handler entry points; `tickMorph` + `drawScope(canvas)` are called once per rAF from `main.ts`.
+- src/runtime/AudioGraph.ts — added `waveNodes` map; `sync()` instantiates and live-updates from args (so text-panel edits propagate); `rewireConnections()` handles `wave~` as both source (in mixer~/buffer~/generic-dest branches) and destination (inlet 0 → freqInput, inlet 1 → morphInput); new `getWaveNode(id)` accessor and `updateWaveDisplay(panGroup)` helper.
+- src/graph/objectDefs.ts — registered `wave~` ObjectSpec (single registration point; autocomplete + context menu derive from it).
+- src/canvas/ObjectRenderer.ts — new `wave~` tile branch with bezeled scope canvas + 3-knob row; helpers `formatFreq` / `formatMorph` / `formatLevel` / `waveKnobHtml` / `waveKnobFraction` / `waveKnobValueFromFraction`.
+- src/canvas/ObjectInteractionController.ts — `waveKnobDrag` interaction state + branches in `handleSliderMove` / `handleSliderUp` / `cancelWidgetDrag`; `updateWaveKnobFromEvent` + `refreshWaveKnobDom` apply value live to runtime via `audioGraph.getWaveNode(id)?.setX()` and persist to args. New `case "wave~"` in the inlet-message dispatch handles `freq <hz>` / `morph <0..1>` / `level <0..1>` selectors on inlet 0.
+- src/main.ts — rAF loop calls `audioGraph.updateWaveDisplay(panGroup)` next to `updateFftDisplay`.
+- src/shell.css — `.pn-wave-*` rules: scope bezel, knob row, SVG dial styling. All colors via `--pn-*` tokens.
+
+**Post-merge fixes (same day):**
+- Knob pointers were rotating around the *line's own midpoint* instead of the dial center, so every knob looked nearly vertical regardless of value. Cause: `.pn-wave-knob__pointer` had `transform-box: fill-box; transform-origin: center;` in the CSS, which overrode the explicit pivot in the SVG `transform="rotate(angle 16 16)"` attribute. Fix: removed the two CSS transform-* properties (the SVG attribute already specifies the correct pivot).
+- Scope showed less than one full cycle of weird ramp at low frequencies (e.g. 40 Hz). Cause: analyser `fftSize=1024` ≈ 21 ms at 48 kHz, but one cycle of 40 Hz is ~25 ms — buffer was shorter than the period. Fix: bumped to `fftSize=4096` (~85 ms) and added an auto-time-base — `drawScope` picks a trace window of ~3 cycles based on `sampleRate / baseFreq` so a 220 Hz sine and a 40 Hz saw both render with ~3 cycles across the canvas.
+
+**Behavior changes (same day, after user feedback):**
+- **Gate inlet** — added inlet 2 (any-type) as a dedicated audio gate. `wave~` now starts *silent* on every load; users send `1` (or `gate 1`) to enable sound, `0` to mute. Implementation: `levelGain.gain` ramps to `userLevel × (gateOn ? 1 : 0)` via `setTargetAtTime` for click-free open/close. The gate state is transient runtime-only — not persisted into args, since wave~ should always come up safe-silent after a load. Inlet 0 also accepts `gate <0|1>` for attribute-panel parity. The freq-CV / morph-CV signal inlets (0 and 1) are unchanged; inlet 2 is excluded from audio rewiring (it's a control inlet — falls through `wave~` destination block in `AudioGraph.rewireConnections`).
+- **Static shape-preview scope** — replaced the live time-domain analyser trace with an *analytic still rendering*. The scope now draws the morph-weighted ideal wave (sine/tri/saw/square — phase-aligned, all starting at 0 going positive) across the canvas. Pure math, no analyser tap, no jitter. The trace only changes when the user moves a knob or sends CV — the visual stays rock-still during playback. Trace dims to 55 % alpha when the gate is closed as a subtle "muted" cue. `WaveNode` keeps the morph-CV analyser tap (still drives shape and weights), but the scope analyser is gone entirely (smaller memory footprint, simpler graph).
+- **Freq → scope cycle count** — the number of cycles drawn across the scope now scales with frequency on a log-octave curve: `cyclesShown = log₂(freq / 27.5)`, clamped to [0.5, 24]. Each octave above A0 adds one cycle, so 55 Hz = 1 cycle, 220 Hz = 3 cycles, 880 Hz = 5, 4 kHz = ~7. This gives the user immediate visual feedback when they tune the FREQ knob — the wave visibly squeezes/stretches per the change. Fractional cycles are allowed (a partial cycle hangs at the right edge), which keeps the response continuous instead of stepping at integer cycle boundaries.
+- Renamed the implicit "level" semantics: it's now "output level when the gate is open." Knob behavior unchanged.
+
+**Notes / decisions:**
+- DSP approach: cross-fade four parallel `OscillatorNode`s (sine/triangle/sawtooth/square) summed via per-shape GainNodes whose `.gain` AudioParams ramp via `setTargetAtTime` (10ms TC) for click-free morphing. No custom `AudioWorklet` — chosen for shipping speed, lowest CPU, and to match the existing `ClickNode` / `MixerNode` style. Tradeoff: PWM and hard-sync are not possible with this approach (Web Audio's `OscillatorNode` exposes neither phase reset nor pulse width) and are explicitly deferred.
+- Crossfade math: 4 anchors at morph positions 0 (sine), 1/3 (tri), 2/3 (saw), 1 (square). For position p, only the two adjacent shapes have non-zero weight (linear interpolation between them); other two are zero. Continuous and well-defined at the boundary points.
+- Freq CV is linear/additive (Web Audio AudioParam summation), not exponential V/oct. For a music-theory-correct CV/oct converter, route the CV through a `scale` or `expr` object first. V/oct is on the deferred list with PWM/sync.
+- Smoke-tested via Chrome DevTools MCP: scope renders live sine at 220 Hz; morphing the knob via synthesized drag changes the trace from sine to square (verified by sampling pixel y at x=20 — drops from y=26 [sine zero crossing] to y=13 [square plateau]); `dac~` meters light up confirming audio flow; args persist correctly across re-renders.
+
+**Next needed:**
+- Wiki page at `patchNet-Vault/wiki/entities/object-wave.md` documenting the spec and the deferred Phase-2 features (PWM, hard-sync, V/oct, sub-osc, separate per-shape outputs — all of which require an `AudioWorklet`).
+- If the object earns its keep, the deferred features land as a Phase 2 with a custom `wave-worklet.js` modeled on `jsfx-worklet.js`.
+
 ## [2026-05-02] COMPLETED | ezSlider: inlet 0 takes value-in-[lo,hi], not raw 0–1
 **Agent:** Claude Code
 

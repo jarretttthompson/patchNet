@@ -8,11 +8,16 @@ import { parseYouTubeUrl } from "./youtube/parseUrl";
 import { FftAnalyzerNode } from "./FftAnalyzerNode";
 import { JsEffectNode } from "./JsEffectNode";
 import { MixerNode } from "./MixerNode";
+import { WaveNode } from "./WaveNode";
+import { AdsrNode } from "./AdsrNode";
+import { LfoNode } from "./LfoNode";
+import { TransientFollowerNode } from "./TransientFollowerNode";
 import { BufferNode } from "./BufferNode";
 import { bufferStorage } from "./buffer/BufferStorage";
-import { bufferMaxLen, bufferMode, fftBandCount, mixerChannelCount } from "../graph/objectDefs";
+import { adcChannelCount, bufferMaxLen, bufferMode, dacChannelCount, fftBandCount, mixerChannelCount } from "../graph/objectDefs";
 import type { PatchGraph } from "../graph/PatchGraph";
 import type { SubPatchManager } from "../canvas/SubPatchManager";
+import { getSessions, onSessionsChanged } from "../canvas/patchSessionRegistry";
 
 // Plain-JS worklet so Vite can ship it as an asset the browser loads
 // directly via audioWorklet.addModule(). Under Vite's default 4 KB inline
@@ -20,6 +25,7 @@ import type { SubPatchManager } from "../canvas/SubPatchManager";
 // fine; Chromium/Safari/Firefox all accept data: URLs in addModule().
 const JSFX_WORKLET_URL = new URL("./jsfx/jsfx-worklet.js", import.meta.url).href;
 const BUFFER_WORKLET_URL = new URL("./buffer/buffer-worklet.js", import.meta.url).href;
+const TRANSIENT_FOLLOWER_WORKLET_URL = new URL("./transientFollower/transient-follower-worklet.js", import.meta.url).href;
 
 export interface MeterInfo {
   level: number;
@@ -40,6 +46,16 @@ export class AudioGraph {
   private fftNodes          = new Map<string, FftAnalyzerNode>();
   private jsEffectNodes     = new Map<string, JsEffectNode>();
   private mixerNodes        = new Map<string, MixerNode>();
+  private waveNodes         = new Map<string, WaveNode>();
+  private adsrNodes         = new Map<string, AdsrNode>();
+  private lfoNodes          = new Map<string, LfoNode>();
+  private transientFollowerNodes = new Map<string, TransientFollowerNode>();
+  private transientFollowerPending = new Set<string>();
+  private transientFollowerWorkletReady: Promise<void> | null = null;
+  /** Pending one-shot envelope completions: [nodeId, performance.now() deadline].
+   *  Drained by flushAdsrCompletions() each rAF, which fires the outlet-1 done bang. */
+  private adsrPendingCompletions: Array<{ nodeId: string; deadlineMs: number }> = [];
+  private adsrDoneCallback: ((nodeId: string) => void) | null = null;
   private bufferNodes       = new Map<string, BufferNode>();
   private bufferPending     = new Set<string>();
   private jsEffectPending   = new Set<string>();
@@ -52,15 +68,40 @@ export class AudioGraph {
 
   private unsubscribe: () => void;
 
+  private unsubscribeRegistry: () => void;
+  private graphSubs = new Map<string, () => void>();
+
   constructor(runtime: AudioRuntime, graph: PatchGraph, subPatchManager?: SubPatchManager) {
     this.runtime = runtime;
     this.graph   = graph;
     this.subPatchManager = subPatchManager ?? null;
     this.unsubscribe = this.graph.on("change", () => this.sync());
+    // Subscribe to every session's graph so scratch-tab edits trigger sync().
+    // SubPatch sessions also get registered, but they bubble changes up to
+    // main via onPortsChanged → parentGraph.emit, so a duplicate subscription
+    // is fine (sync is idempotent).
+    const refreshSubs = () => {
+      const live = new Set(getSessions().map(s => s.id));
+      for (const [id, unsub] of this.graphSubs) {
+        if (!live.has(id)) { unsub(); this.graphSubs.delete(id); }
+      }
+      for (const s of getSessions()) {
+        if (!this.graphSubs.has(s.id) && s.graph !== this.graph) {
+          this.graphSubs.set(s.id, s.graph.on("change", () => this.sync()));
+        }
+      }
+    };
+    this.unsubscribeRegistry = onSessionsChanged(() => { refreshSubs(); this.sync(); });
+    refreshSubs();
     this.sync();
   }
 
   private allGraphs(): PatchGraph[] {
+    // Source of truth = registry (main + scratch tabs + subpatch sessions).
+    // Falls back to the constructor-passed graph if the registry is somehow
+    // empty (e.g., AudioGraph constructed before main registers itself).
+    const fromRegistry = getSessions().map(s => s.graph);
+    if (fromRegistry.length > 0) return fromRegistry;
     return [this.graph, ...(this.subPatchManager?.getSubPatchGraphs() ?? [])];
   }
 
@@ -99,14 +140,41 @@ export class AudioGraph {
 
   async setInputDevice(deviceId: string): Promise<void> {
     this.runtime.inputDeviceId = deviceId;
+    const graphs = this.allGraphs();
+    const channelsById = new Map<string, number>();
+    for (const g of graphs) {
+      for (const node of g.getNodes()) {
+        if (node.type === "adc~") channelsById.set(node.id, adcChannelCount(node.args));
+      }
+    }
     for (const [id, adc] of this.adcNodes) {
       adc.destroy();
-      const fresh = new AdcNode(this.runtime);
+      const channels = channelsById.get(id) ?? adc.channelCount;
+      const fresh = new AdcNode(this.runtime, channels);
       await fresh.start(deviceId || undefined);
       this.adcNodes.set(id, fresh);
     }
     this.rewireConnections();
   }
+
+  /** Highest channel count reached by an attached adc~ MediaStreamTrack. */
+  getMaxAdcDetectedChannels(): number {
+    let max = 0;
+    for (const adc of this.adcNodes.values()) {
+      if (adc.detectedChannelCount > max) max = adc.detectedChannelCount;
+    }
+    return max;
+  }
+
+  /** Hardware ceiling reported by the AudioContext destination. */
+  getMaxOutputChannels(): number {
+    if (!this.runtime.isStarted) return 2;
+    return this.runtime.context.destination.maxChannelCount;
+  }
+
+  getAdcNode(id: string): AdcNode | null { return this.adcNodes.get(id) ?? null; }
+  getDacNode(id: string): DacNode | null { return this.dacNodes.get(id) ?? null; }
+  getRuntime(): AudioRuntime { return this.runtime; }
 
   /** Re-parent each fft~ canvas into its mount slot after canvas render. */
   mountFftNodes(panGroup: HTMLElement): void {
@@ -158,6 +226,100 @@ export class AudioGraph {
     return this.mixerNodes.get(nodeId) ?? null;
   }
 
+  getWaveNode(nodeId: string): WaveNode | null {
+    return this.waveNodes.get(nodeId) ?? null;
+  }
+
+  getAdsrNode(nodeId: string): AdsrNode | null {
+    return this.adsrNodes.get(nodeId) ?? null;
+  }
+
+  getLfoNode(nodeId: string): LfoNode | null {
+    return this.lfoNodes.get(nodeId) ?? null;
+  }
+
+  getTransientFollowerNode(nodeId: string): TransientFollowerNode | null {
+    return this.transientFollowerNodes.get(nodeId) ?? null;
+  }
+
+  /** Redraw all transientFollower~ live envelope traces. Called once per rAF
+   *  from main.ts. Cheap when no nodes exist. */
+  updateTransientFollowerDisplay(panGroup: HTMLElement): void {
+    if (this.transientFollowerNodes.size === 0) return;
+    for (const [id, tf] of this.transientFollowerNodes) {
+      const liveCanvas = panGroup.querySelector<HTMLCanvasElement>(
+        `canvas.pn-tf-scope-live[data-tf-node-id="${id}"]`,
+      );
+      if (liveCanvas) tf.drawLiveScope(liveCanvas);
+    }
+  }
+
+  /** Redraw all lfo~ scope canvases (analytic preview + live oscilloscope).
+   *  Called once per rAF from main.ts. */
+  updateLfoDisplay(panGroup: HTMLElement): void {
+    if (this.lfoNodes.size === 0) return;
+    for (const [id, ln] of this.lfoNodes) {
+      const canvas = panGroup.querySelector<HTMLCanvasElement>(`canvas.pn-lfo-scope[data-lfo-node-id="${id}"]`);
+      if (canvas) ln.drawScope(canvas);
+      const liveCanvas = panGroup.querySelector<HTMLCanvasElement>(`canvas.pn-lfo-scope-live[data-lfo-node-id="${id}"]`);
+      if (liveCanvas) ln.drawLiveScope(liveCanvas);
+    }
+  }
+
+  /** Trigger an adsr~ one-shot. Stashes the completion deadline so the rAF
+   *  loop can fire the outlet-1 done bang at the right time. No-op if the node
+   *  doesn't exist (e.g. audio not started yet). */
+  triggerAdsr(nodeId: string): void {
+    const an = this.adsrNodes.get(nodeId);
+    if (!an) return;
+    const deadlineMs = an.trigger();
+    this.adsrPendingCompletions.push({ nodeId, deadlineMs });
+  }
+
+  gateOnAdsr(nodeId: string): void {
+    this.adsrNodes.get(nodeId)?.gateOn();
+  }
+
+  gateOffAdsr(nodeId: string): void {
+    this.adsrNodes.get(nodeId)?.gateOff();
+  }
+
+  /** Register the callback the rAF loop uses to dispatch outlet-1 done bangs. */
+  setAdsrDoneCallback(cb: ((nodeId: string) => void) | null): void {
+    this.adsrDoneCallback = cb;
+  }
+
+  /** Drain any envelope completions whose deadline has elapsed. Called once per rAF
+   *  from main.ts. Cheap when no envelopes are in flight. */
+  flushAdsrCompletions(nowMs: number): void {
+    if (this.adsrPendingCompletions.length === 0) return;
+    const cb = this.adsrDoneCallback;
+    const remaining: Array<{ nodeId: string; deadlineMs: number }> = [];
+    for (const entry of this.adsrPendingCompletions) {
+      if (entry.deadlineMs <= nowMs) {
+        cb?.(entry.nodeId);
+      } else {
+        remaining.push(entry);
+      }
+    }
+    this.adsrPendingCompletions = remaining;
+  }
+
+  /** Tick all wave~ scopes — called once per rAF from main.ts. Samples the
+   *  morph CV analyser to apply crossfade weights, redraws the analytic
+   *  preview, and traces the live oscilloscope. Knobs are NOT animated —
+   *  they show the user-set base value at all times. Cheap if no wave~ exist. */
+  updateWaveDisplay(panGroup: HTMLElement): void {
+    if (this.waveNodes.size === 0) return;
+    for (const [id, wn] of this.waveNodes) {
+      wn.tickMorph();
+      const canvas = panGroup.querySelector<HTMLCanvasElement>(`canvas.pn-wave-scope[data-wave-node-id="${id}"]`);
+      if (canvas) wn.drawScope(canvas);
+      const liveCanvas = panGroup.querySelector<HTMLCanvasElement>(`canvas.pn-wave-scope-live[data-wave-node-id="${id}"]`);
+      if (liveCanvas) wn.drawLiveScope(liveCanvas);
+    }
+  }
+
   getBufferNode(nodeId: string): BufferNode | null {
     return this.bufferNodes.get(nodeId) ?? null;
   }
@@ -196,6 +358,9 @@ export class AudioGraph {
 
   destroy(): void {
     this.unsubscribe();
+    this.unsubscribeRegistry();
+    for (const unsub of this.graphSubs.values()) unsub();
+    this.graphSubs.clear();
     this.clickNodes.clear();
     this.dacNodes.clear();
     for (const adc of this.adcNodes.values()) adc.destroy();
@@ -212,6 +377,17 @@ export class AudioGraph {
     this.jsEffectReadyListeners.clear();
     for (const mx of this.mixerNodes.values()) mx.destroy();
     this.mixerNodes.clear();
+    for (const wn of this.waveNodes.values()) wn.destroy();
+    this.waveNodes.clear();
+    for (const an of this.adsrNodes.values()) an.destroy();
+    this.adsrNodes.clear();
+    this.adsrPendingCompletions = [];
+    this.adsrDoneCallback = null;
+    for (const ln of this.lfoNodes.values()) ln.destroy();
+    this.lfoNodes.clear();
+    for (const tf of this.transientFollowerNodes.values()) tf.destroy();
+    this.transientFollowerNodes.clear();
+    this.transientFollowerPending.clear();
     for (const bn of this.bufferNodes.values()) bn.destroy();
     this.bufferNodes.clear();
     this.bufferPending.clear();
@@ -230,6 +406,18 @@ export class AudioGraph {
         throw err;
       });
     return this.bufferWorkletReady;
+  }
+
+  private ensureTransientFollowerWorklet(): Promise<void> {
+    if (this.transientFollowerWorkletReady) return this.transientFollowerWorkletReady;
+    this.transientFollowerWorkletReady = this.runtime.context.audioWorklet
+      .addModule(TRANSIENT_FOLLOWER_WORKLET_URL)
+      .catch((err) => {
+        console.warn("[AudioGraph] transientFollower worklet load failed:", err);
+        this.transientFollowerWorkletReady = null;
+        throw err;
+      });
+    return this.transientFollowerWorkletReady;
   }
 
   private ensureJsfxWorklet(): Promise<void> {
@@ -282,6 +470,24 @@ export class AudioGraph {
     for (const id of this.mixerNodes.keys()) {
       if (!activeNodeIds.has(id)) { this.mixerNodes.get(id)?.destroy(); this.mixerNodes.delete(id); }
     }
+    for (const id of this.waveNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.waveNodes.get(id)?.destroy(); this.waveNodes.delete(id); }
+    }
+    for (const id of this.adsrNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.adsrNodes.get(id)?.destroy(); this.adsrNodes.delete(id); }
+    }
+    if (this.adsrPendingCompletions.length > 0) {
+      this.adsrPendingCompletions = this.adsrPendingCompletions.filter(e => activeNodeIds.has(e.nodeId));
+    }
+    for (const id of this.lfoNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.lfoNodes.get(id)?.destroy(); this.lfoNodes.delete(id); }
+    }
+    for (const id of this.transientFollowerNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.transientFollowerNodes.get(id)?.destroy(); this.transientFollowerNodes.delete(id); }
+    }
+    for (const id of Array.from(this.transientFollowerPending)) {
+      if (!activeNodeIds.has(id)) this.transientFollowerPending.delete(id);
+    }
     for (const id of this.bufferNodes.keys()) {
       if (!activeNodeIds.has(id)) {
         this.bufferStateListeners.get(id)?.();
@@ -304,15 +510,33 @@ export class AudioGraph {
         if (node.type === "click~" && !this.clickNodes.has(node.id)) {
           this.clickNodes.set(node.id, new ClickNode(this.runtime));
         }
-        if (node.type === "dac~" && !this.dacNodes.has(node.id)) {
-          this.dacNodes.set(node.id, new DacNode(this.runtime));
+        if (node.type === "dac~") {
+          const channels = dacChannelCount(node.args);
+          const existing = this.dacNodes.get(node.id);
+          if (!existing) {
+            this.dacNodes.set(node.id, new DacNode(this.runtime, channels));
+          } else if (existing.channelCount !== channels) {
+            existing.destroy();
+            this.dacNodes.set(node.id, new DacNode(this.runtime, channels));
+          }
         }
-        if (node.type === "adc~" && !this.adcNodes.has(node.id)) {
-          const adc = new AdcNode(this.runtime);
-          this.adcNodes.set(node.id, adc);
-          adc.start(this.runtime.inputDeviceId || undefined)
-            .then(() => this.rewireConnections())
-            .catch(() => {});
+        if (node.type === "adc~") {
+          const channels = adcChannelCount(node.args);
+          const existing = this.adcNodes.get(node.id);
+          if (!existing) {
+            const adc = new AdcNode(this.runtime, channels);
+            this.adcNodes.set(node.id, adc);
+            adc.start(this.runtime.inputDeviceId || undefined)
+              .then(() => this.rewireConnections())
+              .catch(() => {});
+          } else if (existing.channelCount !== channels) {
+            existing.destroy();
+            const adc = new AdcNode(this.runtime, channels);
+            this.adcNodes.set(node.id, adc);
+            adc.start(this.runtime.inputDeviceId || undefined)
+              .then(() => this.rewireConnections())
+              .catch(() => {});
+          }
         }
         if (node.type === "browser~*" && !this.browserNodes.has(node.id)) {
           // Capture is user-gesture-only, so do not auto-start — the panel
@@ -368,6 +592,92 @@ export class AudioGraph {
             const gains = parseMixerFloats(node.args[1] ?? "", channels, 0.75);
             const pans  = parseMixerFloats(node.args[2] ?? "", channels, 0.5);
             this.mixerNodes.set(node.id, new MixerNode(this.runtime, channels, gains, pans));
+          }
+        }
+        if (node.type === "wave~") {
+          const freq  = parseFloat(node.args[0] ?? "220");
+          const morph = parseFloat(node.args[1] ?? "0");
+          const level = parseFloat(node.args[2] ?? "0.5");
+          let wn = this.waveNodes.get(node.id);
+          if (!wn) {
+            wn = new WaveNode(this.runtime);
+            wn.start(Number.isFinite(freq) ? freq : 220);
+            this.waveNodes.set(node.id, wn);
+          } else if (Number.isFinite(freq)) {
+            wn.setFreq(freq);
+          }
+          // Always re-apply morph/level so text-panel edits propagate. No-op
+          // when the value hasn't changed (gain.setTargetAtTime is cheap).
+          wn.setMorph(Number.isFinite(morph) ? morph : 0);
+          wn.setLevel(Number.isFinite(level) ? level : 0.5);
+        }
+        if (node.type === "adsr~") {
+          const a  = parseFloat(node.args[0] ?? "50");
+          const d  = parseFloat(node.args[1] ?? "100");
+          const s  = parseFloat(node.args[2] ?? "0.7");
+          const r  = parseFloat(node.args[3] ?? "200");
+          const sh = parseFloat(node.args[4] ?? "200");
+          let an = this.adsrNodes.get(node.id);
+          if (!an) {
+            an = new AdsrNode(this.runtime);
+            this.adsrNodes.set(node.id, an);
+          }
+          an.setAttack(a);
+          an.setDecay(d);
+          an.setSustain(s);
+          an.setRelease(r);
+          an.setSustainTime(sh);
+        }
+        if (node.type === "lfo~") {
+          const rate  = parseFloat(node.args[0] ?? "1");
+          const depth = parseFloat(node.args[1] ?? "100");
+          const shape = parseFloat(node.args[2] ?? "0");
+          let ln = this.lfoNodes.get(node.id);
+          if (!ln) {
+            ln = new LfoNode(this.runtime);
+            ln.start(Number.isFinite(rate) ? rate : 1);
+            this.lfoNodes.set(node.id, ln);
+          } else if (Number.isFinite(rate)) {
+            ln.setRate(rate);
+          }
+          ln.setDepth(Number.isFinite(depth) ? depth : 100);
+          ln.setShape(Number.isFinite(shape) ? shape : 0);
+        }
+        if (node.type === "transientFollower~") {
+          const a    = parseFloat(node.args[0] ?? "5");
+          const r    = parseFloat(node.args[1] ?? "80");
+          const sens = parseFloat(node.args[2] ?? "1");
+          const flr  = parseFloat(node.args[3] ?? "0");
+          const existing = this.transientFollowerNodes.get(node.id);
+          if (existing) {
+            existing.setArgs(a, r, sens, flr);
+          } else if (!this.transientFollowerPending.has(node.id)) {
+            const nodeId = node.id;
+            this.transientFollowerPending.add(nodeId);
+            this.ensureTransientFollowerWorklet()
+              .then(() => {
+                this.transientFollowerPending.delete(nodeId);
+                const stillActive = this.allGraphs().some(g => g.nodes.has(nodeId));
+                if (!stillActive) return;
+                if (this.transientFollowerNodes.has(nodeId)) return;
+                const fresh = new TransientFollowerNode(this.runtime);
+                this.transientFollowerNodes.set(nodeId, fresh);
+                // Re-read args at completion time — the user may have edited
+                // them while the worklet module was loading.
+                const targetNode = this.allGraphs()
+                  .map(g => g.nodes.get(nodeId))
+                  .find(n => n != null);
+                if (targetNode) {
+                  fresh.setArgs(
+                    parseFloat(targetNode.args[0] ?? "5"),
+                    parseFloat(targetNode.args[1] ?? "80"),
+                    parseFloat(targetNode.args[2] ?? "1"),
+                    parseFloat(targetNode.args[3] ?? "0"),
+                  );
+                }
+                this.rewireConnections();
+              })
+              .catch(() => { this.transientFollowerPending.delete(nodeId); });
           }
         }
         if (node.type === "buffer~"
@@ -434,7 +744,31 @@ export class AudioGraph {
       }
     }
 
+    this.applyDestinationChannelCount();
     this.rewireConnections();
+  }
+
+  /**
+   * Configure the AudioContext destination to carry as many discrete channels
+   * as the widest dac~ requests, capped by the hardware ceiling
+   * (`maxChannelCount`). With `channelInterpretation = "discrete"` Web Audio
+   * stops upmix/downmix and routes channel N straight through.
+   */
+  private applyDestinationChannelCount(): void {
+    if (!this.runtime.isStarted) return;
+    let widest = 2;
+    for (const dac of this.dacNodes.values()) {
+      if (dac.channelCount > widest) widest = dac.channelCount;
+    }
+    const dest = this.runtime.context.destination;
+    const target = Math.min(widest, dest.maxChannelCount || 2);
+    try {
+      if (dest.channelCount !== target) dest.channelCount = target;
+      dest.channelCountMode        = "explicit";
+      dest.channelInterpretation   = "discrete";
+    } catch (err) {
+      console.warn("[AudioGraph] destination.channelCount", target, "rejected:", err);
+    }
   }
 
   private rewireConnections(): void {
@@ -444,6 +778,10 @@ export class AudioGraph {
     for (const yt of this.youtubeNodes.values()) yt.disconnect();
     for (const js of this.jsEffectNodes.values()) js.disconnect();
     for (const mx of this.mixerNodes.values()) mx.disconnect();
+    for (const wn of this.waveNodes.values()) wn.disconnect();
+    for (const an of this.adsrNodes.values()) an.disconnect();
+    for (const ln of this.lfoNodes.values()) ln.disconnect();
+    for (const tf of this.transientFollowerNodes.values()) tf.disconnect();
     for (const bn of this.bufferNodes.values()) bn.disconnect();
 
     for (const g of this.allGraphs()) {
@@ -481,6 +819,179 @@ export class AudioGraph {
           if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
             this.bufferNodes.get(edge.fromNodeId)?.connectOutlet(channelInput, edge.fromOutlet, 0);
           }
+        } else if (fromNode.type === "wave~") {
+          this.waveNodes.get(edge.fromNodeId)?.connect(channelInput, 0);
+        } else if (fromNode.type === "adsr~") {
+          this.adsrNodes.get(edge.fromNodeId)?.connect(channelInput, 0);
+        } else if (fromNode.type === "lfo~") {
+          this.lfoNodes.get(edge.fromNodeId)?.connect(channelInput, 0);
+        } else if (fromNode.type === "transientFollower~") {
+          this.transientFollowerNodes.get(edge.fromNodeId)?.connect(channelInput, edge.fromOutlet, 0);
+        }
+        continue;
+      }
+
+      // wave~ as destination — inlet 0 = freq CV (Hz, summed onto base),
+      // inlet 1 = morph CV (added to morph, clamped 0..1). Both are plain
+      // GainNodes with a single input channel, so toInlet always maps to 0.
+      if (toNode.type === "wave~") {
+        const wn = this.waveNodes.get(edge.toNodeId);
+        if (!wn) continue;
+        const destInput: GainNode | null =
+          edge.toInlet === 0 ? wn.freqInput :
+          edge.toInlet === 1 ? wn.morphInput :
+          null;
+        if (!destInput) continue;
+        if (fromNode.type === "click~") {
+          this.clickNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "adc~") {
+          this.adcNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "browser~*") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.browserNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "youtube~*") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.youtubeNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "js~") {
+          this.jsEffectNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "mixer~") {
+          this.mixerNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "buffer~") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.bufferNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "wave~") {
+          this.waveNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "adsr~") {
+          this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "lfo~") {
+          this.lfoNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "transientFollower~") {
+          this.transientFollowerNodes.get(edge.fromNodeId)?.connect(destInput, edge.fromOutlet, 0);
+        }
+        continue;
+      }
+
+      // adsr~ as destination — inlet 0 = audio in (signal that gets multiplied
+      // by the envelope). Inlet 1 is the control inlet (bang/float/messages),
+      // handled by ObjectInteractionController, not audio.
+      if (toNode.type === "adsr~") {
+        const an = this.adsrNodes.get(edge.toNodeId);
+        if (!an) continue;
+        if (edge.toInlet !== 0) continue;
+        const destInput: GainNode = an.input;
+        if (fromNode.type === "click~") {
+          this.clickNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "adc~") {
+          this.adcNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "browser~*") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.browserNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "youtube~*") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.youtubeNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "js~") {
+          this.jsEffectNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "mixer~") {
+          this.mixerNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "buffer~") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.bufferNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "wave~") {
+          this.waveNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "adsr~") {
+          this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "lfo~") {
+          this.lfoNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "transientFollower~") {
+          this.transientFollowerNodes.get(edge.fromNodeId)?.connect(destInput, edge.fromOutlet, 0);
+        }
+        continue;
+      }
+
+      // lfo~ as destination — inlet 1 = rate CV (Hz, summed onto base rate).
+      // Inlet 0 is the control inlet (rate/depth/shape selectors), handled by
+      // ObjectInteractionController, not audio wiring.
+      if (toNode.type === "lfo~") {
+        const ln = this.lfoNodes.get(edge.toNodeId);
+        if (!ln) continue;
+        if (edge.toInlet !== 1) continue;
+        const destInput: GainNode = ln.rateInput;
+        if (fromNode.type === "click~") {
+          this.clickNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "adc~") {
+          this.adcNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "browser~*") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.browserNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "youtube~*") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.youtubeNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "js~") {
+          this.jsEffectNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "mixer~") {
+          this.mixerNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "buffer~") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.bufferNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "wave~") {
+          this.waveNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "adsr~") {
+          this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "lfo~") {
+          this.lfoNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "transientFollower~") {
+          this.transientFollowerNodes.get(edge.fromNodeId)?.connect(destInput, edge.fromOutlet, 0);
+        }
+        continue;
+      }
+
+      // transientFollower~ as destination — inlet 0 = source signal (carrier),
+      // inlet 1 = shape source (envelope detection). Both audio-rate.
+      if (toNode.type === "transientFollower~") {
+        const tf = this.transientFollowerNodes.get(edge.toNodeId);
+        if (!tf) continue;
+        const destInput: GainNode | null =
+          edge.toInlet === 0 ? tf.sourceInput :
+          edge.toInlet === 1 ? tf.shapeInput :
+          null;
+        if (!destInput) continue;
+        if (fromNode.type === "click~") {
+          this.clickNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "adc~") {
+          this.adcNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "browser~*") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.browserNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "youtube~*") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.youtubeNodes.get(edge.fromNodeId)?.connectChannel(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "js~") {
+          this.jsEffectNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "mixer~") {
+          this.mixerNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+        } else if (fromNode.type === "buffer~") {
+          if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
+            this.bufferNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, 0);
+          }
+        } else if (fromNode.type === "wave~") {
+          this.waveNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "adsr~") {
+          this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "lfo~") {
+          this.lfoNodes.get(edge.fromNodeId)?.connect(destInput, 0);
+        } else if (fromNode.type === "transientFollower~") {
+          this.transientFollowerNodes.get(edge.fromNodeId)?.connect(destInput, edge.fromOutlet, 0);
         }
         continue;
       }
@@ -515,6 +1026,14 @@ export class AudioGraph {
           if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
             this.bufferNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, edge.toInlet);
           }
+        } else if (fromNode.type === "wave~") {
+          this.waveNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
+        } else if (fromNode.type === "adsr~") {
+          this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
+        } else if (fromNode.type === "lfo~") {
+          this.lfoNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
+        } else if (fromNode.type === "transientFollower~") {
+          this.transientFollowerNodes.get(edge.fromNodeId)?.connect(destInput, edge.fromOutlet, edge.toInlet);
         }
         continue;
       }
@@ -556,6 +1075,14 @@ export class AudioGraph {
         if (edge.fromOutlet === 0 || edge.fromOutlet === 1) {
           this.bufferNodes.get(edge.fromNodeId)?.connectOutlet(destInput, edge.fromOutlet, edge.toInlet);
         }
+      } else if (fromNode.type === "wave~") {
+        this.waveNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
+      } else if (fromNode.type === "adsr~") {
+        this.adsrNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
+      } else if (fromNode.type === "lfo~") {
+        this.lfoNodes.get(edge.fromNodeId)?.connect(destInput, edge.toInlet);
+      } else if (fromNode.type === "transientFollower~") {
+        this.transientFollowerNodes.get(edge.fromNodeId)?.connect(destInput, edge.fromOutlet, edge.toInlet);
       }
     }
     }

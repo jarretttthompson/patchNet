@@ -494,10 +494,141 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
-  "dac~": {
-    description: "Audio output sink.",
+  "adsr~": {
+    description: "ADSR envelope generator. Multiplies the input signal by an attack/decay/sustain-hold/release envelope. Bang to one-shot fire; float 1/0 for gate mode. Drag the handles in the body to shape the envelope.",
     category: "audio",
-    args: [],
+    args: [
+      { name: "attack", type: "float", default: "50", min: 0, max: 10000, step: 0.1,
+        description: "Attack time in ms (0 → peak)." },
+      { name: "decay", type: "float", default: "100", min: 0, max: 10000, step: 0.1,
+        description: "Decay time in ms (peak → sustain level)." },
+      { name: "sustain", type: "float", default: "0.7", min: 0, max: 1, step: 0.001,
+        description: "Sustain level 0..1." },
+      { name: "release", type: "float", default: "200", min: 0, max: 10000, step: 0.1,
+        description: "Release time in ms (sustain → 0)." },
+      { name: "sustainTime", type: "float", default: "200", min: 0, max: 10000, step: 0.1,
+        description: "Sustain hold time in ms (length of the sustain plateau before release begins, in one-shot mode)." },
+      { name: "locked", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Lock state: 1 = handles inert and body draggable from anywhere; 0 = handles interactive." },
+    ],
+    messages: [
+      { inlet: 1, selector: "bang",        description: "fire envelope one-shot: A → D → hold sustain → R" },
+      { inlet: 1, selector: "float",       description: "1 = gate-on (A → D → sustain held until 0); 0 = gate-off (release from current)" },
+      { inlet: 1, selector: "attack",      description: "attack <ms>  — set attack time" },
+      { inlet: 1, selector: "decay",       description: "decay <ms>   — set decay time" },
+      { inlet: 1, selector: "sustain",     description: "sustain <0..1> — set sustain level" },
+      { inlet: 1, selector: "release",     description: "release <ms> — set release time" },
+      { inlet: 1, selector: "sustainTime", description: "sustainTime <ms> — set sustain hold duration (one-shot mode)" },
+    ],
+    inlets: [
+      { index: 0, type: "signal", label: "audio in" },
+      { index: 1, type: "any",    label: "bang = one-shot | float 1/0 = gate | attack/decay/sustain/sustainTime/release <v>" },
+    ],
+    outlets: [
+      { index: 0, type: "signal", label: "audio × envelope out" },
+      { index: 1, type: "bang",   label: "fires when one-shot envelope completes (for chaining)" },
+    ],
+    defaultWidth: 180,
+    defaultHeight: 120,
+  },
+
+  "transientFollower~": {
+    description: "Envelope follower + VCA. Uses the amplitude envelope of one signal (e.g. adc~) to shape the gain of another (e.g. wave~). Drop-in replacement for an adsr~ → *~ chain when the envelope should come from a real-world sound. The face shows a scrolling trace of the detected envelope.",
+    category: "audio",
+    args: [
+      { name: "attack",      type: "float", default: "5",   min: 0.05, max: 10000, step: 0.01,
+        description: "Envelope rise time in ms. Smaller = punchier transients." },
+      { name: "release",     type: "float", default: "80",  min: 0.05, max: 10000, step: 0.1,
+        description: "Envelope fall time in ms. Larger = sustained sounds bleed through." },
+      { name: "sensitivity", type: "float", default: "1",   min: 0,    max: 64,    step: 0.01,
+        description: "Pre-detection input gain. Boost a quiet mic so transients register." },
+      { name: "floor",       type: "float", default: "0",   min: 0,    max: 1,     step: 0.001,
+        description: "Envelope clamps to 0 below this threshold. Cuts room noise." },
+    ],
+    messages: [
+      { inlet: 0, selector: "attack",      description: "attack <ms>     — set envelope rise time-constant" },
+      { inlet: 0, selector: "release",     description: "release <ms>    — set envelope fall time-constant" },
+      { inlet: 0, selector: "sensitivity", description: "sensitivity <v> — set pre-detection input gain (0..64)" },
+      { inlet: 0, selector: "floor",       description: "floor <0..1>    — set noise-gate threshold" },
+    ],
+    inlets: [
+      { index: 0, type: "signal", label: "source signal (carrier to be shaped)" },
+      { index: 1, type: "signal", label: "shape source (envelope detection input)" },
+    ],
+    outlets: [
+      { index: 0, type: "signal", label: "shaped audio out (source × envelope)" },
+      { index: 1, type: "signal", label: "envelope signal out (audio-rate)" },
+    ],
+    defaultWidth: 200,
+    defaultHeight: 140,
+  },
+
+  "wave~": {
+    description: "Morphing wave generator. Crossfades sine → triangle → saw → square via the morph knob/CV. Gated: silent until inlet 2 receives a 1. Built-in scope shows a still preview of the output shape.",
+    category: "audio",
+    args: [
+      { name: "freq", type: "float", default: "220", min: 0, max: 20000, step: 0.01,
+        description: "Base frequency in Hz." },
+      { name: "morph", type: "float", default: "0", min: 0, max: 1, step: 0.001,
+        description: "Wave-shape morph position. 0 = sine, 0.333 = triangle, 0.666 = saw, 1 = square (crossfaded)." },
+      { name: "level", type: "float", default: "0.5", min: 0, max: 1, step: 0.001,
+        description: "Output level (linear 0..1) when the gate is open." },
+      { name: "locked", type: "int", default: "0", min: 0, max: 1, step: 1, hidden: true,
+        description: "Lock state: 1 = controls inert and object draggable from anywhere; 0 = knobs interactive." },
+    ],
+    messages: [
+      { inlet: 0, selector: "freq",  description: "freq <hz>     — set base frequency in Hz" },
+      { inlet: 0, selector: "morph", description: "morph <0..1>  — set wave-shape morph position" },
+      { inlet: 0, selector: "level", description: "level <0..1>  — set output level (linear)" },
+      { inlet: 0, selector: "gate",  description: "gate <0|1>    — close (mute) or open the audio gate" },
+      { inlet: 2, selector: "float", description: "1 = open the gate (sound on), 0 = close (mute)" },
+      { inlet: 2, selector: "gate",  description: "gate <0|1>    — same as bare float" },
+    ],
+    inlets: [
+      { index: 0, type: "signal", label: "freq CV (Hz, summed onto base)" },
+      { index: 1, type: "signal", label: "morph CV (added to morph, clamped 0..1)" },
+      { index: 2, type: "any",    label: "gate (1 = on, 0 = off) — silent until opened" },
+    ],
+    outlets: [
+      { index: 0, type: "signal", label: "wave out" },
+    ],
+    defaultWidth: 160,
+    defaultHeight: 200,
+  },
+
+  "lfo~": {
+    description: "Low-frequency oscillator for modulation. Outputs a slow wave signal (0.01–20 Hz) used to modulate frequency, amplitude, or other parameters. Connect outlet 0 to wave~ inlet 0 (FM), wave~ inlet 1 (morph), or adsr~ inlet 0 (tremolo).",
+    category: "audio",
+    args: [
+      { name: "rate",   type: "float", default: "1",   min: 0.01, max: 20,   step: 0.01,  description: "LFO rate in Hz (0.01–20)." },
+      { name: "depth",  type: "float", default: "100", min: 0,    max: 1000, step: 0.1,   description: "Peak output amplitude (dimensionless scale). For FM into wave~ freq CV: keep < base_freq to avoid negative frequencies (e.g. 100 at 220 Hz). For morph CV: use ≤ 1.0." },
+      { name: "shape",  type: "float", default: "0",   min: 0,    max: 1,    step: 0.001, description: "Wave shape: 0 = sine, 0.333 = triangle, 0.667 = saw, 1 = square (crossfaded)." },
+      { name: "locked", type: "int",   default: "0",   min: 0,    max: 1,    step: 1, hidden: true,
+        description: "Lock state: 1 = controls inert and object draggable from anywhere; 0 = knobs interactive." },
+    ],
+    messages: [
+      { inlet: 0, selector: "rate",  description: "rate <hz>     — set LFO rate (0.01–20 Hz)" },
+      { inlet: 0, selector: "depth", description: "depth <v>    — set peak output amplitude (≤ base_freq for FM; ≤ 1.0 for morph CV)" },
+      { inlet: 0, selector: "shape", description: "shape <0..1>  — set wave shape (0=sine, 0.333=tri, 0.667=saw, 1=square)" },
+    ],
+    inlets: [
+      { index: 0, type: "any",    label: "rate <hz> | depth <v> | shape <0..1>" },
+      { index: 1, type: "signal", label: "rate CV (Hz, summed onto base rate)" },
+    ],
+    outlets: [
+      { index: 0, type: "signal", label: "LFO signal out (peak ≈ ±depth)" },
+    ],
+    defaultWidth: 160,
+    defaultHeight: 180,
+  },
+
+  "dac~": {
+    description: "Audio output sink. Optional arg sets channel count (1–32) — defaults to stereo. Right-click → 'Rebuild from device' to match the system output device. Double-click to open the audio configuration panel.",
+    category: "audio",
+    args: [
+      { name: "channels", type: "int", default: "2", min: 1, max: 32, step: 1,
+        description: "Output channel count (1–32). One inlet per channel; channel N maps to physical output N." },
+    ],
     messages: [],
     inlets: [
       { index: 0, type: "signal", label: "left channel in" },
@@ -531,9 +662,12 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
   },
 
   "adc~": {
-    description: "Audio input source. Captures from the selected input device.",
+    description: "Audio input source. Captures from the selected input device. Optional arg sets channel count (1–32) — defaults to stereo. Right-click → 'Rebuild from device' to match the system input device. Double-click to open the audio configuration panel.",
     category: "audio",
-    args: [],
+    args: [
+      { name: "channels", type: "int", default: "2", min: 1, max: 32, step: 1,
+        description: "Input channel count (1–32). One outlet per channel; channel N maps to physical input N." },
+    ],
     messages: [],
     inlets: [],
     outlets: [
@@ -1549,6 +1683,51 @@ export function mixerChannelCount(args: string[]): number {
 
 export function mixerDefaultWidth(n: number): number {
   return Math.max(180, n * 28 + 52);
+}
+
+// ── adc~ / dac~ helpers ───────────────────────────────────────────────────────
+
+export function adcChannelCount(args: string[]): number {
+  const n = Math.trunc(Number.parseFloat(args[0] ?? "2"));
+  return Math.max(1, Math.min(32, Number.isFinite(n) && n > 0 ? n : 2));
+}
+
+export function dacChannelCount(args: string[]): number {
+  const n = Math.trunc(Number.parseFloat(args[0] ?? "2"));
+  return Math.max(1, Math.min(32, Number.isFinite(n) && n > 0 ? n : 2));
+}
+
+/** Width grows with channel count so 32 ports stay clickable. */
+export function audioPortDefaultWidth(n: number): number {
+  return Math.max(80, n * 14 + 24);
+}
+
+function audioPortLabel(channel: number, total: number, direction: "in" | "out"): string {
+  if (total === 1) return direction === "in" ? "mono in" : "mono out";
+  if (total === 2) return channel === 0
+    ? (direction === "in" ? "left channel in"  : "left channel out")
+    : (direction === "in" ? "right channel in" : "right channel out");
+  return `ch ${channel + 1} ${direction}`;
+}
+
+export function deriveAdcPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const n = adcChannelCount(args);
+  const outlets: PortDef[] = Array.from({ length: n }, (_, i) => ({
+    index: i,
+    type: "signal" as PortType,
+    label: audioPortLabel(i, n, "out"),
+  }));
+  return { inlets: [], outlets };
+}
+
+export function deriveDacPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const n = dacChannelCount(args);
+  const inlets: PortDef[] = Array.from({ length: n }, (_, i) => ({
+    index: i,
+    type: "signal" as PortType,
+    label: audioPortLabel(i, n, "in"),
+  }));
+  return { inlets, outlets: [] };
 }
 
 export function deriveMixerPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {

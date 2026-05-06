@@ -41,6 +41,7 @@ export class CableDrawController {
   private startedDragFromCableBody = false;
   /** After stroke-drag ends, suppress one SVG cable `click` so selection does not toggle. */
   private suppressCableClick = false;
+  private patchMode = true;
 
   private readonly onMouseDown: (e: MouseEvent) => void;
   private session: DragSession | null = null;
@@ -71,6 +72,11 @@ export class CableDrawController {
     return this.draw !== null;
   }
 
+  setPatchMode(on: boolean): void {
+    this.patchMode = on;
+    if (!on) this.cancel();
+  }
+
   /**
    * CanvasController calls this on cable `click`. Returns true once after a stroke-drag
    * so the handler can skip select/deselect for that synthetic click.
@@ -92,6 +98,7 @@ export class CableDrawController {
 
   private handleMouseDown(e: MouseEvent): void {
     if (e.button !== 0) return;
+    if (!this.patchMode) return;
 
     const target = e.target as Element;
 
@@ -407,7 +414,7 @@ export class CableDrawController {
     this.cancel();
   }
 
-  private cancel(): void {
+  cancel(): void {
     if (this.snapTarget) {
       this.snapTarget.el.classList.remove("pn-port--snap");
       this.snapTarget = null;

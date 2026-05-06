@@ -17,6 +17,7 @@ import { VisualizerObjectUI } from "./canvas/VisualizerObjectUI";
 import { CodeboxController } from "./canvas/CodeboxController";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvas/canvasSpace";
 import { getZoom } from "./canvas/zoomState";
+import { getPatchMode, setPatchModeState } from "./canvas/patchModeState";
 import { getObjectDef, bufferRange } from "./graph/objectDefs";
 import { mountLocalPlugins, pruneLocalPlugins } from "./graph/localPlugins";
 import { UndoManager } from "./graph/UndoManager";
@@ -37,6 +38,8 @@ import { PeerPanelController } from "./canvas/PeerPanelController";
 import { PeerRegistry } from "./runtime/peer/PeerRegistry";
 import { SubPatchManager } from "./canvas/SubPatchManager";
 import { TabManager } from "./canvas/TabManager";
+import { ScratchTabSession } from "./canvas/ScratchTabSession";
+import { registerSession } from "./canvas/patchSessionRegistry";
 import { buildShareUrl, loadFromShareUrl } from "./share/shareUrl";
 
 function requireElement<T extends Element>(
@@ -61,6 +64,7 @@ const audioDeviceSel  = document.getElementById("audio-device-select") as HTMLSe
 const audioInputSel   = document.getElementById("audio-input-select") as HTMLSelectElement | null;
 const masterVolSlider = document.getElementById("master-vol") as HTMLInputElement | null;
 const masterVolReadout = document.getElementById("master-vol-readout") as HTMLSpanElement | null;
+const patchNameInput  = document.getElementById("patch-name-input") as HTMLElement | null;
 
 // ── Pan group (wrapper that moves during pan, stays inside canvasArea) ──────
 
@@ -78,6 +82,10 @@ const graph = new PatchGraph();
 
 const cables = new CableRenderer(panGroup, graph);
 const objectInteraction = new ObjectInteractionController(panGroup, graph);
+
+// Register main as a top-level session so global send/receive routes to its
+// receivers, and AudioGraph picks up its nodes via the registry.
+registerSession({ id: "main", graph, oic: objectInteraction });
 const codeboxController = new CodeboxController(
   graph,
   (fromNodeId, outlet) => {
@@ -273,6 +281,10 @@ function startMeterLoop(): void {
     if (!audioGraph) return;
     audioGraph.mountFftNodes(panGroup);
     audioGraph.updateFftDisplay(panGroup);
+    audioGraph.updateWaveDisplay(panGroup);
+    audioGraph.updateLfoDisplay(panGroup);
+    audioGraph.updateTransientFollowerDisplay(panGroup);
+    audioGraph.flushAdsrCompletions(performance.now());
 
     // Push fft~ band values: update the directly-connected node's display,
     // then fire its outlet so the full downstream chain propagates.
@@ -658,13 +670,18 @@ async function startAudio(): Promise<void> {
   await audioRuntime.start();
   audioGraph = new AudioGraph(audioRuntime, graph, subPatchManager);
   objectInteraction.setAudioGraph(audioGraph);
+  canvas.setAudioGraph(audioGraph);
   subPatchManager.setAudioGraph(audioGraph);
+  for (const s of scratchTabs.values()) s.interaction.setAudioGraph(audioGraph);
   jsEffectPanelController.setAudioGraph(audioGraph);
   browserPanelController.setAudioGraph(audioGraph);
   youtubePanelController.setAudioGraph(audioGraph);
   mixerPanelController.setAudioGraph(audioGraph);
   audioGraph.setBufferStateChangeCallback((nodeId) => {
     handleBufferStateChange(nodeId);
+  });
+  audioGraph.setAdsrDoneCallback((nodeId) => {
+    objectInteraction.fireBang(nodeId, 1);
   });
   vizGraph.setVideoBufferStateChangeCallback((nodeId) => {
     handleVideoBufferStateChange(nodeId);
@@ -699,6 +716,7 @@ async function stopAudio(): Promise<void> {
   audioGraph = null;
   objectInteraction.setAudioGraph(undefined);
   subPatchManager.setAudioGraph(undefined);
+  for (const s of scratchTabs.values()) s.interaction.setAudioGraph(undefined);
   jsEffectPanelController.setAudioGraph(null);
   browserPanelController.setAudioGraph(null);
   youtubePanelController.setAudioGraph(null);
@@ -712,6 +730,30 @@ async function stopAudio(): Promise<void> {
 // DSP toggle button
 audioToggleBtn?.addEventListener("click", () => {
   if (!dspOn) startAudio(); else stopAudio();
+});
+
+// ── Patch mode (cable drawing/interaction) ────────────────────────────────
+const patchModeBtn = document.getElementById("patch-mode-btn") as HTMLButtonElement | null;
+
+function setPatchModeUi(on: boolean): void {
+  setPatchModeState(on);
+  if (patchModeBtn) patchModeBtn.setAttribute("aria-pressed", String(on));
+  canvasArea.classList.toggle("is-patch-locked", !on);
+  flashStatus(on ? "patch: on" : "patch: off");
+}
+
+patchModeBtn?.addEventListener("click", () => setPatchModeUi(!getPatchMode()));
+
+document.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "p") return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t instanceof HTMLElement &&
+      (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
+    return;
+  }
+  e.preventDefault();
+  setPatchModeUi(!getPatchMode());
 });
 
 // Output device selector
@@ -749,6 +791,37 @@ subPatchManager.onTabClose = (nodeId) => {
 };
 tabManager.onLabelChange = (nodeId, label) => {
   subPatchManager.setLabel(nodeId, label);
+};
+// Scratch tabs: independent top-level patches. The "+" / cmd+t path opens
+// a fresh blank canvas. Each scratch tab has its own graph + canvas + undo
+// stack and is registered with patchSessionRegistry for global s/r and audio.
+const scratchTabs = new Map<string, ScratchTabSession>();
+let scratchSeq = 0;
+function nextScratchId(): string { scratchSeq += 1; return `scratch-${scratchSeq}`; }
+
+function addNewScratchTab(initialContent = "", explicitId?: string, label?: string): ScratchTabSession {
+  const id = explicitId ?? nextScratchId();
+  const session = new ScratchTabSession(id, canvasArea, initialContent);
+  scratchTabs.set(id, session);
+  tabManager.registerScratchTab(id, label ?? `scratch ${id.replace(/^scratch-/, "")}`, session, true);
+  // Autosave whenever this scratch tab's graph changes so all tabs land in
+  // localStorage together.
+  session.graph.on("change", saveAllTabs);
+  // If audio is running, plumb the live AudioGraph into this scratch's OIC so
+  // its s~/r~/dac~/etc. work immediately.
+  if (audioGraph) session.interaction.setAudioGraph(audioGraph);
+  saveAllTabs();
+  return session;
+}
+
+tabManager.onAddTab = () => { addNewScratchTab(); };
+tabManager.onScratchClose = (id) => {
+  const session = scratchTabs.get(id);
+  if (session) {
+    session.destroy();
+    scratchTabs.delete(id);
+  }
+  saveAllTabs();
 };
 tabManager.onMainActivate = () => {
   // Flush any render that was skipped while the main panGroup was hidden.
@@ -985,8 +1058,8 @@ consolePanel?.querySelector(".text-panel-header")?.addEventListener("click", () 
 const toolbarControls = document.getElementById("toolbar-controls");
 const toolbarCollapseBtn = document.getElementById("toolbar-collapse-btn");
 
-toolbarCollapseBtn?.addEventListener("click", () => {
-  if (!toolbarControls) return;
+function toggleToolbarCollapse(): void {
+  if (!toolbarControls || !toolbarCollapseBtn) return;
   const collapsed = toolbarControls.classList.toggle("toolbar--collapsed");
   toolbarCollapseBtn.setAttribute("aria-expanded", String(!collapsed));
   toolbarCollapseBtn.title = collapsed ? "Expand toolbar" : "Collapse toolbar";
@@ -997,32 +1070,101 @@ toolbarCollapseBtn?.addEventListener("click", () => {
     cables.render();
     canvas.updatePanGroupSize();
   });
+}
+
+toolbarCollapseBtn?.addEventListener("click", toggleToolbarCollapse);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "q") return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t instanceof HTMLElement &&
+      (t.isContentEditable || t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) {
+    return;
+  }
+  e.preventDefault();
+  toggleToolbarCollapse();
 });
 
 // ── Persistence ──────────────────────────────────────────────────────────────
 
 const STORAGE_KEY = "patchnet-patch";
 
-function savePatch(): void {
+interface SavedScratchTab { id: string; label: string; content: string; }
+interface SavedTabsV1 { v: 1; main: string; scratchTabs: SavedScratchTab[]; }
+
+function saveAllTabs(): void {
   try {
-    localStorage.setItem(STORAGE_KEY, graph.serialize());
+    const payload: SavedTabsV1 = {
+      v: 1,
+      main: graph.serialize(),
+      scratchTabs: tabManager.getScratchTabs().map(t => ({
+        id: t.id,
+        label: t.label,
+        content: t.session.serialize(),
+      })),
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // localStorage unavailable (private browsing quota, etc.) — silently ignore
   }
 }
 
-function loadPatch(): boolean {
+function loadAllTabs(): boolean {
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (!saved) return false;
+  // V1 format: JSON with {v, main, scratchTabs}.  Legacy format: bare patch
+  // text. Detect by attempting a JSON.parse — if it fails or v is missing,
+  // treat the value as legacy main-only content.
+  let payload: SavedTabsV1 | null = null;
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return false;
-    graph.deserialize(saved);
+    const parsed = JSON.parse(saved);
+    if (parsed && parsed.v === 1 && typeof parsed.main === "string") payload = parsed as SavedTabsV1;
+  } catch { /* legacy plaintext */ }
+
+  try {
+    if (payload) {
+      graph.deserialize(payload.main);
+      for (const t of payload.scratchTabs) {
+        // Track the highest seen scratch index so future nextScratchId() doesn't
+        // collide with restored ids like "scratch-3" after a reload.
+        const m = /^scratch-(\d+)$/.exec(t.id);
+        if (m) scratchSeq = Math.max(scratchSeq, parseInt(m[1], 10));
+        addNewScratchTab(t.content, t.id, t.label);
+      }
+      // Each addNewScratchTab call switched to the new tab; land on main.
+      if (payload.scratchTabs.length > 0) tabManager.switchTo("main");
+      // Restored scratch tabs each fired addNewScratchTab → saveAllTabs;
+      // that's harmless (same payload re-written).
+    } else {
+      graph.deserialize(saved);
+    }
     return true;
   } catch {
     return false;
   }
 }
 
-graph.on("change", savePatch);
+graph.on("change", saveAllTabs);
+
+// Disk autosave (in addition to the localStorage autosave above). Active only
+// once the user has set up an autosave handle via savePatchToFile(); writes are
+// debounced so a flurry of changes results in a single overwrite.
+let autosaveDebounceTimer: number | null = null;
+graph.on("change", () => {
+  if (!autosaveFileHandle) return;
+  if (autosaveDebounceTimer != null) window.clearTimeout(autosaveDebounceTimer);
+  autosaveDebounceTimer = window.setTimeout(async () => {
+    if (!autosaveFileHandle) return;
+    try {
+      await writeHandle(autosaveFileHandle, graph.serialize());
+    } catch {
+      /* file may have been moved/deleted; drop the handle so the next
+         manual save can re-prompt for a new one. */
+      autosaveFileHandle = null;
+    }
+  }, 1500);
+});
 
 // ── Autosave to disk (dev only) ──────────────────────────────────────────────
 // Posts the current patch to a Vite dev-server endpoint every 10 minutes, and
@@ -1098,12 +1240,78 @@ shareBtn?.addEventListener("click", async () => {
 
 // ── File save / load ─────────────────────────────────────────────────────────
 
-function savePatchToFile(): void {
-  const text = graph.serialize();
-  const now = new Date();
+const PATCH_NAME_KEY = "patchnet-patch-name";
+
+function getPatchName(): string {
+  return (patchNameInput?.textContent ?? "").trim();
+}
+
+function sanitizeFilename(s: string): string {
+  // Strip filesystem-hostile chars; collapse whitespace to dashes.
+  return s.replace(/[\\/:*?"<>|]+/g, "").replace(/\s+/g, "-").slice(0, 80);
+}
+
+function syncPatchTitle(): void {
+  const name = getPatchName();
+  document.title = name ? `${name} — patchNet` : "patchNet";
+}
+
+patchNameInput?.addEventListener("input", () => {
+  try { localStorage.setItem(PATCH_NAME_KEY, getPatchName()); } catch { /* ignore */ }
+  syncPatchTitle();
+});
+// contenteditable lets users press Enter to insert a newline — block that so
+// the patch name stays single-line.
+patchNameInput?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    patchNameInput.blur();
+  }
+});
+
+try {
+  const savedName = localStorage.getItem(PATCH_NAME_KEY);
+  if (savedName && patchNameInput) patchNameInput.textContent = savedName;
+} catch { /* ignore */ }
+syncPatchTitle();
+
+function makeStamp(d = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-  const filename = `patch-${stamp}.patchnet`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+// File System Access API state. The first manual save establishes a handle
+// to the user's chosen file; every subsequent manual save (Cmd+S or button)
+// writes to that same handle so it overwrites in place. We also try to set
+// up a sibling "autosave" handle in the same user gesture so the on-change
+// disk autosave can overwrite a single .patchnet-autosave file repeatedly.
+type FSAFileHandle = {
+  createWritable: () => Promise<FileSystemWritableFileStream>;
+};
+let manualFileHandle: FSAFileHandle | null = null;
+let autosaveFileHandle: FSAFileHandle | null = null;
+
+function fsaSupported(): boolean {
+  return typeof (window as unknown as { showSaveFilePicker?: unknown }).showSaveFilePicker === "function";
+}
+
+async function pickSaveFile(suggestedName: string, startIn?: FSAFileHandle): Promise<FSAFileHandle> {
+  const opts: Record<string, unknown> = {
+    suggestedName,
+    types: [{ description: "patchNet patch", accept: { "application/octet-stream": [".patchnet"] } }],
+  };
+  if (startIn) opts.startIn = startIn;
+  return await (window as unknown as { showSaveFilePicker: (o: typeof opts) => Promise<FSAFileHandle> })
+    .showSaveFilePicker(opts);
+}
+
+async function writeHandle(handle: FSAFileHandle, text: string): Promise<void> {
+  const w = await handle.createWritable();
+  await w.write(text);
+  await w.close();
+}
+
+function downloadAsFile(text: string, filename: string): void {
   const blob = new Blob([text], { type: "text/plain" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -1111,6 +1319,43 @@ function savePatchToFile(): void {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+async function savePatchToFile(): Promise<void> {
+  const text = graph.serialize();
+  const stamp = makeStamp();
+  const base = sanitizeFilename(getPatchName()) || "patch";
+  const fallbackName = `${base}-${stamp}.patchnet`;
+
+  if (!fsaSupported()) {
+    downloadAsFile(text, fallbackName);
+    return;
+  }
+
+  try {
+    if (!manualFileHandle) {
+      manualFileHandle = await pickSaveFile(fallbackName);
+    }
+    await writeHandle(manualFileHandle, text);
+    flashStatus("SAVED");
+
+    // Try to claim an autosave handle in the same user gesture so on-change
+    // autosave can write silently. If the activation budget is gone or the
+    // user dismisses, autosave just stays disk-disabled (localStorage still
+    // works as before).
+    if (!autosaveFileHandle) {
+      try {
+        autosaveFileHandle = await pickSaveFile(`${base}-autosave-${stamp}.patchnet`, manualFileHandle);
+        flashStatus("AUTOSAVE ENABLED");
+      } catch {
+        /* user skipped or activation expired — fine */
+      }
+    }
+  } catch (e) {
+    if ((e as { name?: string })?.name === "AbortError") return; // user canceled
+    // Picker not allowed (e.g. cross-origin iframe) — fall back to download.
+    downloadAsFile(text, fallbackName);
+  }
 }
 
 async function loadPatchFromFile(file: File): Promise<void> {
@@ -1130,6 +1375,23 @@ const loadBtn = document.getElementById("load-btn") as HTMLButtonElement | null;
 const loadFileInput = document.getElementById("load-file-input") as HTMLInputElement | null;
 
 saveBtn?.addEventListener("click", savePatchToFile);
+
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    savePatchToFile();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+  if (e.key.toLowerCase() !== "t") return;
+  // Browsers reserve Cmd/Ctrl+T for "new browser tab" in regular pages and the
+  // event isn't always cancellable. preventDefault is best-effort — the "+"
+  // button is the reliable path.
+  e.preventDefault();
+  addNewScratchTab();
+});
 
 loadBtn?.addEventListener("click", () => {
   if (loadFileInput) {
@@ -1154,7 +1416,7 @@ loadFileInput?.addEventListener("change", () => {
     } catch {
       flashStatus("SHARED PATCH FAILED TO LOAD");
     }
-  } else if (!loadPatch()) {
+  } else if (!loadAllTabs()) {
     graph.addNode("button", 96, 88);
   }
 

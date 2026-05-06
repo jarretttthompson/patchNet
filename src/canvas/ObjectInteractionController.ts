@@ -7,6 +7,7 @@ import type { DmxGraph } from "../runtime/DmxGraph";
 import type { SubPatchManager } from "./SubPatchManager";
 import type { JsEffectPanelController } from "./JsEffectPanelController";
 import type { ReaperVideoPanelController } from "./ReaperVideoPanelController";
+import { broadcastSendReceive } from "./patchSessionRegistry";
 import {
   OBJECT_DEFS,
   getObjectDef,
@@ -35,7 +36,24 @@ import {
   extractReaperVideoParams,
 } from "../graph/objectDefs";
 import { ImageFXPanel } from "./ImageFXPanel";
-import { buildOdometerContent, formatThumbValue } from "./ObjectRenderer";
+import { AudioConfigPanel } from "./AudioConfigPanel";
+import {
+  buildOdometerContent,
+  formatThumbValue,
+  formatFreq,
+  formatMorph,
+  formatLevel,
+  waveKnobValueFromFraction,
+  refreshAdsrEditorDom,
+  adsrGeometry,
+  ADSR_TOP,
+  ADSR_BOTTOM,
+  formatRate,
+  formatDepth,
+  formatShape,
+  lfoKnobValueFromFraction,
+  refreshTransientFollowerReadouts,
+} from "./ObjectRenderer";
 import { startDragSession, type DragSession } from "./dragSession";
 
 /** Parse "90", "1m30s", "2m", "45s" → seconds. Plain numbers are interpreted
@@ -173,6 +191,40 @@ export class ObjectInteractionController {
   private ezSliderDrag: {
     node: PatchNode;
     trackEl: HTMLElement;
+  } | null = null;
+
+  private waveKnobDrag: {
+    node: PatchNode;
+    knob: "freq" | "morph" | "level";
+    knobEl: HTMLElement;
+    startY: number;
+    startFrac: number;
+  } | null = null;
+
+  private lfoKnobDrag: {
+    node: PatchNode;
+    knob: "rate" | "depth" | "shape";
+    knobEl: HTMLElement;
+    startY: number;
+    startFrac: number;
+  } | null = null;
+
+  private adsrHandleDrag: {
+    node: PatchNode;
+    handle: "attack" | "decay" | "sustainEnd" | "release";
+    svgEl: SVGSVGElement;
+    startMouseX: number;
+    startMouseY: number;
+    startA: number;            // ms
+    startD: number;            // ms
+    startSustain: number;      // 0..1
+    startR: number;            // ms
+    startSustainTime: number;  // ms
+    /** SVG-pixel/CSS-pixel ratio at drag-start. Multiply mouse delta by this
+     *  to convert into SVG units, then divide by `pxPerMs` for ms delta. */
+    svgPxPerCssPx: number;
+    /** SVG horizontal scale at drag-start. ms-equivalent of one SVG pixel. */
+    msPerSvgPx: number;
   } | null = null;
 
   /** Single live drag session for any of the slider/numbox/buf/vbuf drags
@@ -485,6 +537,81 @@ export class ObjectInteractionController {
       }
     }
 
+    if (node.type === "wave~") {
+      const locked = (node.args[3] ?? "0") !== "0";
+      const knobEl = (e.target as Element).closest<HTMLElement>(".pn-wave-knob");
+      if (knobEl && !locked) {
+        const knob = knobEl.dataset.waveKnob as "freq" | "morph" | "level" | undefined;
+        if (knob === "freq" || knob === "morph" || knob === "level") {
+          e.preventDefault();
+          e.stopPropagation();
+          const startFrac = parseFloat(knobEl.dataset.waveFrac ?? "0") || 0;
+          this.waveKnobDrag = { node, knob, knobEl, startY: e.clientY, startFrac };
+          document.body.classList.add("pn-state-slider-drag");
+          this.startWidgetDragSession();
+          return;
+        }
+      }
+      // Locked, or click outside a knob → fall through to drag/select.
+    }
+
+    if (node.type === "lfo~") {
+      const locked = (node.args[3] ?? "0") !== "0";
+      const knobEl = (e.target as Element).closest<HTMLElement>(".pn-lfo-knob");
+      if (knobEl && !locked) {
+        const knob = knobEl.dataset.lfoKnob as "rate" | "depth" | "shape" | undefined;
+        if (knob === "rate" || knob === "depth" || knob === "shape") {
+          e.preventDefault();
+          e.stopPropagation();
+          const startFrac = parseFloat(knobEl.dataset.lfoFrac ?? "0") || 0;
+          this.lfoKnobDrag = { node, knob, knobEl, startY: e.clientY, startFrac };
+          document.body.classList.add("pn-state-slider-drag");
+          this.startWidgetDragSession();
+          return;
+        }
+      }
+      // Locked, or click outside a knob → fall through to drag/select.
+    }
+
+    if (node.type === "adsr~") {
+      const locked = (node.args[5] ?? "0") !== "0";
+      const handleEl = (e.target as Element).closest<SVGCircleElement>("circle.pn-adsr-handle");
+      if (handleEl && !locked) {
+        const handle = handleEl.dataset.adsrHandle as
+          "attack" | "decay" | "sustainEnd" | "release" | undefined;
+        const svgEl = handleEl.ownerSVGElement as SVGSVGElement | null;
+        if ((handle === "attack" || handle === "decay" || handle === "sustainEnd" || handle === "release") && svgEl) {
+          e.preventDefault();
+          e.stopPropagation();
+          const startA  = parseFloat(node.args[0] ?? "50");
+          const startD  = parseFloat(node.args[1] ?? "100");
+          const startS  = parseFloat(node.args[2] ?? "0.7");
+          const startR  = parseFloat(node.args[3] ?? "200");
+          const startSh = parseFloat(node.args[4] ?? "200");
+          const rect = svgEl.getBoundingClientRect();
+          const vbW = svgEl.viewBox.baseVal.width || 160;
+          const vbH = svgEl.viewBox.baseVal.height || 50;
+          const svgPxPerCssPxX = rect.width  > 0 ? vbW / rect.width  : 1;
+          const svgPxPerCssPxY = rect.height > 0 ? vbH / rect.height : 1;
+          const g = adsrGeometry(startA, startD, startS, startR, startSh);
+          const msPerSvgPx = g.pxPerMs > 0 ? 1 / g.pxPerMs : 1;
+          this.adsrHandleDrag = {
+            node, handle, svgEl,
+            startMouseX: e.clientX, startMouseY: e.clientY,
+            startA, startD, startSustain: startS, startR, startSustainTime: startSh,
+            svgPxPerCssPx: svgPxPerCssPxX,
+            msPerSvgPx,
+          };
+          // Stash Y scale on the drag too — only the decay handle uses it.
+          (this.adsrHandleDrag as unknown as { svgPxPerCssPxY: number }).svgPxPerCssPxY = svgPxPerCssPxY;
+          document.body.classList.add("pn-state-slider-drag");
+          this.startWidgetDragSession();
+          return;
+        }
+      }
+      // Locked, or click outside a handle → fall through to drag/select.
+    }
+
     if (node.type === "slider") {
       const trackEl = objectEl.querySelector<HTMLElement>(".patch-object-slider-track");
       const thumbEl = objectEl.querySelector<HTMLElement>(".patch-object-slider-thumb");
@@ -714,6 +841,12 @@ export class ObjectInteractionController {
     this.dispatchValue(fromNodeId, fromOutlet, value);
   }
 
+  /** Public bang dispatcher — used by main.ts to fire outlet-1 done bangs
+   *  from one-shot adsr~ envelope completions. */
+  fireBang(fromNodeId: string, fromOutlet: number): void {
+    this.dispatchBang(fromNodeId, fromOutlet);
+  }
+
   private dispatchValue(fromNodeId: string, fromOutlet: number, value: string): void {
     this.guardedFanout(fromNodeId, fromOutlet, () => {
       for (const edge of this.graph.getEdges()) {
@@ -832,6 +965,13 @@ export class ObjectInteractionController {
         this.audioGraph?.triggerClick(node.id);
         break;
 
+      case "adsr~":
+        // Bang on inlet 1 = one-shot trigger (A → D → hold sustain → R, then
+        // outlet-1 done bang). Inlet 0 is signal-only and never delivers
+        // bangs through this path.
+        if (inlet === 1) this.audioGraph?.triggerAdsr(node.id);
+        break;
+
       case "buffer~":
         if (inlet === bufferControlInlet(node.args)) {
           this.deliverBufferMessage(node, "play", []);
@@ -933,7 +1073,7 @@ export class ObjectInteractionController {
       }
 
       case "s":
-        if (inlet === 0) this.broadcastToReceivers(node.args[0] ?? "", n => this.dispatchBang(n.id, 0));
+        if (inlet === 0) broadcastSendReceive(node.args[0] ?? "", null);
         break;
 
       case "attribute":
@@ -1424,7 +1564,7 @@ export class ObjectInteractionController {
       }
 
       case "s":
-        if (inlet === 0) this.broadcastToReceivers(node.args[0] ?? "", n => this.dispatchValue(n.id, 0, value));
+        if (inlet === 0) broadcastSendReceive(node.args[0] ?? "", value);
         break;
 
       case "attribute":
@@ -1550,6 +1690,206 @@ export class ObjectInteractionController {
           return;
         }
         break;
+
+      case "wave~": {
+        // Inlets 0 (freq CV) and 1 (morph CV) are signal inlets — those edges
+        // are wired in AudioGraph and never deliver messages here. Inlet 0
+        // also accepts attribute-style selectors (freq/morph/level/gate). Inlet
+        // 2 is the dedicated gate control — accepts a bare float (1=on, 0=off)
+        // or `gate <0|1>`.
+        const wTokens = value.trim().split(/\s+/);
+        const wHead   = wTokens[0] ?? "";
+        const wRest   = wTokens.slice(1);
+        const wn = this.audioGraph?.getWaveNode(node.id);
+
+        const setGate = (on: boolean) => {
+          // The gate isn't persisted into args — it's transient runtime state,
+          // like metro's `running` (although that one IS in args). Wave~ comes
+          // up gated off after every load; users open it explicitly.
+          wn?.setGate(on);
+        };
+
+        if (inlet === 2) {
+          if (wHead === "gate") {
+            const g = parseFloat(wRest[0] ?? "");
+            if (Number.isFinite(g)) setGate(g !== 0);
+          } else {
+            const f = parseFloat(wHead);
+            if (Number.isFinite(f)) setGate(f !== 0);
+          }
+          break;
+        }
+
+        if (inlet !== 0) break;
+
+        if (wHead === "freq") {
+          const hz = parseFloat(wRest[0] ?? "");
+          if (Number.isFinite(hz)) {
+            node.args[0] = hz.toFixed(2);
+            wn?.setFreq(hz);
+            this.graph.emit("display");
+          }
+        } else if (wHead === "morph") {
+          const p = parseFloat(wRest[0] ?? "");
+          if (Number.isFinite(p)) {
+            const c = Math.max(0, Math.min(1, p));
+            node.args[1] = c.toFixed(4);
+            wn?.setMorph(c);
+            this.graph.emit("display");
+          }
+        } else if (wHead === "level") {
+          const g = parseFloat(wRest[0] ?? "");
+          if (Number.isFinite(g)) {
+            const c = Math.max(0, Math.min(1, g));
+            node.args[2] = c.toFixed(4);
+            wn?.setLevel(c);
+            this.graph.emit("display");
+          }
+        } else if (wHead === "gate") {
+          const g = parseFloat(wRest[0] ?? "");
+          if (Number.isFinite(g)) setGate(g !== 0);
+        }
+        break;
+      }
+
+      case "lfo~": {
+        // Inlet 1 is rate CV (signal) — AudioGraph handles that, not messages.
+        // Inlet 0 carries control selectors: rate <hz>, depth <v>, shape <0..1>.
+        if (inlet !== 0) break;
+        const lTokens = value.trim().split(/\s+/);
+        const lHead   = lTokens[0] ?? "";
+        const lRest   = lTokens.slice(1);
+        const ln = this.audioGraph?.getLfoNode(node.id);
+
+        if (lHead === "rate") {
+          const hz = parseFloat(lRest[0] ?? "");
+          if (Number.isFinite(hz)) {
+            const clamped = Math.max(0.01, Math.min(20, hz));
+            node.args[0] = clamped.toFixed(4);
+            ln?.setRate(clamped);
+            this.graph.emit("display");
+          }
+        } else if (lHead === "depth") {
+          const d = parseFloat(lRest[0] ?? "");
+          if (Number.isFinite(d)) {
+            const clamped = Math.max(0, Math.min(1000, d));
+            node.args[1] = clamped.toFixed(2);
+            ln?.setDepth(clamped);
+            this.graph.emit("display");
+          }
+        } else if (lHead === "shape") {
+          const p = parseFloat(lRest[0] ?? "");
+          if (Number.isFinite(p)) {
+            const clamped = Math.max(0, Math.min(1, p));
+            node.args[2] = clamped.toFixed(4);
+            ln?.setShape(clamped);
+            this.graph.emit("display");
+          }
+        }
+        break;
+      }
+
+      case "transientFollower~": {
+        // Inlets are both signal — AudioGraph handles audio wiring. Inlet 0
+        // also accepts attribute-style selectors (attack/release/sensitivity/
+        // floor <v>) so the attribute panel updates args + worklet + face
+        // readouts live during drag, instead of only on commit.
+        if (inlet !== 0) break;
+        const tfTokens = value.trim().split(/\s+/);
+        const tfHead   = tfTokens[0] ?? "";
+        const tfRest   = tfTokens.slice(1);
+
+        const APPLY: Record<string, { argIdx: number; clamp: (v: number) => number }> = {
+          attack:      { argIdx: 0, clamp: (v) => Math.max(0.05, Math.min(10000, v)) },
+          release:     { argIdx: 1, clamp: (v) => Math.max(0.05, Math.min(10000, v)) },
+          sensitivity: { argIdx: 2, clamp: (v) => Math.max(0,    Math.min(64,    v)) },
+          floor:       { argIdx: 3, clamp: (v) => Math.max(0,    Math.min(1,     v)) },
+        };
+
+        const spec = APPLY[tfHead];
+        if (!spec) break;
+        const raw = parseFloat(tfRest[0] ?? "");
+        if (!Number.isFinite(raw)) break;
+
+        const v = spec.clamp(raw);
+        node.args[spec.argIdx] = v.toFixed(4);
+
+        // Push live to the worklet so audio updates during drag, not only on
+        // commit. setArgs reads all four args — pull them fresh from node.args
+        // so prior partial edits also take effect.
+        const tf = this.audioGraph?.getTransientFollowerNode(node.id);
+        if (tf) {
+          tf.setArgs(
+            parseFloat(node.args[0] ?? "5"),
+            parseFloat(node.args[1] ?? "80"),
+            parseFloat(node.args[2] ?? "1"),
+            parseFloat(node.args[3] ?? "0"),
+          );
+        }
+
+        // Repaint just the readouts row in the face — no full re-render.
+        const bodyEl = this.panGroup.querySelector<HTMLElement>(
+          `[data-node-id="${node.id}"] .patch-object-body`,
+        );
+        if (bodyEl) refreshTransientFollowerReadouts(bodyEl, node);
+
+        this.graph.emit("display");
+        break;
+      }
+
+      case "adsr~": {
+        // Inlet 0 is signal — no messages here.
+        // Inlet 1 carries control: bare bang, bare float (1=gateOn, 0=gateOff),
+        // or selectors `attack/decay/sustain/release <v>`.
+        if (inlet !== 1) break;
+        const aTokens = value.trim().split(/\s+/);
+        const aHead   = aTokens[0] ?? "";
+        const aRest   = aTokens.slice(1);
+
+        const setArgAndApply = (argIdx: number, raw: number, kind: "ms" | "level") => {
+          const v = kind === "level" ? Math.max(0, Math.min(1, raw)) : clampMs(raw);
+          node.args[argIdx] = kind === "level" ? v.toFixed(4) : v.toFixed(2);
+          const an = this.audioGraph?.getAdsrNode(node.id);
+          if (an) {
+            if (argIdx === 0) an.setAttack(v);
+            if (argIdx === 1) an.setDecay(v);
+            if (argIdx === 2) an.setSustain(v);
+            if (argIdx === 3) an.setRelease(v);
+            if (argIdx === 4) an.setSustainTime(v);
+          }
+          this.graph.emit("display");
+        };
+
+        if (aHead === "bang" || aHead === "") {
+          this.audioGraph?.triggerAdsr(node.id);
+        } else if (aHead === "attack") {
+          const v = parseFloat(aRest[0] ?? "");
+          if (Number.isFinite(v)) setArgAndApply(0, v, "ms");
+        } else if (aHead === "decay") {
+          const v = parseFloat(aRest[0] ?? "");
+          if (Number.isFinite(v)) setArgAndApply(1, v, "ms");
+        } else if (aHead === "sustain") {
+          const v = parseFloat(aRest[0] ?? "");
+          if (Number.isFinite(v)) setArgAndApply(2, v, "level");
+        } else if (aHead === "release") {
+          const v = parseFloat(aRest[0] ?? "");
+          if (Number.isFinite(v)) setArgAndApply(3, v, "ms");
+        } else if (aHead === "sustainTime") {
+          const v = parseFloat(aRest[0] ?? "");
+          if (Number.isFinite(v)) setArgAndApply(4, v, "ms");
+        } else {
+          const f = parseFloat(aHead);
+          if (Number.isFinite(f)) {
+            if (f !== 0) this.audioGraph?.gateOnAdsr(node.id);
+            else         this.audioGraph?.gateOffAdsr(node.id);
+          } else {
+            // Unknown selector → treat as bang fallback (Max convention for
+            // most one-shot triggers).
+            this.audioGraph?.triggerAdsr(node.id);
+          }
+        }
+        break;
+      }
 
       case "buffer~": {
         const ctrlInlet = bufferControlInlet(node.args);
@@ -1729,12 +2069,6 @@ export class ObjectInteractionController {
 
   // ── Send / Receive ──────────────────────────────────────────────────
 
-  private broadcastToReceivers(channel: string, dispatchFn: (r: PatchNode) => void): void {
-    if (!channel) return;
-    for (const node of this.graph.getNodes()) {
-      if (node.type === "r" && node.args[0] === channel) dispatchFn(node);
-    }
-  }
 
   // ── Attribute panel helpers ─────────────────────────────────────────
 
@@ -2517,6 +2851,12 @@ export class ObjectInteractionController {
       this.updateBufWaveDragFromEvent(e);
     } else if (this.vbufStripDrag) {
       this.updateVbufStripDragFromEvent(e);
+    } else if (this.waveKnobDrag) {
+      this.updateWaveKnobFromEvent(e);
+    } else if (this.lfoKnobDrag) {
+      this.updateLfoKnobFromEvent(e);
+    } else if (this.adsrHandleDrag) {
+      this.updateAdsrHandleFromEvent(e);
     }
   }
 
@@ -2559,6 +2899,21 @@ export class ObjectInteractionController {
       this.completeBufWaveDrag(e);
     } else if (this.vbufStripDrag) {
       this.completeVbufStripDrag(e);
+    } else if (this.waveKnobDrag) {
+      this.updateWaveKnobFromEvent(e);
+      this.graph.emit("change");
+      this.waveKnobDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
+    } else if (this.lfoKnobDrag) {
+      this.updateLfoKnobFromEvent(e);
+      this.graph.emit("change");
+      this.lfoKnobDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
+    } else if (this.adsrHandleDrag) {
+      this.updateAdsrHandleFromEvent(e);
+      this.graph.emit("change");
+      this.adsrHandleDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
     }
   }
 
@@ -2597,6 +2952,18 @@ export class ObjectInteractionController {
       this.completeBufWaveDrag(new MouseEvent("mouseup"));
     } else if (this.vbufStripDrag) {
       this.completeVbufStripDrag(new MouseEvent("mouseup"));
+    } else if (this.waveKnobDrag) {
+      this.graph.emit("change");
+      this.waveKnobDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
+    } else if (this.lfoKnobDrag) {
+      this.graph.emit("change");
+      this.lfoKnobDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
+    } else if (this.adsrHandleDrag) {
+      this.graph.emit("change");
+      this.adsrHandleDrag = null;
+      document.body.classList.remove("pn-state-slider-drag");
     }
   }
 
@@ -2613,6 +2980,148 @@ export class ObjectInteractionController {
       onUp:     (e) => { this.handleSliderUp(e); this.currentDragSession = null; },
       onCancel: ()  => { this.cancelWidgetDrag(); this.currentDragSession = null; },
     });
+  }
+
+  private updateWaveKnobFromEvent(e: MouseEvent): void {
+    if (!this.waveKnobDrag) return;
+    const { node, knob, knobEl, startY, startFrac } = this.waveKnobDrag;
+    // Vertical drag: 240 px ≈ full 0..1 sweep. Shift = 5× finer.
+    const sensitivity = e.shiftKey ? 1 / 1200 : 1 / 240;
+    const dy = e.clientY - startY;
+    const frac = Math.max(0, Math.min(1, startFrac - dy * sensitivity));
+    const value = waveKnobValueFromFraction(knob, frac);
+
+    const argIdx = knob === "freq" ? 0 : knob === "morph" ? 1 : 2;
+    // Persist the raw float — args are strings on the wire. Trim freq to 2dp,
+    // morph/level to 4dp so saved patches round-trip without trailing noise.
+    node.args[argIdx] = knob === "freq"
+      ? value.toFixed(2)
+      : value.toFixed(4);
+
+    const wn = this.audioGraph?.getWaveNode(node.id);
+    if (wn) {
+      if (knob === "freq")  wn.setFreq(value);
+      if (knob === "morph") wn.setMorph(value);
+      if (knob === "level") wn.setLevel(value);
+    }
+
+    this.refreshWaveKnobDom(knobEl, knob, value, frac);
+  }
+
+  private refreshWaveKnobDom(
+    knobEl: HTMLElement,
+    knob: "freq" | "morph" | "level",
+    value: number,
+    frac: number,
+  ): void {
+    knobEl.dataset.waveFrac  = frac.toFixed(4);
+    knobEl.dataset.waveValue = String(value);
+    const pointer = knobEl.querySelector<SVGElement>(".pn-wave-knob__pointer");
+    if (pointer) {
+      const angleDeg = -135 + frac * 270;
+      pointer.setAttribute("transform", `rotate(${angleDeg.toFixed(2)} 16 16)`);
+    }
+    const readout = knobEl.querySelector<HTMLElement>(".pn-wave-knob__value");
+    if (readout) {
+      readout.textContent =
+        knob === "freq"  ? formatFreq(value) :
+        knob === "morph" ? formatMorph(value) :
+                           formatLevel(value);
+    }
+  }
+
+  private updateLfoKnobFromEvent(e: MouseEvent): void {
+    if (!this.lfoKnobDrag) return;
+    const { node, knob, knobEl, startY, startFrac } = this.lfoKnobDrag;
+    const sensitivity = e.shiftKey ? 1 / 1200 : 1 / 240;
+    const dy = e.clientY - startY;
+    const frac = Math.max(0, Math.min(1, startFrac - dy * sensitivity));
+    const value = lfoKnobValueFromFraction(knob, frac);
+
+    const argIdx = knob === "rate" ? 0 : knob === "depth" ? 1 : 2;
+    node.args[argIdx] = knob === "rate"
+      ? value.toFixed(4)
+      : knob === "depth"
+      ? value.toFixed(2)
+      : value.toFixed(4);
+
+    const ln = this.audioGraph?.getLfoNode(node.id);
+    if (ln) {
+      if (knob === "rate")  ln.setRate(value);
+      if (knob === "depth") ln.setDepth(value);
+      if (knob === "shape") ln.setShape(value);
+    }
+
+    this.refreshLfoKnobDom(knobEl, knob, value, frac);
+  }
+
+  private refreshLfoKnobDom(
+    knobEl: HTMLElement,
+    knob: "rate" | "depth" | "shape",
+    value: number,
+    frac: number,
+  ): void {
+    knobEl.dataset.lfoFrac  = frac.toFixed(4);
+    knobEl.dataset.lfoValue = String(value);
+    const pointer = knobEl.querySelector<SVGElement>(".pn-lfo-knob__pointer");
+    if (pointer) {
+      const angleDeg = -135 + frac * 270;
+      pointer.setAttribute("transform", `rotate(${angleDeg.toFixed(2)} 16 16)`);
+    }
+    const readout = knobEl.querySelector<HTMLElement>(".pn-lfo-knob__value");
+    if (readout) {
+      readout.textContent =
+        knob === "rate"  ? formatRate(value) :
+        knob === "depth" ? formatDepth(value) :
+                           formatShape(value);
+    }
+  }
+
+  private updateAdsrHandleFromEvent(e: MouseEvent): void {
+    const drag = this.adsrHandleDrag;
+    if (!drag) return;
+    const dxCss = e.clientX - drag.startMouseX;
+    const dyCss = e.clientY - drag.startMouseY;
+    // Map CSS pixels → SVG units → ms / amplitude.
+    const dxSvg = dxCss * drag.svgPxPerCssPx;
+    const dyPxYRaw = (drag as unknown as { svgPxPerCssPxY?: number }).svgPxPerCssPxY;
+    const svgPxPerCssPxY = dyPxYRaw ?? drag.svgPxPerCssPx;
+    const dySvg = dyCss * svgPxPerCssPxY;
+    const dMs = dxSvg * drag.msPerSvgPx;
+
+    let a  = drag.startA;
+    let d  = drag.startD;
+    let s  = drag.startSustain;
+    let r  = drag.startR;
+    let sh = drag.startSustainTime;
+
+    if (drag.handle === "attack") {
+      a = clampMs(drag.startA + dMs);
+    } else if (drag.handle === "decay") {
+      d = clampMs(drag.startD + dMs);
+    } else if (drag.handle === "sustainEnd") {
+      sh = clampMs(drag.startSustainTime + dMs);
+      const ySpan = ADSR_BOTTOM - ADSR_TOP;
+      s = Math.max(0, Math.min(1, drag.startSustain - dySvg / ySpan));
+    } else {
+      r = clampMs(drag.startR + dMs);
+    }
+
+    drag.node.args[0] = a.toFixed(2);
+    drag.node.args[1] = d.toFixed(2);
+    drag.node.args[2] = s.toFixed(4);
+    drag.node.args[3] = r.toFixed(2);
+    drag.node.args[4] = sh.toFixed(2);
+
+    const an = this.audioGraph?.getAdsrNode(drag.node.id);
+    if (an) {
+      if (drag.handle === "attack")     an.setAttack(a);
+      if (drag.handle === "decay")      an.setDecay(d);
+      if (drag.handle === "sustainEnd") { an.setSustainTime(sh); an.setSustain(s); }
+      if (drag.handle === "release")    an.setRelease(r);
+    }
+
+    refreshAdsrEditorDom(drag.svgEl, drag.node);
   }
 
   private updateBufWaveDragFromEvent(e: MouseEvent): void {
@@ -2752,6 +3261,13 @@ export class ObjectInteractionController {
       const fxNode = this.visualizerGraph?.getImageFXNode(node.id);
       if (!fxNode) return;
       new ImageFXPanel(fxNode, node, this.graph).open();
+      return;
+    }
+
+    if (node.type === "adc~" || node.type === "dac~") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (this.audioGraph) new AudioConfigPanel(node, this.graph, this.audioGraph).open();
       return;
     }
 
@@ -4161,4 +4677,9 @@ export class ObjectInteractionController {
       return;
     }
   }
+}
+
+function clampMs(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return v < 0 ? 0 : v > 10000 ? 10000 : v;
 }
