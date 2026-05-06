@@ -371,9 +371,7 @@ function prettyChord(raw: string): string {
 
 const ALL_SECTIONS = "__all__";
 
-const COLLAPSE_STORAGE_KEY = "patchnet-actionlist-collapse-v1";
-/** Sections with more children than this start collapsed on first open. */
-const AUTO_COLLAPSE_THRESHOLD = 15;
+const COLLAPSE_STORAGE_KEY = "patchnet-actionlist-collapse-v2";
 
 export class ActionListDialog {
   private overlay: HTMLDivElement | null = null;
@@ -437,14 +435,12 @@ export class ActionListDialog {
     } catch { /* ignore */ }
   }
 
-  /** First-open seeding: any section larger than the threshold collapses
-   *  by default so the dialog opens to a tidy summary, not a 70-row dump. */
+  /** First-open seeding: every section starts collapsed so the dialog
+   *  opens to a clean section list. The user expands the ones they want. */
   private seedDefaultCollapse(rowsBySection: Map<string, PatchAction[]>): void {
     if (this.appliedDefaultCollapse) return;
-    for (const [section, actions] of rowsBySection) {
-      if (actions.length > AUTO_COLLAPSE_THRESHOLD) {
-        this.collapsedSections.add(section);
-      }
+    for (const section of rowsBySection.keys()) {
+      this.collapsedSections.add(section);
     }
     this.appliedDefaultCollapse = true;
     this.saveCollapseState();
