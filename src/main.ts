@@ -1394,7 +1394,7 @@ for (const a of collectLocalPluginActions()) {
 }
 
 const actionKeymap = new ActionKeymap(actionRegistry);
-actionKeymap.rebuildFromDefaults();
+actionKeymap.loadUserOverrides();
 
 const appActions: AppActionsAPI = {
   saveToFile: () => savePatchToFile(),

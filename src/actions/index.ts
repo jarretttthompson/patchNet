@@ -1,5 +1,5 @@
 export { ActionRegistry } from "./ActionRegistry";
-export { ActionKeymap, isEditableTarget, eventToChord } from "./ActionKeymap";
+export { ActionKeymap, isEditableTarget, eventToChord, chordFromEventForUi } from "./ActionKeymap";
 export { ActionDispatcher } from "./ActionDispatcher";
 export { ActionListDialog } from "./ActionListDialog";
 export { BUILTIN_ACTIONS } from "./builtinActions";

@@ -190,6 +190,83 @@ describe("Built-in action IDs", () => {
   });
 });
 
+describe("ActionKeymap user overrides", () => {
+  // localStorage shim — vitest node env has none.
+  const fakeStorage: Record<string, string> = {};
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (k: string) => (k in fakeStorage ? fakeStorage[k] : null),
+      setItem: (k: string, v: string) => { fakeStorage[k] = v; },
+      removeItem: (k: string) => { delete fakeStorage[k]; },
+      clear: () => { for (const k in fakeStorage) delete fakeStorage[k]; },
+    },
+  });
+
+  it("addUserBinding persists and resolves", () => {
+    fakeStorage["patchnet-keymap-v1"] = "";
+    const r = new ActionRegistry();
+    r.register(makeAction({ id: "f.save", defaultKeys: [] }));
+    const km = new ActionKeymap(r);
+    km.rebuild();
+
+    km.addUserBinding("f.save", "Mod+J");
+    expect(km.shortcutsFor("f.save")).toContain("Mod+J");
+
+    // Persisted: a fresh keymap with overrides loaded should have the binding.
+    const km2 = new ActionKeymap(r);
+    km2.loadUserOverrides();
+    expect(km2.shortcutsFor("f.save")).toContain("Mod+J");
+  });
+
+  it("removeUserBinding hides a default chord", () => {
+    fakeStorage["patchnet-keymap-v1"] = "";
+    const r = new ActionRegistry();
+    r.register(makeAction({ id: "f.save", defaultKeys: ["Mod+S"] }));
+    const km = new ActionKeymap(r);
+    km.rebuild();
+    expect(km.shortcutsFor("f.save")).toEqual(["Mod+S"]);
+
+    km.removeUserBinding("f.save", "Mod+S");
+    expect(km.shortcutsFor("f.save")).toEqual([]);
+
+    const km2 = new ActionKeymap(r);
+    km2.loadUserOverrides();
+    expect(km2.shortcutsFor("f.save")).toEqual([]);
+  });
+
+  it("addUserBinding reports conflicts but does not auto-replace", () => {
+    fakeStorage["patchnet-keymap-v1"] = "";
+    const r = new ActionRegistry();
+    r.registerAll([
+      makeAction({ id: "a.one", defaultKeys: ["Mod+J"] }),
+      makeAction({ id: "a.two", defaultKeys: [] }),
+    ]);
+    const km = new ActionKeymap(r);
+    km.rebuild();
+
+    const conflicts = km.addUserBinding("a.two", "Mod+J");
+    expect(conflicts).toEqual(["a.one"]);
+    // Both still bound until UI calls removeUserBinding for the loser.
+    expect(km.shortcutsFor("a.one")).toContain("Mod+J");
+    expect(km.shortcutsFor("a.two")).toContain("Mod+J");
+  });
+
+  it("resetUserOverrides restores defaults", () => {
+    fakeStorage["patchnet-keymap-v1"] = "";
+    const r = new ActionRegistry();
+    r.register(makeAction({ id: "f.save", defaultKeys: ["Mod+S"] }));
+    const km = new ActionKeymap(r);
+    km.rebuild();
+    km.removeUserBinding("f.save", "Mod+S");
+    km.addUserBinding("f.save", "Mod+J");
+    expect(km.shortcutsFor("f.save")).toEqual(["Mod+J"]);
+
+    km.resetUserOverrides();
+    expect(km.shortcutsFor("f.save")).toEqual(["Mod+S"]);
+  });
+});
+
 describe("Generated object-create actions", () => {
   it("emit one canvas.object.create.<type> per OBJECT_DEFS key", async () => {
     const { generateObjectCreateActions } = await import("../src/actions/objectCreateActions");

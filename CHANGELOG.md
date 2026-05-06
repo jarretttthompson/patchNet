@@ -23,6 +23,35 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-06] COMPLETED | REAPER-style action list + user shortcut editing
+**Agent:** Claude Code
+**Phase:** Action system — Milestone 1d (REAPER UI parity, M2 partial)
+
+**Done:**
+- Rebuilt `ActionListDialog` to match REAPER's Actions window: top toolbar with Filter input + Clear + Section dropdown, table layout (Shortcut / Description / Section), bottom "Shortcuts for selected action" panel with chord chips and Add/Delete, and a footer row of Run / Run-close / Close buttons. "New action…" is rendered disabled with a "Macros — coming next milestone" tooltip.
+- User keymap persistence in `localStorage` under `patchnet-keymap-v1`. Layered model: `defaults ± user-added ∓ user-removed`. Built-ins stay immutable in code; if defaults change, unmodified actions automatically pick them up. `addUserBinding`, `removeUserBinding`, `resetUserOverrides` on `ActionKeymap`.
+- Chord capture sub-dialog: listens for one keydown anywhere, formats it as a UI-friendly chord ("Mod+J", "?"), confirms before binding. Conflicts surface inline as a banner with "Keep both" and "Replace" buttons — never auto-replace.
+- Section dropdown is derived live from the registry; "All" + every distinct section. Filter and section combine.
+- Double-click a row to Run/close.
+- User-added chord chips render in accent colour so the user can tell their bindings from defaults at a glance.
+
+**Changed files:**
+- src/actions/ActionListDialog.ts — full rewrite, REAPER-style layout
+- src/actions/ActionKeymap.ts — user-override layer + persistence + `chordFromEventForUi`
+- src/actions/index.ts — re-export `chordFromEventForUi`
+- src/main.ts — `loadUserOverrides()` instead of `rebuildFromDefaults()` so user bindings restore on reload
+- tests/actions.test.ts — coverage for addUserBinding / removeUserBinding / conflict reporting / resetUserOverrides
+
+**Notes / decisions:**
+- "Keep both" lets the user knowingly bind one chord to two actions; the registry's `enabled(ctx)` predicate and section filtering can keep them mutually exclusive at runtime. Matches REAPER's behaviour and avoids surprise data loss.
+- Chord capture uses `addEventListener("keydown", ..., true)` (capture phase) so it intercepts before the global action dispatcher — otherwise Escape would close the action list while the user was trying to bind it.
+- Pressing Escape during capture is a Cancel button click; users who want to bind Escape itself click OK after the chord display reads "Esc". (REAPER behaves the same way.)
+- "New action…" / macros (M3) deferred. The disabled button is a discoverability affordance — users see the path is intentional and just not yet implemented.
+
+**Next needed:**
+- M3: custom macros (chained actions, persisted under `patchnet-custom-actions-v1`, run through dispatcher with optional `consolidateUndo` via `batchChange`).
+- "Find shortcut…" (REAPER has it): capture a chord and reveal which action(s) it maps to.
+
 ## [2026-05-06] COMPLETED | Plugin actions + generated object-create rows
 **Agent:** Claude Code
 **Phase:** Action system — Milestone 1c
