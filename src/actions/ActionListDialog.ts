@@ -166,6 +166,43 @@ const STYLE = `
   overflow-y: auto;
   background: var(--pn-bg);
 }
+.pn-actionlist-section {
+  display: grid;
+  grid-template-columns: 180px 1fr 160px;
+  gap: 12px;
+  padding: 6px 14px;
+  background: var(--pn-surface);
+  border-top: 1px solid var(--pn-border);
+  border-bottom: 1px solid var(--pn-border);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--pn-type-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--pn-muted);
+}
+.pn-actionlist-section:hover {
+  background: var(--pn-hover-accent);
+  color: var(--pn-accent);
+}
+.pn-actionlist-section-caret {
+  display: inline-block;
+  width: 10px;
+  margin-right: 6px;
+  color: var(--pn-text-dim);
+  transition: transform 0.08s ease-out;
+}
+.pn-actionlist-section.is-collapsed .pn-actionlist-section-caret {
+  transform: rotate(-90deg);
+}
+.pn-actionlist-section-name {
+  color: var(--pn-text);
+  text-transform: none;
+  letter-spacing: 0.04em;
+}
+.pn-actionlist-section-count {
+  color: var(--pn-muted);
+}
 .pn-actionlist-row {
   display: grid;
   grid-template-columns: 180px 1fr 160px;
@@ -334,6 +371,10 @@ function prettyChord(raw: string): string {
 
 const ALL_SECTIONS = "__all__";
 
+const COLLAPSE_STORAGE_KEY = "patchnet-actionlist-collapse-v1";
+/** Sections with more children than this start collapsed on first open. */
+const AUTO_COLLAPSE_THRESHOLD = 15;
+
 export class ActionListDialog {
   private overlay: HTMLDivElement | null = null;
   private filterInput: HTMLInputElement | null = null;
@@ -342,11 +383,22 @@ export class ActionListDialog {
   private shortcutsPanelEl: HTMLDivElement | null = null;
   private runBtn: HTMLButtonElement | null = null;
   private runCloseBtn: HTMLButtonElement | null = null;
+  /** Filtered set of actions to display (after search + section dropdown). */
   private rows: PatchAction[] = [];
+  /** Subset of `rows` actually rendered (children of expanded sections only).
+   *  `activeIndex` is an index into this list, not `rows`. */
+  private visibleActions: PatchAction[] = [];
   private activeIndex = 0;
   private sectionFilter = ALL_SECTIONS;
   /** Pending conflict surfaced by an Add-shortcut attempt — null while idle. */
   private pendingConflict: { actionId: string; chord: string; conflictIds: string[] } | null = null;
+  /** Section names the user has collapsed. Persisted across sessions.
+   *  When the filter is non-empty, this is ignored — every section with
+   *  matches expands so search results are always reachable. */
+  private collapsedSections = new Set<string>();
+  /** True only on the first ever render so we can seed default collapse for
+   *  any oversized section the user hasn't already touched. */
+  private appliedDefaultCollapse = false;
 
   constructor(
     private readonly registry: ActionRegistry,
@@ -356,6 +408,46 @@ export class ActionListDialog {
   ) {
     injectStyles();
     this.keymap.onChange = () => this.refreshShortcutsPanel();
+    this.loadCollapseState();
+  }
+
+  private loadCollapseState(): void {
+    try {
+      const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY);
+      if (!raw) { this.appliedDefaultCollapse = false; return; }
+      const parsed = JSON.parse(raw) as { v: 1; collapsed: string[]; sawDefault: boolean };
+      if (parsed && parsed.v === 1) {
+        this.collapsedSections = new Set(parsed.collapsed ?? []);
+        // Once defaults have been applied (and possibly modified), stop
+        // re-seeding them — preserve whatever the user chose.
+        this.appliedDefaultCollapse = !!parsed.sawDefault;
+      }
+    } catch {
+      // private browsing / corrupt — start fresh
+    }
+  }
+
+  private saveCollapseState(): void {
+    try {
+      localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify({
+        v: 1,
+        collapsed: [...this.collapsedSections],
+        sawDefault: true,
+      }));
+    } catch { /* ignore */ }
+  }
+
+  /** First-open seeding: any section larger than the threshold collapses
+   *  by default so the dialog opens to a tidy summary, not a 70-row dump. */
+  private seedDefaultCollapse(rowsBySection: Map<string, PatchAction[]>): void {
+    if (this.appliedDefaultCollapse) return;
+    for (const [section, actions] of rowsBySection) {
+      if (actions.length > AUTO_COLLAPSE_THRESHOLD) {
+        this.collapsedSections.add(section);
+      }
+    }
+    this.appliedDefaultCollapse = true;
+    this.saveCollapseState();
   }
 
   toggle(): void {
@@ -408,6 +500,7 @@ export class ActionListDialog {
     this.runBtn = null;
     this.runCloseBtn = null;
     this.rows = [];
+    this.visibleActions = [];
     this.activeIndex = 0;
     this.pendingConflict = null;
   }
@@ -555,8 +648,8 @@ export class ActionListDialog {
       return a.section === this.sectionFilter;
     });
     this.rows = matches;
-    if (this.activeIndex >= this.rows.length) this.activeIndex = 0;
     this.pendingConflict = null;
+    // renderResults rebuilds visibleActions and clamps activeIndex.
     this.renderResults();
     this.refreshShortcutsPanel();
   }
@@ -570,52 +663,151 @@ export class ActionListDialog {
       empty.className = "pn-actionlist-empty";
       empty.textContent = "no matches";
       this.resultsEl.appendChild(empty);
+      this.visibleActions = [];
       this.updateRunButtons(null);
       return;
     }
 
+    // Group filtered rows by section, preserving registry sort within groups.
+    const groups = new Map<string, PatchAction[]>();
+    for (const action of this.rows) {
+      let bucket = groups.get(action.section);
+      if (!bucket) { bucket = []; groups.set(action.section, bucket); }
+      bucket.push(action);
+    }
+    this.seedDefaultCollapse(groups);
+
+    const filterIsActive = (this.filterInput?.value ?? "").trim() !== "";
+
+    // Carry forward selection by id so toggling collapse / refiltering doesn't
+    // jump the highlight to row zero on every keystroke.
+    const previouslyActive = this.visibleActions[this.activeIndex] ?? null;
+
     const ctx = this.contextProvider();
+    this.visibleActions = [];
 
-    this.rows.forEach((action, i) => {
-      const disabled = action.enabled ? !action.enabled(ctx) : false;
-      const row = document.createElement("div");
-      row.className = "pn-actionlist-row";
-      if (i === this.activeIndex) row.classList.add("is-active");
-      if (disabled) row.classList.add("is-disabled");
+    const sortedSections = [...groups.keys()].sort();
+    for (const section of sortedSections) {
+      const actions = groups.get(section)!;
+      // While filtering, force-expand every matching section so search
+      // results are always visible — but don't mutate the user's saved
+      // state; just present an expanded view.
+      const collapsed = !filterIsActive && this.collapsedSections.has(section);
+      this.resultsEl.appendChild(this.buildSectionHeader(section, actions.length, collapsed));
+      if (collapsed) continue;
 
-      const shortcuts = this.keymap.shortcutsFor(action.id);
-      const shortcutCell = document.createElement("span");
-      shortcutCell.className = "pn-actionlist-cell pn-actionlist-cell--shortcut";
-      shortcutCell.textContent = shortcuts.length > 0 ? prettyChord(shortcuts[0]) : "";
-      row.appendChild(shortcutCell);
+      for (const action of actions) {
+        this.visibleActions.push(action);
+        this.resultsEl.appendChild(this.buildActionRow(action, ctx));
+      }
+    }
 
-      const descCell = document.createElement("span");
-      descCell.className = "pn-actionlist-cell";
-      descCell.textContent = action.title;
-      row.appendChild(descCell);
+    // Restore highlight to the same action if it's still visible; otherwise
+    // fall back to the first row.
+    if (previouslyActive) {
+      const idx = this.visibleActions.indexOf(previouslyActive);
+      this.activeIndex = idx >= 0 ? idx : 0;
+    } else {
+      this.activeIndex = 0;
+    }
+    this.applyActiveHighlight();
 
-      const sectionCell = document.createElement("span");
-      sectionCell.className = "pn-actionlist-cell pn-actionlist-cell--section";
-      sectionCell.textContent = [action.section, action.category].filter(Boolean).join(" · ");
-      row.appendChild(sectionCell);
+    this.updateRunButtons(this.visibleActions[this.activeIndex] ?? null);
+  }
 
-      row.addEventListener("mousedown", (e) => {
-        e.preventDefault(); // keep filter input focused for chord-capture flow
-      });
-      row.addEventListener("click", () => {
-        this.activeIndex = i;
+  private buildSectionHeader(section: string, count: number, collapsed: boolean): HTMLDivElement {
+    const header = document.createElement("div");
+    header.className = "pn-actionlist-section" + (collapsed ? " is-collapsed" : "");
+    header.setAttribute("role", "button");
+    header.setAttribute("aria-expanded", String(!collapsed));
+
+    const left = document.createElement("span");
+    const caret = document.createElement("span");
+    caret.className = "pn-actionlist-section-caret";
+    caret.textContent = "▼";
+    left.appendChild(caret);
+    const name = document.createElement("span");
+    name.className = "pn-actionlist-section-name";
+    name.textContent = section;
+    left.appendChild(name);
+    header.appendChild(left);
+
+    // Spacer so the count column lines up with the description column.
+    header.appendChild(document.createElement("span"));
+
+    const countEl = document.createElement("span");
+    countEl.className = "pn-actionlist-section-count";
+    countEl.textContent = `${count} action${count === 1 ? "" : "s"}`;
+    header.appendChild(countEl);
+
+    header.addEventListener("mousedown", (e) => {
+      // Keep the filter input focused (chord-capture path needs it).
+      e.preventDefault();
+    });
+    header.addEventListener("click", () => this.toggleSection(section));
+    return header;
+  }
+
+  private buildActionRow(action: PatchAction, ctx: ActionContext): HTMLDivElement {
+    const disabled = action.enabled ? !action.enabled(ctx) : false;
+    const row = document.createElement("div");
+    row.className = "pn-actionlist-row";
+    row.dataset.actionId = action.id;
+    if (disabled) row.classList.add("is-disabled");
+
+    const shortcuts = this.keymap.shortcutsFor(action.id);
+    const shortcutCell = document.createElement("span");
+    shortcutCell.className = "pn-actionlist-cell pn-actionlist-cell--shortcut";
+    shortcutCell.textContent = shortcuts.length > 0 ? prettyChord(shortcuts[0]) : "";
+    row.appendChild(shortcutCell);
+
+    const descCell = document.createElement("span");
+    descCell.className = "pn-actionlist-cell";
+    descCell.textContent = action.title;
+    row.appendChild(descCell);
+
+    const sectionCell = document.createElement("span");
+    sectionCell.className = "pn-actionlist-cell pn-actionlist-cell--section";
+    sectionCell.textContent = [action.section, action.category].filter(Boolean).join(" · ");
+    row.appendChild(sectionCell);
+
+    row.addEventListener("mousedown", (e) => e.preventDefault());
+    row.addEventListener("click", () => {
+      const idx = this.visibleActions.indexOf(action);
+      if (idx >= 0) {
+        this.activeIndex = idx;
         this.pendingConflict = null;
-        this.renderResults();
+        this.applyActiveHighlight();
         this.refreshShortcutsPanel();
-      });
-      row.addEventListener("dblclick", () => {
-        if (!disabled) this.runActive(true);
-      });
-
-      this.resultsEl!.appendChild(row);
+        this.updateRunButtons(action);
+      }
+    });
+    row.addEventListener("dblclick", () => {
+      if (!disabled) this.runActive(true);
     });
 
-    this.updateRunButtons(this.rows[this.activeIndex] ?? null);
+    return row;
+  }
+
+  /** Toggle visual highlight without rebuilding the DOM — keeps scroll
+   *  position stable when the user moves through rows with arrow keys. */
+  private applyActiveHighlight(): void {
+    if (!this.resultsEl) return;
+    const rows = this.resultsEl.querySelectorAll<HTMLElement>(".pn-actionlist-row");
+    rows.forEach((row, i) => {
+      row.classList.toggle("is-active", i === this.activeIndex);
+    });
+  }
+
+  private toggleSection(section: string): void {
+    if (this.collapsedSections.has(section)) {
+      this.collapsedSections.delete(section);
+    } else {
+      this.collapsedSections.add(section);
+    }
+    this.saveCollapseState();
+    this.renderResults();
+    this.refreshShortcutsPanel();
   }
 
   private updateRunButtons(action: PatchAction | null): void {
@@ -630,7 +822,7 @@ export class ActionListDialog {
     if (!this.shortcutsPanelEl) return;
     this.shortcutsPanelEl.textContent = "";
 
-    const action = this.rows[this.activeIndex];
+    const action = this.visibleActions[this.activeIndex];
 
     const label = document.createElement("div");
     label.className = "pn-actionlist-shortcuts-label";
@@ -824,18 +1016,19 @@ export class ActionListDialog {
   }
 
   private move(delta: number): void {
-    if (this.rows.length === 0) return;
-    this.activeIndex = (this.activeIndex + delta + this.rows.length) % this.rows.length;
+    if (this.visibleActions.length === 0) return;
+    this.activeIndex = (this.activeIndex + delta + this.visibleActions.length) % this.visibleActions.length;
     this.pendingConflict = null;
-    this.renderResults();
+    this.applyActiveHighlight();
     this.refreshShortcutsPanel();
+    this.updateRunButtons(this.visibleActions[this.activeIndex]);
 
     const rows = this.resultsEl?.querySelectorAll<HTMLElement>(".pn-actionlist-row");
     rows?.[this.activeIndex]?.scrollIntoView({ block: "nearest" });
   }
 
   private runActive(closeAfter: boolean): void {
-    const action = this.rows[this.activeIndex];
+    const action = this.visibleActions[this.activeIndex];
     if (!action) return;
     const ctx = this.contextProvider();
     if (action.enabled && !action.enabled(ctx)) return;

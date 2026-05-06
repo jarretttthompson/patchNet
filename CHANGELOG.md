@@ -23,6 +23,25 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-06] COMPLETED | Collapsible section headers in action list
+**Agent:** Claude Code
+**Phase:** Action system — Milestone 1e
+
+**Done:**
+- Action rows now group under clickable section headers (▶/▼ + count). Click to collapse / expand. State persists in localStorage under `patchnet-actionlist-collapse-v1`.
+- Default-collapse: any section larger than 15 rows starts collapsed on the user's first open. After that the user's choices are preserved verbatim — defaults are only seeded once.
+- Filter override: while the filter input has any text, every section with matches force-expands so search results stay reachable. Manual collapse state is preserved underneath and restored when the filter clears.
+- Keyboard nav skips collapsed children — `activeIndex` indexes into a `visibleActions` list rebuilt every render, not the full result set. Selection survives collapse toggles by id when possible.
+- Highlight is updated in-place (DOM class toggle) so arrow-key navigation keeps the scroll position stable instead of re-rendering the whole list.
+
+**Changed files:**
+- src/actions/ActionListDialog.ts — section grouping, headers, collapse persistence, in-place active-row highlight
+
+**Notes / decisions:**
+- The threshold (15) is a starting heuristic. "Place object" (~70 rows) is the only section currently above it; if patchNet grows more huge sections, revisit either the threshold or per-section default rules.
+- Collapse state is dialog-local (UI preference), not part of the keymap. Sharing a patch doesn't carry it; resetting it doesn't lose any bindings.
+- One-level grouping by section, not a section→category tree. Two levels would be more clicks for marginal benefit while the dataset is still small.
+
 ## [2026-05-06] COMPLETED | REAPER-style action list + user shortcut editing
 **Agent:** Claude Code
 **Phase:** Action system — Milestone 1d (REAPER UI parity, M2 partial)
