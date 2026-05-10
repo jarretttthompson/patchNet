@@ -18,7 +18,7 @@ import { ResizeController } from "./ResizeController";
 import { ObjectInteractionController } from "./ObjectInteractionController";
 import { UndoManager } from "../graph/UndoManager";
 import { VisualizerGraph } from "../runtime/VisualizerGraph";
-import { renderObject } from "./ObjectRenderer";
+import { renderObject, autoFitInlineArgsWidth } from "./ObjectRenderer";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvasSpace";
 import { registerSession, unregisterSession } from "./patchSessionRegistry";
 
@@ -92,6 +92,7 @@ export class ScratchTabSession {
     for (const node of this.graph.getNodes()) {
       this.panGroup.appendChild(renderObject(node));
     }
+    this.panGroup.querySelectorAll<HTMLElement>(":scope > .patch-object").forEach(autoFitInlineArgsWidth);
     this.cables.render();
     this.canvasController.updatePanGroupSize();
   }

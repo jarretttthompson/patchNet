@@ -82,6 +82,20 @@ export class PatchTerminalController {
     this.open ? this.hide() : this.show();
   }
 
+  /** Restore persisted user macros into the registry. Called once on boot. */
+  loadMacros(ctx: ActionContext): void {
+    this.engine.loadMacros(ctx);
+  }
+
+  /**
+   * Programmatic macro creation, used by the action-list "New action…" form.
+   * Runs the same validation + persistence as `/define`, but accepts a
+   * multi-line body verbatim instead of going through line-regex parsing.
+   */
+  createMacro(spec: { name: string; body: string; chord?: string | null }): TerminalResult {
+    return this.engine.createMacro(spec, this.contextProvider());
+  }
+
   show(): void {
     this.open = true;
     this.root.classList.add("is-open");
@@ -141,7 +155,97 @@ export class PatchTerminalController {
       e.preventDefault();
       e.stopPropagation();
       void this.submit();
+      return;
     }
+
+    if (e.key === "Tab" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (this.tabOutOfPair()) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    if (this.handleAutoPair(e)) return;
+  }
+
+  // Tab steps the caret past the next closing bracket/quote on the line, so
+  // the user can finish typing inside an auto-paired `(...)`/`[...]`/`{...}`
+  // and Tab out without reaching for the right-arrow key. Returns false when
+  // there is no closer ahead, letting the browser handle Tab normally.
+  private tabOutOfPair(): boolean {
+    const { selectionStart: s, selectionEnd: end, value } = this.inputEl;
+    if (s === null || end === null || s !== end) return false;
+    const closers = new Set([")", "]", "}", '"', "'"]);
+    for (let i = s; i < value.length; i++) {
+      if (closers.has(value[i])) {
+        this.inputEl.setSelectionRange(i + 1, i + 1);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Auto-pair brackets/quotes IDE-style. Returns true if the event was handled
+  // (caller should stop further processing).
+  private handleAutoPair(e: KeyboardEvent): boolean {
+    if (e.metaKey || e.ctrlKey || e.altKey) return false;
+
+    const openers: Record<string, string> = {
+      "(": ")",
+      "[": "]",
+      "{": "}",
+      '"': '"',
+      "'": "'",
+    };
+    const closers = new Set([")", "]", "}", '"', "'"]);
+
+    if (e.key in openers) {
+      e.preventDefault();
+      this.insertPair(e.key, openers[e.key]);
+      return true;
+    }
+
+    if (closers.has(e.key)) {
+      // Skip past an existing matching closer instead of inserting a duplicate.
+      const { selectionStart: s, selectionEnd: end, value } = this.inputEl;
+      if (s !== null && end !== null && s === end && value[s] === e.key) {
+        e.preventDefault();
+        this.inputEl.setSelectionRange(s + 1, s + 1);
+        return true;
+      }
+      return false;
+    }
+
+    if (e.key === "Backspace") {
+      const { selectionStart: s, selectionEnd: end, value } = this.inputEl;
+      if (s !== null && end !== null && s === end && s > 0) {
+        const prev = value[s - 1];
+        const next = value[s];
+        if (prev in openers && openers[prev] === next) {
+          e.preventDefault();
+          this.inputEl.value = value.slice(0, s - 1) + value.slice(s + 1);
+          this.inputEl.setSelectionRange(s - 1, s - 1);
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private insertPair(open: string, close: string): void {
+    const el = this.inputEl;
+    const { selectionStart: s, selectionEnd: end, value } = el;
+    const start = s ?? value.length;
+    const stop = end ?? value.length;
+    const wrapped = value.slice(start, stop);
+    el.value = value.slice(0, start) + open + wrapped + close + value.slice(stop);
+    // If text was selected, keep it selected with the wrappers around it; if
+    // it was an empty caret, sit between the pair.
+    const newStart = start + 1;
+    const newEnd = newStart + wrapped.length;
+    el.setSelectionRange(newStart, newEnd);
   }
 
   private pushHistory(command: string): void {

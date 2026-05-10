@@ -151,7 +151,7 @@ const STYLE = `
 
 .pn-actionlist-table-head {
   display: grid;
-  grid-template-columns: 180px 1fr 160px;
+  grid-template-columns: 140px 1.4fr 1.2fr 140px;
   gap: 12px;
   padding: 6px 14px;
   background: var(--pn-surface);
@@ -168,7 +168,7 @@ const STYLE = `
 }
 .pn-actionlist-section {
   display: grid;
-  grid-template-columns: 180px 1fr 160px;
+  grid-template-columns: 140px 1.4fr 1.2fr 140px;
   gap: 12px;
   padding: 6px 14px;
   background: var(--pn-surface);
@@ -205,7 +205,7 @@ const STYLE = `
 }
 .pn-actionlist-row {
   display: grid;
-  grid-template-columns: 180px 1fr 160px;
+  grid-template-columns: 140px 1.4fr 1.2fr 140px;
   gap: 12px;
   padding: 5px 14px;
   cursor: pointer;
@@ -228,6 +228,15 @@ const STYLE = `
 }
 .pn-actionlist-cell--shortcut { color: var(--pn-text-dim); }
 .pn-actionlist-cell--section { color: var(--pn-muted); }
+/* Terminal-form cell — monospace; the click-to-copy pulse uses --copied. */
+.pn-actionlist-cell--terminal {
+  color: var(--pn-text-dim);
+  font-family: var(--pn-font-mono);
+  cursor: copy;
+  transition: color 0.12s ease-out;
+}
+.pn-actionlist-cell--terminal:hover { color: var(--pn-accent); }
+.pn-actionlist-cell--terminal.is-copied { color: var(--pn-accent); }
 
 .pn-actionlist-empty {
   padding: 24px 14px;
@@ -346,6 +355,93 @@ const STYLE = `
   gap: 8px;
   justify-content: center;
 }
+
+/* "New action…" form — sits over the action list overlay. Higher z-index
+   than the list itself so the user can confirm/cancel without losing the
+   list state underneath. */
+.pn-macro-form-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 340;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  font-family: var(--pn-font-mono);
+}
+.pn-macro-form-card {
+  width: min(560px, 92vw);
+  background: var(--pn-surface-raised);
+  border: 1px solid var(--pn-border);
+  border-radius: var(--pn-radius-md);
+  box-shadow: var(--pn-shadow-panel);
+  padding: 18px;
+  color: var(--pn-text);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pn-macro-form-heading {
+  margin: 0;
+  font-size: var(--pn-type-chip);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--pn-accent);
+}
+.pn-macro-form-explain {
+  margin: 0 0 4px 0;
+  font-size: var(--pn-type-micro);
+  color: var(--pn-muted);
+  line-height: 1.5;
+}
+.pn-macro-form-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--pn-type-micro);
+  color: var(--pn-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+/* Shortcut field row: input + Clear button side-by-side. */
+.pn-macro-form-shortcut-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.pn-macro-form-shortcut {
+  flex: 1;
+  cursor: pointer;
+  caret-color: transparent;
+}
+.pn-macro-form-shortcut.is-capturing {
+  border-color: var(--pn-accent);
+  background: color-mix(in srgb, var(--pn-accent) 8%, var(--pn-surface));
+}
+.pn-macro-form-textarea {
+  background: var(--pn-surface);
+  border: 1px solid var(--pn-border);
+  border-radius: var(--pn-radius-sm);
+  padding: 6px 8px;
+  color: var(--pn-text);
+  font-family: var(--pn-font-mono);
+  font-size: 13px;
+  caret-color: var(--pn-accent);
+  outline: none;
+  resize: vertical;
+  min-height: 90px;
+}
+.pn-macro-form-textarea:focus { border-color: var(--pn-accent); }
+.pn-macro-form-error {
+  font-size: var(--pn-type-micro);
+  color: var(--pn-secondary, #ff7a3c);
+  min-height: 16px;
+}
+.pn-macro-form-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
 `;
 
 function injectStyles(): void {
@@ -397,12 +493,20 @@ export class ActionListDialog {
   /** True only on the first ever render so we can seed default collapse for
    *  any oversized section the user hasn't already touched. */
   private appliedDefaultCollapse = false;
+  /** Active "New action…" form overlay, or null when closed. */
+  private macroFormOverlay: HTMLDivElement | null = null;
 
   constructor(
     private readonly registry: ActionRegistry,
     private readonly keymap: ActionKeymap,
     private readonly contextProvider: () => ActionContext,
     private readonly runner: (id: string) => void | Promise<void>,
+    /** Programmatic macro creator; when null, the "New action…" footer
+     *  button stays disabled. Wired in main.ts to the patch terminal. */
+    private readonly macroCreator:
+      | ((spec: { name: string; body: string; chord?: string | null }) =>
+          { ok: boolean; message: string })
+      | null = null,
   ) {
     injectStyles();
     this.keymap.onChange = () => this.refreshShortcutsPanel();
@@ -584,7 +688,7 @@ export class ActionListDialog {
     const head = document.createElement("div");
     head.className = "pn-actionlist-table-head";
 
-    for (const label of ["Shortcut", "Description", "Section"]) {
+    for (const label of ["Shortcut", "Description", "Terminal", "Section"]) {
       const cell = document.createElement("span");
       cell.textContent = label;
       head.appendChild(cell);
@@ -602,8 +706,13 @@ export class ActionListDialog {
     const newAction = document.createElement("button");
     newAction.className = "pn-actionlist-btn";
     newAction.textContent = "New action…";
-    newAction.disabled = true;
-    newAction.title = "Custom macros — coming in next milestone";
+    if (this.macroCreator) {
+      newAction.title = "Define a custom action by typing terminal commands";
+      newAction.addEventListener("click", () => this.openMacroForm());
+    } else {
+      newAction.disabled = true;
+      newAction.title = "Custom macros need a wired patch terminal";
+    }
     left.appendChild(newAction);
 
     foot.appendChild(left);
@@ -633,6 +742,200 @@ export class ActionListDialog {
 
     foot.appendChild(right);
     return foot;
+  }
+
+  // ── New-action (macro) form ────────────────────────────────────────
+
+  private openMacroForm(): void {
+    if (this.macroFormOverlay || !this.macroCreator) return;
+
+    const overlay = document.createElement("div");
+    overlay.className = "pn-macro-form-overlay";
+
+    const card = document.createElement("div");
+    card.className = "pn-macro-form-card";
+
+    const heading = document.createElement("h3");
+    heading.className = "pn-macro-form-heading";
+    heading.textContent = "New action";
+    card.appendChild(heading);
+
+    const explain = document.createElement("p");
+    explain.className = "pn-macro-form-explain";
+    explain.textContent =
+      "Type a name, an optional keyboard shortcut, and one or more terminal commands. " +
+      "Steps can be separated by ‘;’ or by line break. Cmd+Enter saves; Esc cancels.";
+    card.appendChild(explain);
+
+    const nameField = this.buildLabeledInput(card, "Name", "", "input");
+
+    // Keyboard-shortcut field captures keystrokes instead of typed characters:
+    // focus it, press a chord (e.g. Cmd+K), and the canonical form fills the
+    // input. We keep the displayed form (prettyChord) and the raw form
+    // (engine input) in sync via the closure variable below.
+    const chordWrap = document.createElement("label");
+    chordWrap.className = "pn-macro-form-label";
+    chordWrap.textContent = "Keyboard shortcut (optional)";
+    const chordRow = document.createElement("div");
+    chordRow.className = "pn-macro-form-shortcut-row";
+    const chordField = document.createElement("input");
+    chordField.className = "pn-actionlist-input pn-macro-form-shortcut";
+    chordField.readOnly = true;
+    chordField.placeholder = "Click here, then press a key combination";
+    const clearChordBtn = document.createElement("button");
+    clearChordBtn.type = "button";
+    clearChordBtn.className = "pn-actionlist-btn";
+    clearChordBtn.textContent = "Clear";
+    chordRow.appendChild(chordField);
+    chordRow.appendChild(clearChordBtn);
+    chordWrap.appendChild(chordRow);
+    card.appendChild(chordWrap);
+    let capturedShortcut: string | null = null;
+    const setShortcut = (raw: string | null) => {
+      capturedShortcut = raw;
+      chordField.value = raw ? prettyChord(raw) : "";
+    };
+    clearChordBtn.addEventListener("click", () => {
+      setShortcut(null);
+      chordField.focus();
+    });
+    chordField.addEventListener("focus", () => chordField.classList.add("is-capturing"));
+    chordField.addEventListener("blur", () => chordField.classList.remove("is-capturing"));
+    chordField.addEventListener("keydown", (e: Event) => {
+      const event = e as KeyboardEvent;
+      // Plain Tab / Shift+Tab keep their normal "move between fields" role
+      // so the user can navigate out of the capture field.
+      if (event.key === "Tab" && !event.metaKey && !event.ctrlKey && !event.altKey) return;
+      // Cmd/Ctrl+Enter is reserved for the form's "save" shortcut so it must
+      // not be captured as a keyboard binding.
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) return;
+      // Plain Escape clears the field when one is captured; otherwise it
+      // falls through so the form's outer Esc-handler closes the dialog.
+      if (event.key === "Escape" && !event.metaKey && !event.ctrlKey && !event.altKey
+          && !event.shiftKey && capturedShortcut) {
+        event.preventDefault();
+        event.stopPropagation();
+        setShortcut(null);
+        return;
+      }
+      const captured = chordFromEventForUi(event);
+      if (!captured) return; // user is still mid-chord (only modifier down)
+      event.preventDefault();
+      event.stopPropagation();
+      setShortcut(captured);
+    });
+
+    const bodyField = this.buildLabeledInput(card, "Terminal commands", "", "textarea") as HTMLTextAreaElement;
+
+    const errorBox = document.createElement("div");
+    errorBox.className = "pn-macro-form-error";
+    card.appendChild(errorBox);
+
+    const buttons = document.createElement("div");
+    buttons.className = "pn-macro-form-buttons";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "pn-actionlist-btn";
+    cancelBtn.textContent = "Cancel";
+    buttons.appendChild(cancelBtn);
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "pn-actionlist-btn pn-actionlist-btn--primary";
+    saveBtn.textContent = "Save";
+    buttons.appendChild(saveBtn);
+
+    card.appendChild(buttons);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    this.macroFormOverlay = overlay;
+    nameField.focus();
+
+    const close = () => this.closeMacroForm();
+    cancelBtn.addEventListener("click", close);
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) close();
+    });
+
+    const submit = () => {
+      const creator = this.macroCreator;
+      if (!creator) return;
+      errorBox.textContent = "";
+      const name = nameField.value.trim();
+      const chord = capturedShortcut;
+      // Normalize multi-line input: split on newlines OR `;`, drop empties,
+      // re-join with `;` so the engine parses the same way the user wrote
+      // the body whether they used returns or semicolons.
+      const body = bodyField.value
+        .split(/[\n;]/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .join(" ; ");
+      if (!name) { errorBox.textContent = "Name is required"; return; }
+      if (!body) { errorBox.textContent = "Body is required"; return; }
+      let result: { ok: boolean; message: string };
+      try {
+        result = creator({ name, body, chord });
+      } catch (err) {
+        errorBox.textContent = err instanceof Error ? err.message : String(err);
+        return;
+      }
+      if (!result.ok) {
+        errorBox.textContent = result.message;
+        return;
+      }
+      close();
+      this.refresh();
+      // Surface the new macro at the top of the visible list by filtering on
+      // its name, then highlight the first row so a follow-up Run/keybind
+      // works without extra clicks.
+      if (this.filterInput) {
+        this.filterInput.value = name;
+        this.refresh();
+        this.activeIndex = 0;
+        this.applyActiveHighlight();
+      }
+    };
+    saveBtn.addEventListener("click", submit);
+    const onKey = (rawEvent: Event) => {
+      const e = rawEvent as KeyboardEvent;
+      if (e.key === "Escape") { e.preventDefault(); close(); return; }
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        submit();
+      }
+    };
+    nameField.addEventListener("keydown", onKey);
+    chordField.addEventListener("keydown", onKey);
+    bodyField.addEventListener("keydown", onKey);
+  }
+
+  private closeMacroForm(): void {
+    if (!this.macroFormOverlay) return;
+    this.macroFormOverlay.remove();
+    this.macroFormOverlay = null;
+  }
+
+  private buildLabeledInput(
+    parent: HTMLElement,
+    label: string,
+    placeholder: string,
+    kind: "input" | "textarea",
+  ): HTMLInputElement | HTMLTextAreaElement {
+    const wrap = document.createElement("label");
+    wrap.className = "pn-macro-form-label";
+    wrap.textContent = label;
+    const field = document.createElement(kind === "input" ? "input" : "textarea") as
+      HTMLInputElement | HTMLTextAreaElement;
+    field.className = kind === "input"
+      ? "pn-actionlist-input"
+      : "pn-actionlist-input pn-macro-form-textarea";
+    field.placeholder = placeholder;
+    if (kind === "textarea") (field as HTMLTextAreaElement).rows = 5;
+    wrap.appendChild(field);
+    parent.appendChild(wrap);
+    return field;
   }
 
   // ── Refresh / render ───────────────────────────────────────────────
@@ -761,6 +1064,22 @@ export class ActionListDialog {
     descCell.className = "pn-actionlist-cell";
     descCell.textContent = action.title;
     row.appendChild(descCell);
+
+    const terminalCell = document.createElement("span");
+    terminalCell.className = "pn-actionlist-cell pn-actionlist-cell--terminal";
+    const terminalText = `/run ${action.title}`;
+    terminalCell.textContent = terminalText;
+    terminalCell.title = "Click to copy";
+    terminalCell.addEventListener("click", (e) => {
+      // Don't let the copy click bubble into the row click (which selects /
+      // the dblclick path).
+      e.stopPropagation();
+      void navigator.clipboard?.writeText(terminalText).then(() => {
+        terminalCell.classList.add("is-copied");
+        setTimeout(() => terminalCell.classList.remove("is-copied"), 600);
+      });
+    });
+    row.appendChild(terminalCell);
 
     const sectionCell = document.createElement("span");
     sectionCell.className = "pn-actionlist-cell pn-actionlist-cell--section";

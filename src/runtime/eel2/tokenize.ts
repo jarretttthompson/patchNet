@@ -52,7 +52,7 @@ function isHexDigit(c: string | undefined): boolean {
     ((c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F"));
 }
 export function isIdentStart(c: string): boolean {
-  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_";
+  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_" || c === "#";
 }
 export function isIdentContinue(c: string): boolean {
   return isIdentStart(c) || (c >= "0" && c <= "9");
@@ -124,13 +124,15 @@ export function tokenize(source: string, opts: TokenizeOptions = {}): Token[] | 
       continue;
     }
 
-    // Two-char operators first (== != <= >= && ||).
+    // Two-char operators first (== != <= >= && || << >>).
     if ((c === "=" && c2 === "=") ||
         (c === "!" && c2 === "=") ||
         (c === "<" && c2 === "=") ||
         (c === ">" && c2 === "=") ||
         (c === "&" && c2 === "&") ||
-        (c === "|" && c2 === "|")) {
+        (c === "|" && c2 === "|") ||
+        (c === "<" && c2 === "<") ||
+        (c === ">" && c2 === ">")) {
       tokens.push({ kind: "op", value: c + c2, offset: i });
       i += 2;
       continue;
@@ -181,6 +183,13 @@ export function tokenize(source: string, opts: TokenizeOptions = {}): Token[] | 
     if (c === "$") {
       const start = i;
       i++;
+      if ((source[i] === "x" || source[i] === "X") && isHexDigit(source[i + 1])) {
+        i++;
+        const hexStart = i;
+        while (i < n && isHexDigit(source[i])) i++;
+        tokens.push({ kind: "num", value: String(parseInt(source.slice(hexStart, i), 16)), offset: start });
+        continue;
+      }
       if (source[i] === "'") {
         i++;
         let val = 0;
@@ -239,5 +248,5 @@ export const JS_RESERVED = new Set([
 /** Convert a (possibly dotted) EEL2 identifier into a JS-safe suffix. `r.x`
  *  → `r_x`. Callers typically prefix with `state.u_`. */
 export function sanitizeIdent(name: string): string {
-  return name.replace(/\./g, "_");
+  return name.replace(/[^A-Za-z0-9_]/g, "_");
 }

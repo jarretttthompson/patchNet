@@ -337,6 +337,25 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultHeight: 40,
   },
 
+  route: {
+    description: "Route messages by matching the first atom against creation args. N args produce N+1 outlets; the rightmost is the reject outlet for unmatched input. On a literal match (symbol or number) the matched atom is stripped — single-atom matches emit `bang`, multi-atom matches emit the remainder. Type-keyword args (`int`, `float`, `symbol`, `list`, `bang`) match by message type and pass the value through unchanged. `set <atoms>` replaces the matchers silently. Default args: 1 2.",
+    category: "control",
+    args: [{ name: "matchers", type: "list", description: "Selectors to match. Type keywords (int/float/symbol/list/bang) match by type; everything else is a literal symbol/numeric match." }],
+    messages: [
+      { inlet: 0, selector: "any",  description: "match first atom against args; emit remainder from matching outlet (or full input from reject outlet)" },
+      { inlet: 0, selector: "bang", description: "match against `bang` arg if present; otherwise emit bang from reject outlet" },
+      { inlet: 0, selector: "set",  description: "replace stored matchers without output: set <atoms>" },
+    ],
+    inlets:  [{ index: 0, type: "any", label: "message in (hot)", temperature: "hot" }],
+    outlets: [
+      { index: 0, type: "message", label: "match: 1" },
+      { index: 1, type: "message", label: "match: 2" },
+      { index: 2, type: "message", label: "rejected (no match)" },
+    ],
+    defaultWidth:  100,
+    defaultHeight: 40,
+  },
+
   scale: {
     description: "Maps a number from one range to another (linear interpolation). If both output bounds are written without a decimal point (e.g. 0 and 127), the output is rounded to an integer; if either has a dot (e.g. 0. or 1.0), the output is float.",
     category: "control",
@@ -1498,6 +1517,40 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     defaultWidth:  120,
     defaultHeight: 40,
   },
+
+  phoneTilt: {
+    description: "Streams orientation from a phone's accelerometer/gyro into the patch. Renders a QR code; scan it with a phone on the same Wi-Fi, tap Start, and the phone's tilt drives the outlets in real time. Outputs pitch (β, ±180°), roll (γ, ±90°), yaw (α, 0–360°), and a 0/1 connected flag. Dev-only — relies on the Vite dev server's sensor relay.",
+    category: "control",
+    args: [
+      { name: "room", type: "symbol", default: "", hidden: true,
+        description: "Pairing key shared between this object and the phone page. Auto-generated on first creation." },
+      { name: "smooth", type: "float", default: "0.2", min: 0, max: 0.99, step: 0.01,
+        description: "Exponential smoothing factor (0 = raw incoming samples, 0.99 = nearly frozen)." },
+      { name: "rate", type: "int", default: "60", min: 1, max: 240, step: 1,
+        description: "Maximum output rate in Hz. Incoming samples above this are coalesced." },
+      { name: "zeroPitch", type: "float", default: "0", hidden: true,
+        description: "Calibration offset subtracted from pitch (set by the calibrate message)." },
+      { name: "zeroRoll", type: "float", default: "0", hidden: true,
+        description: "Calibration offset subtracted from roll (set by the calibrate message)." },
+      { name: "zeroYaw", type: "float", default: "0", hidden: true,
+        description: "Calibration offset subtracted from yaw (set by the calibrate message)." },
+    ],
+    messages: [
+      { inlet: 0, selector: "bang",       description: "emit the last known pitch/roll/yaw on outlets 0/1/2" },
+      { inlet: 0, selector: "calibrate",  description: "snapshot current orientation as the new zero point" },
+      { inlet: 0, selector: "reset",      description: "clear calibration (zero* args back to 0)" },
+      { inlet: 0, selector: "reconnect",  description: "drop and reopen the WebSocket to the dev-server relay" },
+    ],
+    inlets:  [{ index: 0, type: "any", label: "bang | calibrate | reset | reconnect", temperature: "hot" }],
+    outlets: [
+      { index: 0, type: "float", label: "pitch (β, degrees, ±180)" },
+      { index: 1, type: "float", label: "roll (γ, degrees, ±90)" },
+      { index: 2, type: "float", label: "yaw (α, degrees, 0–360)" },
+      { index: 3, type: "float", label: "1 = phone connected, 0 = no phone" },
+    ],
+    defaultWidth:  220,
+    defaultHeight: 240,
+  },
 };
 
 /**
@@ -1686,6 +1739,28 @@ export function deriveUnpackPorts(args: string[]): { inlets: PortDef[]; outlets:
       case "l": return { index: i, type: "message" as PortType, label: `list${suffix}` };
       default:  return { index: i, type: "any"     as PortType, label: `${raw}${suffix}` };
     }
+  });
+  return { inlets, outlets };
+}
+
+/**
+ * route: 1 hot inlet, one outlet per matcher arg + a final "reject" outlet for
+ * unmatched input. Default matchers `1 2` give three outlets total.
+ */
+export function deriveRoutePorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const matchers = args.length > 0 ? args : ["1", "2"];
+  const inlets: PortDef[] = [
+    { index: 0, type: "any" as PortType, label: "message in (hot)", temperature: "hot" as const },
+  ];
+  const outlets: PortDef[] = matchers.map((raw, i) => ({
+    index: i,
+    type: "message" as PortType,
+    label: `match: ${raw}`,
+  }));
+  outlets.push({
+    index: matchers.length,
+    type: "message" as PortType,
+    label: "rejected (no match)",
   });
   return { inlets, outlets };
 }

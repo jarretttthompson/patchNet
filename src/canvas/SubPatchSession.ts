@@ -6,7 +6,7 @@ import { DragController } from "./DragController";
 import { CableDrawController } from "./CableDrawController";
 import { ResizeController } from "./ResizeController";
 import { UndoManager } from "../graph/UndoManager";
-import { renderObject } from "./ObjectRenderer";
+import { renderObject, autoFitInlineArgsWidth } from "./ObjectRenderer";
 import { getObjectDef } from "../graph/objectDefs";
 import { startDragSession } from "./dragSession";
 import { VisualizerGraph } from "../runtime/VisualizerGraph";
@@ -114,6 +114,7 @@ export class SubPatchSession {
     for (const node of this.graph.getNodes()) {
       this.panGroup.appendChild(renderObject(node));
     }
+    this.panGroup.querySelectorAll<HTMLElement>(":scope > .patch-object").forEach(autoFitInlineArgsWidth);
     this.cables.render();
     this.canvasController.updatePanGroupSize();
     this.renderPresentation();

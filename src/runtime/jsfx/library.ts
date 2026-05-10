@@ -1,68 +1,27 @@
 /**
- * js~ effect library — per-patch (stored in args) + global (localStorage).
+ * js~ effect library — single source backed by localStorage.
  *
- * Entries are plain `{name, code}`. The `scope` field is a UI-only tag
- * the Panel attaches when merging the two buckets; it isn't serialised.
+ * Entries are plain `{name, code}`. Names may use `/` to express a folder
+ * hierarchy (e.g. `delay/feedback`) — the dialog groups by the first
+ * segment so users can scan a few hundred imported effects without
+ * scrolling through a flat list.
+ *
+ * Earlier versions had a per-patch library (in args[1]) plus a global
+ * library; the patch-library was rolled into the single library here.
  */
-
-import type { PatchGraph } from "../../graph/PatchGraph";
-import type { PatchNode } from "../../graph/PatchNode";
 
 export interface LibraryEntry {
   name: string;
   code: string;
 }
 
-export interface ScopedLibraryEntry extends LibraryEntry {
-  scope: "patch" | "global";
-}
+const LIBRARY_STORAGE_KEY = "patchnet-js-global-library";
 
-const GLOBAL_LIB_KEY = "patchnet-js-global-library";
-
-// ── Per-patch library (args[1] on each js~ node) ────────────────────────
-
-export function getPatchLibrary(node: PatchNode): LibraryEntry[] {
-  const raw = node.args[1] ?? "";
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isValidEntry);
-  } catch {
-    // Corrupt JSON — treat as empty rather than throwing. A save will
-    // overwrite the bad data with fresh JSON.
-    return [];
-  }
-}
-
-/**
- * Update args[1] on a specific js~ node. Does NOT emit graph changes;
- * callers decide whether to go through `broadcastPatchLibrary` (which
- * emits once after updating every js~) or fire `change` themselves.
- */
-function writePatchLibraryOnNode(node: PatchNode, entries: LibraryEntry[]): void {
-  node.args[1] = entries.length > 0 ? JSON.stringify(entries) : "";
-}
-
-/**
- * Mirror `entries` to every js~ node in the graph so all objects share the
- * same patch library. Emits a single `change` at the end so autosave fires
- * once rather than per-node.
- */
-export function broadcastPatchLibrary(graph: PatchGraph, entries: LibraryEntry[]): void {
-  const normalised = entries.length > 0 ? JSON.stringify(entries) : "";
-  for (const node of graph.getNodes()) {
-    if (node.type !== "js~") continue;
-    node.args[1] = normalised;
-  }
-  graph.emit("change");
-}
-
-// ── Global library (localStorage) ───────────────────────────────────────
+// ── Library (localStorage) ─────────────────────────────────────────────
 
 export function getGlobalLibrary(): LibraryEntry[] {
   try {
-    const raw = localStorage.getItem(GLOBAL_LIB_KEY);
+    const raw = localStorage.getItem(LIBRARY_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -74,14 +33,14 @@ export function getGlobalLibrary(): LibraryEntry[] {
 
 export function setGlobalLibrary(entries: LibraryEntry[]): void {
   try {
-    localStorage.setItem(GLOBAL_LIB_KEY, JSON.stringify(entries));
+    localStorage.setItem(LIBRARY_STORAGE_KEY, JSON.stringify(entries));
   } catch {
     // localStorage may be full or disabled (private browsing).
     // Silent fail — user sees via next read that it didn't stick.
   }
 }
 
-// ── Operations shared across both scopes ────────────────────────────────
+// ── List operations ────────────────────────────────────────────────────
 
 /**
  * Append or replace an entry in a library. If an entry with the same name
@@ -117,7 +76,7 @@ export function uniqueName(base: string, existing: readonly LibraryEntry[]): str
   return `${base} (${n})`;
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────
 
 function isValidEntry(e: unknown): e is LibraryEntry {
   return !!e && typeof (e as { name: unknown }).name === "string"
@@ -137,10 +96,14 @@ export function deriveNameFromCode(code: string): string {
   return "";
 }
 
-export function writePatchLibrary(graph: PatchGraph, nodeIdOrigin: PatchNode, entries: LibraryEntry[]): void {
-  // Convenience wrapper: write to the originating node first (so callers
-  // can read-after-write on the same node without a round-trip), then
-  // broadcast to the rest. Kept for symmetry with setGlobalLibrary.
-  writePatchLibraryOnNode(nodeIdOrigin, entries);
-  broadcastPatchLibrary(graph, entries);
+/**
+ * Split an entry name into `(category, leaf)`. Slash-separated names map
+ * folder-style: `delay/feedback` → category "delay", leaf "feedback".
+ * Names without a slash sit under category "" (rendered as "Uncategorized"
+ * by the dialog).
+ */
+export function splitCategory(name: string): { category: string; leaf: string } {
+  const idx = name.indexOf("/");
+  if (idx < 0) return { category: "", leaf: name };
+  return { category: name.slice(0, idx), leaf: name.slice(idx + 1) };
 }

@@ -3,7 +3,13 @@ import type { CableDrawController } from "./CableDrawController";
 import type { CableRenderer } from "./CableRenderer";
 import type { VisualizerGraph } from "../runtime/VisualizerGraph";
 import { ObjectEntryBox } from "./ObjectEntryBox";
-import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvasSpace";
+import {
+  CANVAS_LEFT_GUTTER_PX,
+  CANVAS_TOP_GUTTER_PX,
+  CANVAS_WIDTH_PX,
+  CANVAS_HEIGHT_PX,
+  GRID_CELL_PX,
+} from "./canvasSpace";
 import { getZoom, setZoomValue, MIN_ZOOM, MAX_ZOOM } from "./zoomState";
 import { getPatchMode, subscribePatchMode } from "./patchModeState";
 import { OBJECT_DEFS, audioPortDefaultWidth, deriveAdcPorts, deriveDacPorts, getObjectDef } from "../graph/objectDefs";
@@ -14,6 +20,7 @@ import {
   setUserDefaultSize,
   clearUserDefaultSize,
 } from "../graph/userObjectDefaults";
+import { REFERENCE_PATCHES } from "./referencePatches";
 
 // Derived from OBJECT_DEFS — do not maintain a separate list here.
 const OBJECT_TYPES = Object.keys(OBJECT_DEFS).sort();
@@ -69,6 +76,12 @@ function injectMenuStyles(): void {
   document.head.appendChild(style);
 }
 
+/** Format a world-pixel coord as grid cells, trimming trailing zeros. */
+function fmtCells(px: number): string {
+  const cells = px / GRID_CELL_PX;
+  return cells.toFixed(2).replace(/\.?0+$/, "") || "0";
+}
+
 /**
  * Handles canvas-level interaction: object selection, deletion, rubber-band
  * multi-select, and right-click context menu for placing new objects.
@@ -86,6 +99,7 @@ export class CanvasController {
   private cableDraw: CableDrawController | null = null;
   private panGroup: HTMLElement | null = null;
   private scrollSpacer: HTMLElement | null = null;
+  private viewportObserver: ResizeObserver | null = null;
   private vizGraph: VisualizerGraph | null = null;
   private audioGraph: AudioGraph | null = null;
   private entryBox: ObjectEntryBox | null = null;
@@ -107,6 +121,10 @@ export class CanvasController {
   // Cursor tracking for Max-style at-cursor object spawning (n/b/t/s/a/m keys).
   private lastMouseClientX = 0;
   private lastMouseClientY = 0;
+
+  /** Called from the right-click menu when the user picks a bundled reference
+   *  patch. main.ts opens (or focuses) a scratch tab with the patch loaded. */
+  onOpenReferencePatch?: (objectType: string) => void;
 
   private readonly onCanvasClick: (e: MouseEvent) => void;
   private readonly onCanvasContextMenu: (e: MouseEvent) => void;
@@ -171,6 +189,14 @@ export class CanvasController {
     this.scrollSpacer.style.cssText =
       "position:absolute;left:0;top:0;width:1px;height:1px;pointer-events:none;opacity:0;";
     this.canvasEl.appendChild(this.scrollSpacer);
+
+    // Spacer extent depends on viewport size (one-viewport pad past canvas
+    // edge so the user can scroll the canvas's far edge to the leading edge
+    // of the viewport). Re-sync on viewport resize.
+    if (!this.viewportObserver) {
+      this.viewportObserver = new ResizeObserver(() => this.updatePanGroupSize());
+      this.viewportObserver.observe(this.canvasEl);
+    }
   }
 
   getPan(): { x: number; y: number } {
@@ -182,30 +208,28 @@ export class CanvasController {
   }
 
   /**
-   * Resize the pan-group to fit all nodes plus a generous margin.
-   * Call this at the end of every render pass so the scrollable boundary
-   * automatically expands as the patch grows.
+   * Pan-group is a fixed-size world (CANVAS_WIDTH_PX × CANVAS_HEIGHT_PX).
+   * Method retained as the single sync point for the scrollSpacer's
+   * zoom-dependent extent, so callers don't need to know the difference.
+   *
+   * The scrollSpacer extends one viewport's worth past the canvas's right
+   * and bottom edges, so the user can scroll until any world cell sits at
+   * the viewport's leading edge — including the rightmost / bottommost
+   * column. Without this padding, max scroll is capped at
+   * `CANVAS_*_PX - clientW/H`, leaving the leading-edge ruler short of the
+   * canvas's far edge.
    */
   updatePanGroupSize(): void {
     if (!this.panGroup) return;
     const z = getZoom();
-    const MARGIN  = 600; // px of empty space beyond the furthest object (intrinsic)
-    const viewW   = this.canvasEl.clientWidth  / z;
-    const viewH   = this.canvasEl.clientHeight / z;
-    let maxRight  = viewW;
-    let maxBottom = viewH;
-    for (const node of this.graph.getNodes()) {
-      const r = node.x + (node.width  ?? 100) + MARGIN;
-      const b = node.y + (node.height ?? 30)  + MARGIN;
-      if (r > maxRight)  maxRight  = r;
-      if (b > maxBottom) maxBottom = b;
-    }
-    this.panGroup.style.width  = `${maxRight}px`;
-    this.panGroup.style.height = `${maxBottom}px`;
+    this.panGroup.style.width  = `${CANVAS_WIDTH_PX}px`;
+    this.panGroup.style.height = `${CANVAS_HEIGHT_PX}px`;
 
     if (this.scrollSpacer) {
-      this.scrollSpacer.style.left = `${Math.ceil(CANVAS_LEFT_GUTTER_PX + maxRight  * z)}px`;
-      this.scrollSpacer.style.top  = `${Math.ceil(CANVAS_TOP_GUTTER_PX  + maxBottom * z)}px`;
+      const padX = this.canvasEl.clientWidth;
+      const padY = this.canvasEl.clientHeight;
+      this.scrollSpacer.style.left = `${Math.ceil(CANVAS_LEFT_GUTTER_PX + CANVAS_WIDTH_PX  * z + padX)}px`;
+      this.scrollSpacer.style.top  = `${Math.ceil(CANVAS_TOP_GUTTER_PX  + CANVAS_HEIGHT_PX * z + padY)}px`;
     }
   }
 
@@ -344,6 +368,8 @@ export class CanvasController {
     document.removeEventListener("mousemove", this.onDocMouseMove);
     this.scrollSpacer?.remove();
     this.scrollSpacer = null;
+    this.viewportObserver?.disconnect();
+    this.viewportObserver = null;
     document.removeEventListener("keydown", this.onKeyDown);
     document.removeEventListener("keyup", this.onKeyUp);
     document.removeEventListener("click", this.onDocClick, true);
@@ -857,6 +883,7 @@ export class CanvasController {
     const nameValue = document.createElement("strong");
     nameValue.textContent = node.name ?? "(unnamed)";
     nameNote.appendChild(nameValue);
+    nameNote.append(`  (${fmtCells(node.x)}, ${fmtCells(node.y)})`);
     menu.appendChild(nameNote);
 
     const addItem = (label: string, onClick: () => void): void => {
@@ -870,6 +897,13 @@ export class CanvasController {
       });
       menu.appendChild(btn);
     };
+
+    const reference = REFERENCE_PATCHES[node.type];
+    if (reference) {
+      addItem(`Open ${reference.label}`, () => {
+        this.onOpenReferencePatch?.(node.type);
+      });
+    }
 
     if ((node.type === "adc~" || node.type === "dac~") && this.audioGraph) {
       const detected = node.type === "adc~"

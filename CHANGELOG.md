@@ -23,6 +23,97 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-09] COMPLETED | phoneTilt: wrap yaw outlet to 0–360°
+**Agent:** Claude Code
+
+**Done:**
+- `phoneTilt`'s yaw outlet was emitting an unwrapped, continuously-accumulating angle (e.g. 1400°+ after several spins), contradicting the object's documented 0–360° range. The internal `unwrapDeg()` is needed for seam-crossing smoothing, so the fix wraps only at the outlet boundary.
+- Added `wrapDeg360()` helper. Applied at three emit sites (`flushNow`, `bang`) and at the `getCurrent()` readout consumed by `PhoneTiltPanel`.
+- `calibrate()` now stores `wrapDeg360(rawY)` for `ARG_ZERO_Y` so calibrating after several spins can't bake the accumulated turns into the offset.
+
+**Changed files:**
+- src/runtime/phoneSensor/PhoneSensorRegistry.ts — `wrapDeg360` helper; wrap on emit + readout + calibration
+
+**Notes / decisions:**
+- `this.yaw` stays unwrapped internally — that's load-bearing for `lerp(targetYaw, this.yaw, k)` not sweeping the long way across 0/360.
+
+**Next needed:**
+- Decide on follow-up phone objects (multitouch `phonePad`, `phoneMic~`, `phoneMotion` for gyro/accel rate, geolocation, vibration output).
+
+## [2026-05-07] COMPLETED | js~ library: single store + categorized + readable names
+**Agent:** Claude Code
+
+**Done:**
+- Collapsed the patch-scoped + global-scoped libraries into a single localStorage-backed library (key `patchnet-js-global-library`). Removed `getPatchLibrary` / `writePatchLibrary` / `ScopedLibraryEntry` and the patch/global scope radio in the save prompt.
+- Added `splitCategory(name)` helper and grouped both the inline dropdown and the manage dialog by the first folder segment in the entry name (e.g. `delay/feedback` → "delay" section). Reaper-imported entries land pre-categorized; manage dialog uses collapsible `▸/▾` headers with per-category counts.
+- Dropped `white-space: nowrap` / `text-overflow: ellipsis` from `.pn-jslib-name` and `.pn-jseffect-dd-name` and widened the inline dropdown to 320–480px so full Reaper effect names are always readable (wrap if needed).
+- Reaper import now prefers `folder/filename` as the entry name (falls back to `desc:` only when the file sits at the import root) so the category split mirrors the source folder layout.
+
+**Changed files:**
+- src/runtime/jsfx/library.ts — removed patch-library API; added `splitCategory`
+- src/canvas/JsEffectPanel.ts — single-library dropdown, category sections, scope radio gone, `loadEntry`/`deleteEntry`/`saveEntry` simplified
+- src/canvas/JsEffectLibraryDialog.ts — single-column body, collapsible category sections, removed move-to-other-scope flow
+- src/shell.css — `.pn-jslib-section*` styles, dropdown min/max-width, name wrap
+
+**Notes / decisions:**
+- Library kept in localStorage (per user, option "a"), not on disk — survives across sessions, no FS Access API.
+- Section state (which categories are expanded) lives on the dialog instance, not in localStorage. Re-opening the dialog starts everything collapsed; that's intentional so a fresh open isn't visually noisy.
+- Move-to-other-scope button removed entirely — there is only one scope now.
+
+**Next needed:**
+- Consider per-section search/filter once libraries grow past a few hundred entries.
+
+## [2026-05-07] COMPLETED | Bounded canvas + coordinate rulers + grid background
+**Agent:** Claude Code
+
+**Done:**
+- Replaced the previously infinite, content-growing canvas with a bounded
+  world fixed at 2560×1440 world pixels.
+- Added a faint grid drawn on the pan-group background: minor lines every
+  50px (1 cell), major lines every 250px (5 cells).
+- Added two coordinate rulers as canvas-element overlays — X along the top
+  and Y along the left — that stay glued to the viewport corner via a
+  scroll-synced transform. Labels are in grid cells (1 cell = 50px). Rulers
+  redraw on scroll, resize, and zoom-state changes (subscribed via
+  `subscribeZoom`).
+- Drag now clamps the move delta against canvas bounds for the entire
+  rigid group (primary + co-movers). The whole group stops at whichever
+  member would cross an edge first, preserving multi-drag invariants.
+- A 1px outline on the pan-group makes the bounded world's edges legible.
+
+**Changed files:**
+- src/canvas/canvasSpace.ts — added CANVAS_WIDTH_PX, CANVAS_HEIGHT_PX,
+  GRID_CELL_PX, GRID_MAJOR_EVERY, RULER_THICKNESS_PX; gutters are now
+  aliases of the ruler thickness.
+- src/canvas/CanvasController.ts — `updatePanGroupSize()` now writes the
+  fixed canvas dimensions instead of growing with content.
+- src/canvas/CanvasRulers.ts — new module: ruler wrapper + two HiDPI
+  canvases, scroll-synced transform, zoom subscriber.
+- src/canvas/zoomState.ts — added subscribe/notify so rulers (and any
+  future overlay) can redraw on zoom changes from any session.
+- src/canvas/DragController.ts — drag delta is clamped to canvas bounds
+  for primary + co-movers as a rigid group; primary's start position is
+  captured in DragState (`primStartX/Y`).
+- src/main.ts — mounted the ruler overlay alongside the main canvas.
+- src/shell.css — pan-group paints the grid; new `.pn-rulers*` styles.
+
+**Notes / decisions:**
+- Canvas size: 2560×1440 (user-selected). Ruler thickness: 22px.
+- Ruler units: grid cells; future "drop object at coordinates" feature
+  should accept cell coords and multiply by GRID_CELL_PX.
+- Existing patches with objects positioned beyond the new bounds are not
+  auto-relocated; they render outside the bounded canvas and the user
+  can move them in by hand.
+- Rulers self-subscribe to zoomState rather than being pushed by the
+  CanvasController, so non-main sessions (ScratchTabSession,
+  SubPatchSession) don't need extra wiring.
+
+**Next needed:**
+- Coordinate-input flow: a slash-command or keybinding that takes
+  `(cellX, cellY)` and creates a new object at `(cellX*50, cellY*50)`.
+- Decide whether existing out-of-bounds objects should be flagged or
+  auto-moved when a patch is opened.
+
 ## [2026-05-06] COMPLETED | Persistent object names + phrases that attach to existing nodes
 **Agent:** Claude Code
 **Phase:** Live-coding surface — Milestone 2

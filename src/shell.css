@@ -623,6 +623,25 @@ html {
   display: none;
 }
 
+/* Coordinate rulers — pinned to the canvas viewport's top + left edges via
+   transform synced to scroll. Created and drawn by CanvasRulers.ts. */
+.pn-rulers {
+  position: absolute;
+  pointer-events: none;
+  z-index: 90;
+}
+
+.pn-rulers-corner {
+  background: var(--pn-surface-raised);
+  border-right: 1px solid color-mix(in srgb, var(--pn-accent) 40%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--pn-accent) 40%, transparent);
+}
+
+.pn-rulers-x,
+.pn-rulers-y {
+  background: var(--pn-surface-raised);
+}
+
 .patch-object {
   position: absolute;
   box-sizing: border-box;
@@ -1377,15 +1396,28 @@ html {
   z-index: 5;
 }
 
-/* Pan group — the scrollable canvas content that grows with the patch */
+/* Pan group — bounded canvas world (CANVAS_WIDTH_PX × CANVAS_HEIGHT_PX).
+   Size is fixed in JS via CanvasController.updatePanGroupSize(); the
+   background paints a faint grid aligned to GRID_CELL_PX (50) with a
+   stronger major line every 5 cells (250px). */
 .pn-pan-group {
   position: absolute;
   top: 0;
   left: 0;
-  /* Grows dynamically via JS; always at least the viewport size */
-  min-width: 100%;
-  min-height: 100%;
   background-color: var(--pn-surface);
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--pn-accent) 18%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--pn-accent) 18%, transparent) 1px, transparent 1px),
+    linear-gradient(to right, color-mix(in srgb, var(--pn-accent) 8%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--pn-accent) 8%, transparent) 1px, transparent 1px),
+    linear-gradient(to right, color-mix(in srgb, var(--pn-accent) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--pn-accent) 4%, transparent) 1px, transparent 1px);
+  background-size:
+    250px 250px, 250px 250px,
+    50px 50px,   50px 50px,
+    25px 25px,   25px 25px;
+  background-position: 0 0;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pn-accent) 40%, transparent);
   -webkit-user-select: none;
   user-select: none;
 }
@@ -5225,11 +5257,15 @@ html {
   position: absolute;
   top: 100%;
   left: 6px;
-  right: 6px;
   z-index: 50;
   background: var(--pn-bg-deep);
   border: 1px solid var(--pn-border);
-  max-height: 320px;
+  /* Wider than the (often narrow) js~ object so long Reaper effect names
+   * fit on a single line without ellipsis. Caps so a giant library doesn't
+   * spill off the canvas — long names will wrap inside the row instead. */
+  min-width: 320px;
+  max-width: 480px;
+  max-height: 360px;
   overflow-y: auto;
   font-family: var(--pn-font-mono);
   color: var(--pn-text);
@@ -5274,9 +5310,11 @@ html {
   text-align: left;
   padding: 4px 10px;
   cursor: var(--pn-cursor-pointer);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* Wrap long names so the user can always read the full effect name —
+   * the imported Reaper library has plenty of names that overflow. */
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.3;
 }
 
 .pn-jseffect-dd-del {
@@ -5422,9 +5460,43 @@ html {
 .pn-jslib-modal-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 12px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--pn-border);
+}
+.pn-jslib-modal-header .pn-jslib-modal-title {
+  margin-right: auto; /* push everything else to the right edge */
+}
+.pn-jslib-modal-header .pn-jslib-close {
+  margin-left: auto;
+}
+
+.pn-jslib-import-btn {
+  background: transparent;
+  border: 1px solid var(--pn-border);
+  border-radius: var(--pn-radius-sm);
+  color: var(--pn-text);
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-micro);
+  padding: 4px 10px;
+  cursor: var(--pn-cursor-pointer);
+  white-space: nowrap;
+}
+.pn-jslib-import-btn:hover { border-color: var(--pn-accent); color: var(--pn-accent); }
+.pn-jslib-import-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.pn-jslib-import-status {
+  font-size: var(--pn-type-micro);
+  color: var(--pn-muted);
+  font-family: var(--pn-font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.pn-jslib-import-status.is-error {
+  color: var(--pn-secondary, #ff7a3c);
 }
 
 .pn-jslib-modal-title {
@@ -5448,10 +5520,9 @@ html {
 }
 
 .pn-jslib-body {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  background: var(--pn-border);
+  display: flex;
+  flex-direction: column;
+  background: var(--pn-bg-deep);
   overflow: hidden;
   flex: 1 1 auto;
   min-height: 0;
@@ -5461,14 +5532,52 @@ html {
   background: var(--pn-bg-deep);
   padding: 10px 12px;
   overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
-.pn-jslib-col-heading {
-  font-size: var(--pn-type-micro);
-  letter-spacing: 0.08em;
+/* Collapsible category section (e.g. "delay (12)"). Header is a button so
+ * the whole row is clickable; entries below show only when expanded. */
+.pn-jslib-section + .pn-jslib-section {
+  margin-top: 4px;
+}
+
+.pn-jslib-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--pn-text);
+  font-family: var(--pn-font-mono);
+  font-size: var(--pn-type-body);
+  text-align: left;
+  padding: 4px 6px;
+  cursor: var(--pn-cursor-pointer);
+}
+
+.pn-jslib-section-header:hover {
+  border-color: var(--pn-border);
+  background: color-mix(in srgb, var(--pn-accent) 6%, transparent);
+}
+
+.pn-jslib-section-caret {
+  flex: 0 0 auto;
   color: var(--pn-accent);
-  margin-bottom: 8px;
+  width: 12px;
+  display: inline-block;
+}
+
+.pn-jslib-section-label {
+  flex: 1 1 auto;
   text-transform: lowercase;
+}
+
+.pn-jslib-section-count {
+  flex: 0 0 auto;
+  font-size: var(--pn-type-micro);
+  color: color-mix(in srgb, var(--pn-text) 55%, transparent);
 }
 
 .pn-jslib-empty {
@@ -5499,9 +5608,11 @@ html {
 .pn-jslib-name {
   flex: 1 1 auto;
   font-size: var(--pn-type-body);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* No truncation — let long names wrap so the user can read the whole
+   * thing (Reaper imports include names well past any sensible width). */
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.3;
 }
 
 .pn-jslib-name-input {
@@ -5538,6 +5649,14 @@ html {
 .pn-jslib-btn-danger:hover {
   border-color: var(--pn-error, #ff6464);
   color: var(--pn-error, #ff6464);
+}
+
+.pn-jslib-btn-primary {
+  border-color: var(--pn-accent);
+  color: var(--pn-accent);
+}
+.pn-jslib-btn-primary:hover {
+  background: color-mix(in srgb, var(--pn-accent) 12%, transparent);
 }
 
 .pn-jseffect-body {

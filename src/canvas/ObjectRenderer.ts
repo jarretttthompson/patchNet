@@ -1025,6 +1025,13 @@ function buildBody(node: PatchNode): HTMLDivElement {
     host.dataset.peerPanelHost = node.id;
     body.appendChild(host);
 
+  } else if (node.type === "phoneTilt") {
+    body.classList.add("patch-object-phonetilt-body");
+    const host = document.createElement("div");
+    host.className = "pn-phonetilt-panel-host";
+    host.dataset.phonetiltPanelHost = node.id;
+    body.appendChild(host);
+
   } else if (node.type === "s" || node.type === "r") {
     const row = document.createElement("div");
     row.className = "patch-object-sr";
@@ -1636,4 +1643,25 @@ export function renderObject(node: PatchNode): HTMLDivElement {
   }
 
   return el;
+}
+
+/**
+ * Grow the object's width so its inline-args title is never clipped.
+ * Objects like `route`, `select`, `unpack`, `pack`, `t` carry args that
+ * map directly to outlet identity — the user must be able to read them
+ * to know which outlet does what. Must run after the element is in the
+ * DOM (needs layout to measure scrollWidth).
+ */
+export function autoFitInlineArgsWidth(objectEl: HTMLElement): void {
+  const body = objectEl.querySelector<HTMLElement>(".patch-object-body--args-inline");
+  if (!body) return;
+  // Skip while user is editing — typing handler grows the box live.
+  if (objectEl.classList.contains("patch-object--editing")) return;
+  const title = body.querySelector<HTMLElement>(".patch-object-title");
+  if (!title) return;
+  const overflow = title.scrollWidth - title.clientWidth;
+  if (overflow <= 0) return;
+  const currentWidth = objectEl.offsetWidth;
+  // +2 keeps a hairline buffer so sub-pixel rounding doesn't trip the ellipsis.
+  objectEl.style.width = `${currentWidth + overflow + 2}px`;
 }

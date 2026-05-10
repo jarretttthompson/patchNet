@@ -4,7 +4,7 @@ import "./shell.css";
 
 import { initCrtOverlayScroll } from "./crtOverlaySync";
 import { PatchGraph } from "./graph/PatchGraph";
-import { renderObject, buildOdometerContent } from "./canvas/ObjectRenderer";
+import { renderObject, autoFitInlineArgsWidth, buildOdometerContent } from "./canvas/ObjectRenderer";
 import { CableRenderer } from "./canvas/CableRenderer";
 import { CanvasController } from "./canvas/CanvasController";
 import { DragController } from "./canvas/DragController";
@@ -25,8 +25,10 @@ import { PortTooltip } from "./canvas/PortTooltip";
 import { VisualizerObjectUI } from "./canvas/VisualizerObjectUI";
 import { CodeboxController } from "./canvas/CodeboxController";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvas/canvasSpace";
+import { CanvasRulers } from "./canvas/CanvasRulers";
 import { getZoom } from "./canvas/zoomState";
 import { getPatchMode, setPatchModeState } from "./canvas/patchModeState";
+import { getSnap, setSnap } from "./canvas/snapState";
 import { getObjectDef, bufferRange } from "./graph/objectDefs";
 import { mountLocalPlugins, pruneLocalPlugins, collectLocalPluginActions } from "./graph/localPlugins";
 import { UndoManager } from "./graph/UndoManager";
@@ -45,9 +47,12 @@ import { FramePanelController } from "./canvas/FramePanelController";
 import { CamPanelController } from "./canvas/CamPanelController";
 import { PeerPanelController } from "./canvas/PeerPanelController";
 import { PeerRegistry } from "./runtime/peer/PeerRegistry";
+import { PhoneSensorRegistry } from "./runtime/phoneSensor/PhoneSensorRegistry";
+import { PhoneTiltPanelController } from "./canvas/PhoneTiltPanel";
 import { SubPatchManager } from "./canvas/SubPatchManager";
 import { TabManager } from "./canvas/TabManager";
 import { ScratchTabSession } from "./canvas/ScratchTabSession";
+import { REFERENCE_PATCHES } from "./canvas/referencePatches";
 import { registerSession } from "./canvas/patchSessionRegistry";
 import { buildShareUrl, loadFromShareUrl } from "./share/shareUrl";
 import { PatchTerminalController } from "./terminal/PatchTerminalController";
@@ -176,6 +181,11 @@ canvas.setPanGroup(panGroup);
 canvas.setCableRenderer(cables);
 new PortTooltip(canvasArea);
 
+// Coordinate rulers (top + left edges, glued to viewport corner).
+// Shared across all sessions on this canvasArea — they redraw on
+// scroll, resize, and zoom-state changes (subscribed in CanvasRulers).
+new CanvasRulers(canvasArea);
+
 // ── Visualizer runtime ────────────────────────────────────────────────────────
 
 VisualizerRuntime.getInstance(); // initialise singleton
@@ -228,9 +238,19 @@ function formatPayload(v: unknown): string {
 }
 const peerPanelController = new PeerPanelController(graph, peerRegistry);
 objectInteraction.setPeerRegistry(peerRegistry);
+
+// ── Phone-tilt sensor (dev-only) ─────────────────────────────────────────
+const phoneSensorRegistry = new PhoneSensorRegistry();
+phoneSensorRegistry.setEmit((nodeId, outlet, value) => {
+  objectInteraction.fireOutlet(nodeId, outlet, value);
+});
+objectInteraction.setPhoneSensorRegistry(phoneSensorRegistry);
+const phoneTiltPanelController = new PhoneTiltPanelController(graph, phoneSensorRegistry);
+
 graph.on("change", () => {
   peerRegistry.sync(graph);
   peerRegistry.syncNetReceives(graph);
+  phoneSensorRegistry.sync(graph);
 });
 
 objectInteraction.setJsEffectPanelController(jsEffectPanelController);
@@ -755,6 +775,20 @@ function setPatchModeUi(on: boolean): void {
 
 patchModeBtn?.addEventListener("click", () => setPatchModeUi(!getPatchMode()));
 
+// ── Snap to grid ──────────────────────────────────────────────────────────
+const snapBtn = document.getElementById("snap-btn") as HTMLButtonElement | null;
+
+function setSnapUi(on: boolean): void {
+  setSnap(on);
+  if (snapBtn) {
+    snapBtn.setAttribute("aria-pressed", String(on));
+    snapBtn.title = `Snap to grid (${on ? "on" : "off"})`;
+  }
+  flashStatus(on ? "snap: on" : "snap: off");
+}
+
+snapBtn?.addEventListener("click", () => setSnapUi(!getSnap()));
+
 // Output device selector
 audioDeviceSel?.addEventListener("change", () => {
   audioRuntime.setOutputDevice(audioDeviceSel.value);
@@ -809,9 +843,26 @@ function addNewScratchTab(initialContent = "", explicitId?: string, label?: stri
   // If audio is running, plumb the live AudioGraph into this scratch's OIC so
   // its s~/r~/dac~/etc. work immediately.
   if (audioGraph) session.interaction.setAudioGraph(audioGraph);
+  // Right-click → "Open <type> reference" works from any tab.
+  session.canvasController.onOpenReferencePatch = openReferencePatch;
   saveAllTabs();
   return session;
 }
+
+function openReferencePatch(objectType: string): void {
+  const ref = REFERENCE_PATCHES[objectType];
+  if (!ref) return;
+  const existing = scratchTabs.get(ref.tabId);
+  if (existing) {
+    // Reset to pristine state on every open so user edits never persist
+    // into a "reference" tab.
+    existing.graph.deserialize(ref.text);
+    tabManager.switchTo(ref.tabId);
+    return;
+  }
+  addNewScratchTab(ref.text, ref.tabId, ref.label);
+}
+canvas.onOpenReferencePatch = openReferencePatch;
 
 tabManager.onAddTab = () => { addNewScratchTab(); };
 tabManager.onScratchClose = (id) => {
@@ -901,6 +952,11 @@ function render(): void {
     panGroup.appendChild(renderObject(node));
   }
 
+  // Grow boxes whose inline args (route, select, t, pack/unpack, math ops, …)
+  // would otherwise be ellipsized. Args on these objects carry semantic
+  // weight (outlet order, match selectors), so clipping breaks the patch.
+  panGroup.querySelectorAll<HTMLElement>(":scope > .patch-object").forEach(autoFitInlineArgsWidth);
+
   for (const node of graph.getNodes()) {
     if (node.type !== "codebox") continue;
     const host = panGroup.querySelector<HTMLElement>(
@@ -956,6 +1012,10 @@ function render(): void {
   // Mount inline peer panels
   peerPanelController.mount(panGroup);
   peerPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
+
+  // Mount inline phoneTilt panels
+  phoneTiltPanelController.mount(panGroup);
+  phoneTiltPanelController.prune(new Set(graph.getNodes().map(n => n.id)));
 
   // Mount any private/local plugin objects (src/graph/localObjects/)
   mountLocalPlugins(panGroup, { graph, vizGraph });
@@ -1439,13 +1499,19 @@ function buildActionContext(): ActionContext {
 }
 
 const actionDispatcher = new ActionDispatcher(actionRegistry, actionKeymap, buildActionContext);
+patchTerminal = new PatchTerminalController(buildActionContext);
+// Restore user-defined macros into the action registry now that ctx is wired
+// up. Persistence is best-effort — silent on localStorage failures.
+patchTerminal.loadMacros(buildActionContext());
+
 const actionListDialog = new ActionListDialog(
   actionRegistry,
   actionKeymap,
   buildActionContext,
   (id) => actionDispatcher.run(id),
+  // "New action…" form posts straight into the macro engine.
+  (spec) => patchTerminal.createMacro(spec),
 );
-patchTerminal = new PatchTerminalController(buildActionContext);
 
 actionDispatcher.attachToDocument();
 shortcutsBtn?.addEventListener("click", () => actionListDialog.toggle());
@@ -1558,6 +1624,8 @@ window.addEventListener("beforeunload", () => {
   camPanelController.destroy();
   peerPanelController.destroy();
   peerRegistry.destroyAll();
+  phoneTiltPanelController.destroy();
+  phoneSensorRegistry.destroyAll();
   dmxGraph.destroy();
   undoManager.destroy();
 });

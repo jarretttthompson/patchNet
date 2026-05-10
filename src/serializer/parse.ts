@@ -1,5 +1,5 @@
 import { PatchEdge } from "../graph/PatchEdge";
-import { audioPortDefaultWidth, canonicalizeType, deriveAdcPorts, deriveBufferPorts, deriveDacPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
+import { audioPortDefaultWidth, canonicalizeType, deriveAdcPorts, deriveBufferPorts, deriveDacPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveRoutePorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
 import { PatchNode } from "../graph/PatchNode";
 import type { PortType } from "../graph/PatchNode";
 import { derivePortsFromCode } from "../canvas/codeboxPorts";
@@ -277,6 +277,10 @@ export function parsePatch(text: string): ParsedPatch {
 
       if (type === "unpack") {
         ({ inlets, outlets } = deriveUnpackPorts(args));
+      }
+
+      if (type === "route") {
+        ({ inlets, outlets } = deriveRoutePorts(args));
       }
 
       if (type === "sequencer") {

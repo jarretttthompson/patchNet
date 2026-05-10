@@ -1,5 +1,7 @@
 import type { PatchGraph } from "../graph/PatchGraph";
+import { CANVAS_HEIGHT_PX, CANVAS_WIDTH_PX, GRID_SUB_PX } from "./canvasSpace";
 import { checkOverlap, getNodeBox, type Box } from "./OverlapGuard";
+import { getSnap } from "./snapState";
 import { getZoom } from "./zoomState";
 
 interface DragState {
@@ -28,6 +30,12 @@ interface DragState {
    *  drag rather than re-triggering on every contact event. Reset on
    *  the next drag start. */
   flashed: boolean;
+  /** Primary's intrinsic position at drag start. Used as the anchor for
+   *  clamping the move delta against canvas bounds — independent of
+   *  startX/startY (which mix mouse coords) and of lastValidX/Y (which
+   *  evolve during the drag). */
+  primStartX: number;
+  primStartY: number;
 }
 
 interface CoMover {
@@ -210,6 +218,8 @@ export class DragController {
         lastValidY: newPrimY,
         lastFrameValid: true,
         flashed: false,
+        primStartX: newPrimX,
+        primStartY: newPrimY,
       };
       newEl.classList.add("patch-object--dragging");
 
@@ -257,6 +267,8 @@ export class DragController {
       lastValidY: primY,
       lastFrameValid: true,
       flashed: false,
+      primStartX: primX,
+      primStartY: primY,
     };
 
     objectEl.classList.add("patch-object--dragging");
@@ -318,31 +330,57 @@ export class DragController {
 
     const canvasRect = this.canvasEl.getBoundingClientRect();
     const z = getZoom();
-    const x = (e.clientX - canvasRect.left) / z - this.drag.offsetX;
-    const y = (e.clientY - canvasRect.top)  / z - this.drag.offsetY;
 
-    // No clamp: the pan-group sits inside a left/top gutter, and negative
-    // intrinsic coords render inside that gutter. The caller grows the
-    // pan-group live during drag via updatePanGroupSize() so the scrollable
-    // area expands as the object moves outward.
-    const nx = Math.round(x);
-    const ny = Math.round(y);
-
-    // Move co-selected nodes by the same delta (intrinsic)
+    // Mouse delta in world coords from drag start.
     const mouseX = (e.clientX - canvasRect.left) / z;
     const mouseY = (e.clientY - canvasRect.top)  / z;
-    const dx = mouseX - this.drag.mouseStartX;
-    const dy = mouseY - this.drag.mouseStartY;
+    const rawDx = mouseX - this.drag.mouseStartX;
+    const rawDy = mouseY - this.drag.mouseStartY;
+
+    // Clamp the delta so every moving node — primary plus co-movers — stays
+    // fully inside the bounded canvas. Treats the drag as a rigid group:
+    // the whole group stops at whichever member would cross an edge first.
+    const primNode = this.graph.nodes.get(this.drag.nodeId);
+    const primBox = primNode ? getNodeBox(primNode) : { x: 0, y: 0, w: 0, h: 0 };
+    let minDx = -this.drag.primStartX;
+    let maxDx = CANVAS_WIDTH_PX  - primBox.w - this.drag.primStartX;
+    let minDy = -this.drag.primStartY;
+    let maxDy = CANVAS_HEIGHT_PX - primBox.h - this.drag.primStartY;
+    for (const cm of this.coMovers) {
+      const cmNode = this.graph.nodes.get(cm.nodeId);
+      if (!cmNode) continue;
+      const box = getNodeBox(cmNode);
+      minDx = Math.max(minDx, -cm.startX);
+      maxDx = Math.min(maxDx, CANVAS_WIDTH_PX  - box.w - cm.startX);
+      minDy = Math.max(minDy, -cm.startY);
+      maxDy = Math.min(maxDy, CANVAS_HEIGHT_PX - box.h - cm.startY);
+    }
+    let dx = Math.max(minDx, Math.min(maxDx, rawDx));
+    let dy = Math.max(minDy, Math.min(maxDy, rawDy));
+
+    let nx = Math.round(this.drag.primStartX + dx);
+    let ny = Math.round(this.drag.primStartY + dy);
+
+    // Snap to grid: align the primary's top-left to the nearest grid cell,
+    // then re-clamp to canvas bounds (the snap can push slightly past). The
+    // co-mover delta is recomputed below from the snapped primary, so the
+    // group stays rigid relative to the dragged anchor.
+    if (getSnap()) {
+      nx = Math.round(nx / GRID_SUB_PX) * GRID_SUB_PX;
+      ny = Math.round(ny / GRID_SUB_PX) * GRID_SUB_PX;
+      nx = Math.max(0, Math.min(CANVAS_WIDTH_PX  - primBox.w, nx));
+      ny = Math.max(0, Math.min(CANVAS_HEIGHT_PX - primBox.h, ny));
+      dx = nx - this.drag.primStartX;
+      dy = ny - this.drag.primStartY;
+    }
 
     // No-overlap check: build the proposed boxes for primary + every co-mover
     // and run a single guard. If ANY member of the rigid group would collide
     // with a non-moving object, the entire group stays at its last valid spot.
     const movingIds = new Set<string>([this.drag.nodeId, ...this.coMovers.map(cm => cm.nodeId)]);
     const proposed = new Map<string, Box>();
-    const primNode = this.graph.nodes.get(this.drag.nodeId);
     if (primNode) {
-      const box = getNodeBox(primNode);
-      proposed.set(this.drag.nodeId, { x: nx, y: ny, w: box.w, h: box.h });
+      proposed.set(this.drag.nodeId, { x: nx, y: ny, w: primBox.w, h: primBox.h });
     }
     for (const cm of this.coMovers) {
       const cmNode = this.graph.nodes.get(cm.nodeId);

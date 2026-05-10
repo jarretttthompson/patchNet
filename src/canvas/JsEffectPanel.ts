@@ -9,14 +9,12 @@ import { parseJsfx, type SliderDecl } from "../runtime/jsfx/parser";
 import { translateJsfxBody } from "../runtime/jsfx/translate";
 import { deriveJsEffectPorts, JS_EFFECT_SIDE_INLET_START } from "../graph/objectDefs";
 import {
-  getPatchLibrary,
   getGlobalLibrary,
   setGlobalLibrary,
-  writePatchLibrary,
   upsertEntry,
   deriveNameFromCode,
+  splitCategory,
   type LibraryEntry,
-  type ScopedLibraryEntry,
 } from "../runtime/jsfx/library";
 import { JsEffectLibraryDialog } from "./JsEffectLibraryDialog";
 
@@ -37,9 +35,10 @@ const LOCK_ICON_OPEN = `<svg viewBox="0 0 14 16" width="11" height="13" fill="no
  * Header (from left to right):
  *   [ ▾ js~ — <desc> ]  [ save ]  [ manage ]  [ 🔒 ]
  *
- * Clicking the title opens a dropdown of saved effects (patch + global,
- * alphabetical); selecting one loads its code into the editor. The save
- * button prompts inline for a name (+ scope) and writes into the matching
+ * Clicking the title opens a dropdown of saved effects, grouped by the
+ * first folder segment in the entry name (e.g. `delay/feedback` →
+ * "delay" section). Selecting one loads its code into the editor. The
+ * save button prompts inline for a name and writes into the global
  * library. The lock button toggles `args[2]` — when locked, the editor
  * and dropdown are non-interactive and the object can be dragged by
  * clicking anywhere on the panel *except* over a slider (which stays
@@ -309,10 +308,11 @@ export class JsEffectPanel {
     this.rebuildSliderPane(program.sliders);
     this.syncNodePorts();
 
-    const tInit   = translateJsfxBody(program.initBody);
-    const tSlider = translateJsfxBody(program.sliderBody);
-    const tBlock  = translateJsfxBody(program.blockBody);
-    const tSample = translateJsfxBody(program.sampleBody);
+    const translateOpts = { sliders: program.sliders };
+    const tInit   = translateJsfxBody(program.initBody, translateOpts);
+    const tSlider = translateJsfxBody(program.sliderBody, translateOpts);
+    const tBlock  = translateJsfxBody(program.blockBody, translateOpts);
+    const tSample = translateJsfxBody(program.sampleBody, translateOpts);
     for (const [label, result] of [["@init", tInit], ["@slider", tSlider], ["@block", tBlock], ["@sample", tSample]] as const) {
       if (!result.ok) {
         this.lastError = `${label}: ${result.error.message}`;
@@ -484,20 +484,31 @@ export class JsEffectPanel {
   private renderDropdown(): void {
     this.dropdownEl.textContent = "";
 
-    const patchEntries: ScopedLibraryEntry[]  = getPatchLibrary(this.patchNode).map(e => ({ ...e, scope: "patch" }));
-    const globalEntries: ScopedLibraryEntry[] = getGlobalLibrary().map(e => ({ ...e, scope: "global" }));
+    const entries = getGlobalLibrary();
 
-    if (patchEntries.length === 0 && globalEntries.length === 0) {
+    if (entries.length === 0) {
       const empty = document.createElement("div");
       empty.className = "pn-jseffect-dd-empty";
       empty.textContent = 'no saved effects — click "save" to add the current one';
       this.dropdownEl.appendChild(empty);
     } else {
-      if (patchEntries.length > 0) {
-        this.dropdownEl.appendChild(this.buildDropdownSection("saved effects (patch)", patchEntries));
+      // Group by first folder segment (e.g. "delay/feedback" → "delay").
+      const byCategory = new Map<string, LibraryEntry[]>();
+      for (const e of entries) {
+        const { category } = splitCategory(e.name);
+        const list = byCategory.get(category);
+        if (list) list.push(e);
+        else byCategory.set(category, [e]);
       }
-      if (globalEntries.length > 0) {
-        this.dropdownEl.appendChild(this.buildDropdownSection("⌂ saved effects (global)", globalEntries));
+      const categories = Array.from(byCategory.keys()).sort((a, b) => {
+        // Uncategorized ("") at the bottom.
+        if (a === "" && b !== "") return 1;
+        if (b === "" && a !== "") return -1;
+        return a.toLowerCase().localeCompare(b.toLowerCase());
+      });
+      for (const cat of categories) {
+        const heading = cat === "" ? "uncategorized" : cat;
+        this.dropdownEl.appendChild(this.buildDropdownSection(heading, byCategory.get(cat)!));
       }
     }
 
@@ -519,7 +530,7 @@ export class JsEffectPanel {
     this.dropdownEl.appendChild(actionsRow);
   }
 
-  private buildDropdownSection(heading: string, entries: ScopedLibraryEntry[]): HTMLDivElement {
+  private buildDropdownSection(heading: string, entries: LibraryEntry[]): HTMLDivElement {
     const section = document.createElement("div");
     section.className = "pn-jseffect-dd-section";
 
@@ -533,10 +544,11 @@ export class JsEffectPanel {
       const row = document.createElement("div");
       row.className = "pn-jseffect-dd-row";
 
+      const { leaf } = splitCategory(entry.name);
       const name = document.createElement("button");
       name.type = "button";
       name.className = "pn-jseffect-dd-name";
-      name.textContent = entry.name;
+      name.textContent = leaf || entry.name;
       name.title = `load "${entry.name}"`;
       name.addEventListener("click", () => this.loadEntry(entry));
 
@@ -544,7 +556,7 @@ export class JsEffectPanel {
       del.type = "button";
       del.className = "pn-jseffect-dd-del";
       del.textContent = "×";
-      del.title = `delete "${entry.name}" from ${entry.scope} library`;
+      del.title = `delete "${entry.name}" from library`;
       del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteEntry(entry); });
 
       row.append(name, del);
@@ -553,7 +565,7 @@ export class JsEffectPanel {
     return section;
   }
 
-  private loadEntry(entry: ScopedLibraryEntry): void {
+  private loadEntry(entry: LibraryEntry): void {
     this.closeDropdown();
     const current = this.view.state.doc.toString();
     // Replace editor content — the updateListener will fire scheduleCompile
@@ -561,16 +573,10 @@ export class JsEffectPanel {
     this.view.dispatch({ changes: { from: 0, to: current.length, insert: entry.code } });
   }
 
-  private deleteEntry(entry: ScopedLibraryEntry): void {
-    const confirmed = confirm(`Delete "${entry.name}" from the ${entry.scope} library?`);
+  private deleteEntry(entry: LibraryEntry): void {
+    const confirmed = confirm(`Delete "${entry.name}" from the library?`);
     if (!confirmed) return;
-    if (entry.scope === "patch") {
-      const next = getPatchLibrary(this.patchNode).filter(e => e.name !== entry.name);
-      writePatchLibrary(this.graph, this.patchNode, next);
-    } else {
-      const next = getGlobalLibrary().filter(e => e.name !== entry.name);
-      setGlobalLibrary(next);
-    }
+    setGlobalLibrary(getGlobalLibrary().filter(e => e.name !== entry.name));
     this.renderDropdown();
   }
 
@@ -601,24 +607,6 @@ export class JsEffectPanel {
     nameInput.value = deriveNameFromCode(code) || this.currentDesc || "";
     prompt.appendChild(nameInput);
 
-    const scopeRow = document.createElement("div");
-    scopeRow.className = "pn-jseffect-save-scope";
-    const mkRadio = (value: "patch" | "global", labelText: string, checked: boolean): HTMLLabelElement => {
-      const wrap = document.createElement("label");
-      wrap.className = "pn-jseffect-save-radio";
-      const radio = document.createElement("input");
-      radio.type = "radio";
-      radio.name = `jseffect-save-${this.patchNode.id}`;
-      radio.value = value;
-      radio.checked = checked;
-      const txt = document.createElement("span");
-      txt.textContent = labelText;
-      wrap.append(radio, txt);
-      return wrap;
-    };
-    scopeRow.append(mkRadio("patch", "patch", true), mkRadio("global", "global (⌂)", false));
-    prompt.appendChild(scopeRow);
-
     const actions = document.createElement("div");
     actions.className = "pn-jseffect-save-actions";
     const ok = document.createElement("button");
@@ -641,8 +629,7 @@ export class JsEffectPanel {
         nameInput.focus();
         return;
       }
-      const scope = (prompt.querySelector<HTMLInputElement>(`input[name="jseffect-save-${this.patchNode.id}"]:checked`)?.value ?? "patch") as "patch" | "global";
-      this.saveEntry({ name, code }, scope);
+      this.saveEntry({ name, code });
       close();
     };
     ok.addEventListener("click", commit);
@@ -656,13 +643,8 @@ export class JsEffectPanel {
     nameInput.select();
   }
 
-  private saveEntry(entry: LibraryEntry, scope: "patch" | "global"): void {
-    if (scope === "patch") {
-      const next = upsertEntry(getPatchLibrary(this.patchNode), entry);
-      writePatchLibrary(this.graph, this.patchNode, next);
-    } else {
-      setGlobalLibrary(upsertEntry(getGlobalLibrary(), entry));
-    }
+  private saveEntry(entry: LibraryEntry): void {
+    setGlobalLibrary(upsertEntry(getGlobalLibrary(), entry));
     if (this.dropdownOpen) this.renderDropdown();
   }
 

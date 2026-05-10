@@ -1,5 +1,5 @@
 import { PatchEdge, type PatchEdgeData } from "./PatchEdge";
-import { audioPortDefaultWidth, canonicalizeType, deriveAdcPorts, deriveBufferPorts, deriveDacPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, fillCreationDefaults, getObjectDef } from "./objectDefs";
+import { audioPortDefaultWidth, canonicalizeType, deriveAdcPorts, deriveBufferPorts, deriveDacPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveRoutePorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, fillCreationDefaults, getObjectDef } from "./objectDefs";
 import { PatchNode, type PatchNodeData } from "./PatchNode";
 import { parsePatch } from "../serializer/parse";
 import { getBlobSchema, isBlobPlaceholder, serializePatch, serializePatchForDisplay } from "../serializer/serialize";
@@ -30,6 +30,9 @@ export class PatchGraph {
     }
     if (type === "unpack") {
       ({ inlets, outlets } = deriveUnpackPorts(args));
+    }
+    if (type === "route") {
+      ({ inlets, outlets } = deriveRoutePorts(args));
     }
     if (type === "sequencer") {
       ensureSequencerArgs(args);

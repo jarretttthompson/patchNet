@@ -18,6 +18,7 @@ import {
   deriveTriggerPorts,
   derivePackPorts,
   deriveUnpackPorts,
+  deriveRoutePorts,
   packSlotInit,
   deriveFftPorts,
   deriveMixerPorts,
@@ -265,6 +266,7 @@ export class ObjectInteractionController {
   private visualizerGraph?: VisualizerGraph;
   private dmxGraph?: DmxGraph;
   private peerRegistry?: import("../runtime/peer/PeerRegistry").PeerRegistry;
+  private phoneSensorRegistry?: import("../runtime/phoneSensor/PhoneSensorRegistry").PhoneSensorRegistry;
   private outletCallback?: (outletIndex: number, value: string | null) => void;
   private subPatchManager?: SubPatchManager;
   /** Repaint a single buffer~ waveform without going through the audio rAF
@@ -335,6 +337,10 @@ export class ObjectInteractionController {
 
   setPeerRegistry(pr: import("../runtime/peer/PeerRegistry").PeerRegistry): void {
     this.peerRegistry = pr;
+  }
+
+  setPhoneSensorRegistry(psr: import("../runtime/phoneSensor/PhoneSensorRegistry").PhoneSensorRegistry): void {
+    this.phoneSensorRegistry = psr;
   }
 
   setOutletCallback(cb: (outletIndex: number, value: string | null) => void): void {
@@ -1078,6 +1084,19 @@ export class ObjectInteractionController {
         break;
       }
 
+      case "route": {
+        if (inlet !== 0) break;
+        const matchers = node.args.length > 0 ? node.args : ["1", "2"];
+        // bang matches a `bang` matcher if present, otherwise falls through to reject.
+        const matchIdx = matchers.findIndex(m => m === "bang");
+        if (matchIdx >= 0) {
+          this.dispatchBang(node.id, matchIdx);
+        } else {
+          this.dispatchValue(node.id, matchers.length, "bang");
+        }
+        break;
+      }
+
       case "s":
         if (inlet === 0) broadcastSendReceive(node.args[0] ?? "", null);
         break;
@@ -1140,6 +1159,10 @@ export class ObjectInteractionController {
 
       case "peer":
         // Phase 7A: connect/disconnect happens through the panel UI.
+        break;
+
+      case "phoneTilt":
+        if (inlet === 0) this.phoneSensorRegistry?.getSession(node.id)?.bang();
         break;
 
       default:
@@ -1448,6 +1471,67 @@ export class ObjectInteractionController {
         // Fire only the outlets that received an atom, right-to-left (Max).
         for (let i = count - 1; i >= 0; i--) {
           this.dispatchValue(node.id, i, this.coerceUnpackOutput(letters[i] ?? "f", atoms[i]));
+        }
+        break;
+      }
+
+      case "route": {
+        if (inlet !== 0) break;
+        const trimmed = value.trim();
+        if (!trimmed) break;
+        // `set <atoms>` replaces the matchers silently (Max convention).
+        if (trimmed === "set" || trimmed.startsWith("set ")) {
+          const payload = trimmed === "set" ? "" : trimmed.slice(4).trim();
+          node.args = payload ? payload.split(/\s+/) : [];
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveRoutePorts(node.args));
+          for (const edge of this.graph.getEdges()) {
+            if (edge.fromNodeId === node.id && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
+          }
+          this.graph.emit("change");
+          break;
+        }
+        const matchers = node.args.length > 0 ? node.args : ["1", "2"];
+        const atoms = trimmed.split(/\s+/);
+        const first = atoms[0];
+        const isBangInput = atoms.length === 1 && first === "bang";
+        const firstNum = parseFloat(first);
+        const firstIsNumeric = !isNaN(firstNum) && /^-?\d+(?:\.\d+)?$/.test(first);
+        const firstIsInt = firstIsNumeric && Number.isInteger(firstNum);
+        const isList = atoms.length > 1 && firstIsNumeric;
+
+        let matchedIdx = -1;
+        let stripSelector = true;
+        for (let i = 0; i < matchers.length; i++) {
+          const m = matchers[i];
+          // Type-keyword matchers — these pass the input through unchanged.
+          if (m === "bang"   && isBangInput)                            { matchedIdx = i; stripSelector = false; break; }
+          if (m === "int"    && atoms.length === 1 && firstIsInt)       { matchedIdx = i; stripSelector = false; break; }
+          if (m === "float"  && atoms.length === 1 && firstIsNumeric)   { matchedIdx = i; stripSelector = false; break; }
+          if (m === "symbol" && atoms.length === 1 && !firstIsNumeric && !isBangInput) {
+            matchedIdx = i; stripSelector = false; break;
+          }
+          if (m === "list"   && isList)                                 { matchedIdx = i; stripSelector = false; break; }
+          // Literal matchers — strip the matched atom from the output.
+          const mNum = parseFloat(m);
+          if (!isNaN(mNum) && firstIsNumeric && mNum === firstNum)      { matchedIdx = i; break; }
+          if (m === first)                                              { matchedIdx = i; break; }
+        }
+
+        if (matchedIdx >= 0) {
+          if (stripSelector) {
+            const rest = atoms.slice(1);
+            if (rest.length === 0) {
+              this.dispatchBang(node.id, matchedIdx);
+            } else {
+              this.dispatchValue(node.id, matchedIdx, rest.join(" "));
+            }
+          } else {
+            // Type-matcher hit: pass the original message through.
+            if (isBangInput) this.dispatchBang(node.id, matchedIdx);
+            else             this.dispatchValue(node.id, matchedIdx, trimmed);
+          }
+        } else {
+          this.dispatchValue(node.id, matchers.length, trimmed);
         }
         break;
       }
@@ -2073,6 +2157,20 @@ export class ObjectInteractionController {
 
       case "netreceive":
       case "peer":
+        break;
+
+      case "phoneTilt":
+        if (inlet === 0) {
+          // Selectors arrive as the bare verb (no payload). Anything else
+          // falls through to the generic arg-setter below (e.g. "smooth 0.4").
+          const verb = value.trim().split(/\s+/)[0] ?? "";
+          const session = this.phoneSensorRegistry?.getSession(node.id);
+          if (session) {
+            if (verb === "calibrate") session.calibrate();
+            else if (verb === "reset") session.resetCalibration();
+            else if (verb === "reconnect") session.reconnect();
+          }
+        }
         break;
 
       default:
@@ -3489,6 +3587,17 @@ export class ObjectInteractionController {
     input.focus();
     input.select();
 
+    // Grow the box while typing so multi-arg objects (route, select, t…)
+    // never clip the user's input mid-edit.
+    const growToFitInput = () => {
+      const overflow = input.scrollWidth - input.clientWidth;
+      if (overflow <= 0) return;
+      const w = objectEl.offsetWidth;
+      objectEl.style.width = `${w + overflow + 2}px`;
+    };
+    growToFitInput();
+    input.addEventListener("input", growToFitInput);
+
     let settled = false;
 
     const commit = () => {
@@ -3519,6 +3628,9 @@ export class ObjectInteractionController {
         if (newType === "unpack") {
           ({ inlets: node.inlets, outlets: node.outlets } = deriveUnpackPorts(newArgs));
           this.unpackSlots.delete(node.id);
+        }
+        if (newType === "route") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveRoutePorts(newArgs));
         }
         if (newType === "sequencer") {
           ensureSequencerArgs(node.args);
@@ -3557,6 +3669,12 @@ export class ObjectInteractionController {
         if (node.type === "unpack") {
           ({ inlets: node.inlets, outlets: node.outlets } = deriveUnpackPorts(newArgs));
           this.unpackSlots.delete(node.id);
+          for (const edge of this.graph.getEdges()) {
+            if (edge.fromNodeId === node.id && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
+          }
+        }
+        if (node.type === "route") {
+          ({ inlets: node.inlets, outlets: node.outlets } = deriveRoutePorts(newArgs));
           for (const edge of this.graph.getEdges()) {
             if (edge.fromNodeId === node.id && edge.fromOutlet >= node.outlets.length) this.graph.removeEdge(edge.id);
           }

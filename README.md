@@ -31,6 +31,7 @@ It is not a Pd port. It is its own language, with Pd/Max as the UX template.
 - **Patch mode toggle** locks the cable layer once a patch is performance-ready, so accidental clicks don't blow up your set.
 - **Scratch tabs** (`⌘T`) let you build a side patch without disturbing the main one. Each tab has its own audio graph; a global `s`/`r` bus crosses tab boundaries so a controller in one tab can drive a voice in another.
 - **Send/receive over the network.** Peer-to-peer patching via WebRTC — share a session URL, two browsers patch the same canvas. Useful for ensemble pieces, remote rehearsal, or audience interaction.
+- **`dmx` drives stage lighting from the same patch.** DMX512 output via an ENTTEC DMXUSB PRO over Web Serial — 512-channel universe streamed at 10–44 Hz. Patch fixtures by start address, drive intensity/color/pan/tilt from any signal in the graph, blackout or home all from a `button`. Bundled fixture profiles plus user import/export; orphaned fixtures can be repointed to a new profile in place. Auto-reconnects to the last-used port on patch reload.
 
 ### Composition
 
@@ -71,6 +72,7 @@ Audio and video share the same canvas, the same cable model, and the same text s
 | **Video** | Jitter (paid extension) | GEM (compile-it-yourself extension) | First-class, in core |
 | **Tab capture** | N/A | N/A | Yes — any browser tab is a media source |
 | **Networked patching** | OSC over local network | netsend/netreceive | WebRTC peer sessions, share URL |
+| **Stage lighting** | Third-party externals (e.g. `ml.dmxusbpro`) | Externals | `dmx` in core — ENTTEC over Web Serial, fixture profiles, 512-ch universe |
 | **Hot-loadable code** | gen~, JS object | externals | `js~` (JSFX), `reaperVideo*`, `shaderToy*` |
 | **Forking** | Closed source | Open, but C codebase | Open, ~30k lines of TypeScript, no framework |
 | **Live coding** | External (e.g. node.script) | Manual edits | Edit the text panel, hit save — patch updates |
@@ -93,7 +95,7 @@ This is more than a deployment detail. It changes how the tool gets used:
 3. **The web is the patch.** A `youtube~*` object captures a YouTube tab as a signal source. A `browser~*` captures any tab. The web becomes raw material, not a separate world.
 4. **Forkable as a static site.** `git clone`, `npm install`, `npm run dev`. Build is `tsc && vite build`. Deploy is "drop the `dist` folder anywhere." No native build chain, no audio framework to compile.
 5. **Crash-safe.** Tab dies, you reload, the autosave brings the patch back. OPFS persists buffers and recordings across sessions.
-6. **Modern web APIs as first-class objects.** WebRTC (`s/r` over the network), WebGL (`shaderToy*`), Web MIDI, getUserMedia (`cam*`), getDisplayMedia (`browser~*`), OPFS (`buffer~` / `vbuf*` persistence), AudioWorklet (`js~`, `transientFollower~`).
+6. **Modern web APIs as first-class objects.** WebRTC (`s/r` over the network), WebGL (`shaderToy*`), Web MIDI, Web Serial (`dmx` → ENTTEC lighting widget), getUserMedia (`cam*`), getDisplayMedia (`browser~*`), OPFS (`buffer~` / `vbuf*` persistence), AudioWorklet (`js~`, `transientFollower~`).
 7. **Mobile and tablet are first-class targets.** Patching on an iPad in a lecture or on a phone backstage is a real workflow.
 
 ---
@@ -105,6 +107,8 @@ This is more than a deployment detail. It changes how the tool gets used:
 **Audio:** `click~`, `noise~`, `wave~`, `lfo~`, `adsr~`, `transientFollower~`, `mixer~`, `buffer~`, `vbuf*`, `fft~`, `js~` (JSFX), `adc~ N`, `dac~ N`.
 
 **Video / visuals:** `cam*`, `frame*`, `browser~*`, `youtube~*`, `mediaVideo*`, `mediaImage*`, `imageFX*`, `vfxCRT*`, `vfxBlur*`, `shaderToy*` (GLSL), `reaperVideo*`, `layer*`, `visualizer*`.
+
+**Lighting:** `dmx` — DMX512 over Web Serial via ENTTEC DMXUSB PRO, with fixture profiles and a patched 512-channel universe.
 
 Every object is a single TypeScript file under `src/runtime/` or rendered via a single branch in `src/canvas/ObjectRenderer.ts`. New objects are registered exactly once in `src/graph/objectDefs.ts` — autocomplete, context menu, and serialization all derive from there.
 
@@ -147,7 +151,7 @@ If you fork it, tag me — I'd love to see what you build.
 
 ## Status
 
-Active solo development. Phase 7A (peer networking) is shipped. Recent work: multichannel I/O, scratch tabs, patch mode lock, `wave~` / `lfo~` / `adsr~` / `transientFollower~`. See `CHANGELOG.md` for the full log.
+Active solo development. Phase 7A (peer networking) is shipped. Recent work: `dmx` lighting (Phase 4 — reconnect, auto-resume, profile import/export, orphan repoint), multichannel I/O, scratch tabs, patch mode lock, `wave~` / `lfo~` / `adsr~` / `transientFollower~`. See `CHANGELOG.md` for the full log.
 
 ## License
 

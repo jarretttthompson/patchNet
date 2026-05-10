@@ -40,6 +40,8 @@ export interface ResolvedIdent {
 export interface ResolvedCall {
   /** Emitted JS for a standard function call with already-parsed args. */
   js: string;
+  /** Some JSFX builtins such as `spl(n)` are valid assignment targets. */
+  assignable?: boolean;
 }
 
 export interface TranslatorResolvers {
@@ -192,6 +194,19 @@ export class Translator implements SpecialCallApi {
     }
     this.pos++;
 
+    const localNames: string[] = [];
+    while (this.peek().kind === "ident" &&
+           (this.peek().value === "local" || this.peek().value === "instance") &&
+           this.tokens[this.pos + 1]?.kind === "lparen") {
+      const declKind = this.next().value;
+      const decl = this.parseFunctionNameList(declKind);
+      if ("message" in decl) return decl;
+      if (declKind === "local") localNames.push(...decl.names);
+      // `instance(...)` names are consumed so object-style JSFX declarations
+      // compile. Exact per-call namespace binding is a later compatibility
+      // layer; unresolved instance names still map to persistent state vars.
+    }
+
     if (this.peek().kind !== "lparen") {
       return { message: "expected '(' opening function body", offset: this.peek().offset };
     }
@@ -206,6 +221,11 @@ export class Translator implements SpecialCallApi {
     // Push a local scope with args → JS parameter names.
     const locals = new Map<string, string>();
     const sanitizedArgs = argNames.map(a => {
+      const s = sanitizeIdent(a);
+      locals.set(a, `u_${s}`);
+      return `u_${s}`;
+    });
+    const sanitizedLocals = localNames.map(a => {
       const s = sanitizeIdent(a);
       locals.set(a, `u_${s}`);
       return `u_${s}`;
@@ -235,7 +255,12 @@ export class Translator implements SpecialCallApi {
     // is empty, return 0 so callers never see `undefined`.
     const head = bodyStmts.slice(0, -1).map(s => `${s};`).join("\n  ");
     const tail = bodyStmts.length > 0 ? bodyStmts[bodyStmts.length - 1] : "0";
-    const bodyJs = head ? `${head}\n  return ${tail};` : `return ${tail};`;
+    const localDecl = sanitizedLocals.length > 0
+      ? `let ${sanitizedLocals.map(n => `${n} = 0`).join(", ")};\n  `
+      : "";
+    const bodyJs = head
+      ? `${localDecl}${head}\n  return ${tail};`
+      : `${localDecl}return ${tail};`;
 
     void fnTok; // suppress unused
     return {
@@ -244,13 +269,36 @@ export class Translator implements SpecialCallApi {
     };
   }
 
+  private parseFunctionNameList(kind: string): { names: string[] } | TranslateError {
+    const start = this.peek();
+    if (start.kind !== "lparen") {
+      return { message: `expected '(' after ${kind}`, offset: start.offset };
+    }
+    this.pos++;
+    const names: string[] = [];
+    while (this.peek().kind !== "rparen" && this.peek().kind !== "eof") {
+      const tok = this.peek();
+      if (tok.kind !== "ident") {
+        return { message: `${kind}(...) names must be bare identifiers`, offset: tok.offset };
+      }
+      names.push(tok.value);
+      this.pos++;
+      if (this.peek().kind === "comma") this.pos++;
+    }
+    if (this.peek().kind !== "rparen") {
+      return { message: `expected ')' closing ${kind}(...)`, offset: start.offset };
+    }
+    this.pos++;
+    return { names };
+  }
+
   // SpecialCallApi ------------------------------------------------------------
 
   peek(): Token { return this.tokens[this.pos]; }
   next(): Token { return this.tokens[this.pos++]; }
 
   // Precedence (high → low):
-  //   primary → postfix → unary → pow → multi → add → compare →
+  //   primary → postfix → unary → pow → multi → add → shift → compare →
   //   bit-and → bit-or → logAnd → logOr → ternary → assign
 
   parseExpression(): EmitResult { return this.parseAssignment(); }
@@ -340,7 +388,7 @@ export class Translator implements SpecialCallApi {
   }
 
   private parseComparison(): EmitResult {
-    let left = this.parseAdditive();
+    let left = this.parseShift();
     if ("message" in left) return left;
     while (true) {
       const tok = this.peek();
@@ -349,10 +397,25 @@ export class Translator implements SpecialCallApi {
            tok.value === "<"  || tok.value === "<=" ||
            tok.value === ">"  || tok.value === ">=")) {
         this.pos++;
-        const right = this.parseAdditive();
+        const right = this.parseShift();
         if ("message" in right) return right;
         const op = tok.value === "==" ? "===" : tok.value === "!=" ? "!==" : tok.value;
         left = { js: `(${left.js} ${op} ${right.js})`, assignable: false };
+      } else break;
+    }
+    return left;
+  }
+
+  private parseShift(): EmitResult {
+    let left = this.parseAdditive();
+    if ("message" in left) return left;
+    while (true) {
+      const tok = this.peek();
+      if (tok.kind === "op" && (tok.value === "<<" || tok.value === ">>")) {
+        this.pos++;
+        const right = this.parseAdditive();
+        if ("message" in right) return right;
+        left = { js: `(${left.js} ${tok.value} ${right.js})`, assignable: false };
       } else break;
     }
     return left;
@@ -574,7 +637,7 @@ export class Translator implements SpecialCallApi {
     }
     this.pos++;
     const call = this.resolvers.resolveCall?.(identTok.value, args) ?? null;
-    if (call !== null) return { js: call.js, assignable: false };
+    if (call !== null) return { js: call.js, assignable: call.assignable ?? false };
 
     // Fall through to user-defined EEL2 functions before erroring.
     if (this.userFunctions.has(identTok.value)) {
@@ -632,9 +695,23 @@ export class Translator implements SpecialCallApi {
     const cond = this.parseExpression();
     if ("message" in cond) return cond;
     if (this.peek().kind === "semi") {
+      const bodyStmts = [cond.js];
+      while (this.peek().kind === "semi") this.pos++;
+      while (this.peek().kind !== "rparen" && this.peek().kind !== "eof") {
+        const r = this.parseExpression();
+        if ("message" in r) return r;
+        bodyStmts.push(r.js);
+        while (this.peek().kind === "semi") this.pos++;
+      }
+      if (this.peek().kind !== "rparen") {
+        return { message: "expected ')' closing while body", offset: startTok.offset };
+      }
+      this.pos++;
+      const head = bodyStmts.slice(0, -1).map(s => `${s};`).join(" ");
+      const tail = bodyStmts[bodyStmts.length - 1] ?? "0";
       return {
-        message: "while(...) body with inline condition (last-stmt form) not supported; use explicit `while (cond) body`",
-        offset: this.peek().offset,
+        js: `(() => { let _keep = 0; do { ${head} _keep = (${tail}); } while (_keep); return 0; })()`,
+        assignable: false,
       };
     }
     if (this.peek().kind !== "rparen") {
