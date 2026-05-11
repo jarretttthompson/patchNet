@@ -1,5 +1,6 @@
 import { renderPorts } from "./PortRenderer";
-import { getObjectDef, OBJECT_DEFS, getVisibleArgs, getSequencerCells, sequencerCols, sequencerRows, fftBandCount, bufferMode, videoBufferLoop, videoBufferMaxLen, videoBufferRate, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H } from "../graph/objectDefs";
+import { getObjectDef, OBJECT_DEFS, getVisibleArgs, getSequencerCells, sequencerCols, sequencerRows, fftBandCount, bufferMode, videoBufferLoop, videoBufferMaxLen, videoBufferRate, ATTR_SIDE_INLET_HEADER_H, ATTR_SIDE_INLET_ROW_H, isAvailableOnPlatform } from "../graph/objectDefs";
+import { PLATFORM } from "../platform/index";
 import { renderLocalPluginBody, hasLocalPlugin } from "../graph/localPlugins";
 import type { PatchNode } from "../graph/PatchNode";
 
@@ -1542,8 +1543,43 @@ export function buildOdometerContent(
   container.appendChild(inner);
 }
 
+/**
+ * Renders a stub tile for an object that exists in the patch file but is
+ * not available on the current platform (e.g. a native-only object opened
+ * in the browser). The stub shows the object type and a clear "desktop only"
+ * badge so the user knows why it isn't functioning.
+ */
+export function renderUnavailableObject(node: PatchNode): HTMLDivElement {
+  const el = document.createElement("div");
+  el.className = "patch-object patch-object--unavailable";
+  el.dataset.nodeId   = node.id;
+  el.dataset.nodeType = node.type;
+  if (node.name) el.dataset.nodeName = node.name;
+  el.style.left = `${Math.round(node.x)}px`;
+  el.style.top  = `${Math.round(node.y)}px`;
+  el.style.width  = "120px";
+  el.style.height = "40px";
+  el.title = `${node.type} — desktop only`;
+
+  const body = document.createElement("div");
+  body.className = "patch-object-body pn-unavailable-body";
+  body.innerHTML = `
+    <span class="pn-unavailable-type">${node.type}</span>
+    <span class="pn-unavailable-badge">desktop only</span>
+  `;
+  el.appendChild(body);
+  return el;
+}
+
 export function renderObject(node: PatchNode): HTMLDivElement {
   const def = getObjectDef(node.type);
+
+  // If this object requires a platform we're not on, render a stub instead
+  // of crashing or silently producing a broken object.
+  if (!isAvailableOnPlatform(def, PLATFORM)) {
+    return renderUnavailableObject(node);
+  }
+
   const el = document.createElement("div");
 
   const slug = node.type.replace(/[^a-z0-9]+/gi, "-");

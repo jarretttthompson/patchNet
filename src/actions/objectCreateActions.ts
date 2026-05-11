@@ -1,4 +1,5 @@
-import { OBJECT_DEFS } from "../graph/objectDefs";
+import { getAvailableObjectDefs } from "../graph/objectDefs";
+import { PLATFORM } from "../platform/index";
 import type { PatchAction } from "./types";
 
 /** Default keybindings for the five legacy quick-place keys. Other object
@@ -28,9 +29,10 @@ const REQUIRE_CURSOR_OVER_CANVAS = new Set(["message"]);
  * tests can reference `canvas.object.create.<type>`.
  */
 export function generateObjectCreateActions(): PatchAction[] {
-  const types = Object.keys(OBJECT_DEFS).sort();
+  const availableDefs = getAvailableObjectDefs(PLATFORM);
+  const types = Object.keys(availableDefs).sort();
   return types.map<PatchAction>((type) => {
-    const spec = OBJECT_DEFS[type];
+    const spec = availableDefs[type];
     return {
       id: `canvas.object.create.${type}`,
       title: `Place ${type}`,

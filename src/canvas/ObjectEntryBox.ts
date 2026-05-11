@@ -15,9 +15,12 @@
  * separate list here. Adding a new type to objectDefs.ts is sufficient.
  */
 
-import { OBJECT_DEFS } from "../graph/objectDefs";
+import { getAvailableObjectDefs } from "../graph/objectDefs";
+import { PLATFORM } from "../platform/index";
 
-const VALID_TYPES: readonly string[] = Object.keys(OBJECT_DEFS).sort();
+// VALID_TYPES is filtered to the current platform so native-only objects
+// don't appear in browser autocomplete.
+const VALID_TYPES: readonly string[] = Object.keys(getAvailableObjectDefs(PLATFORM)).sort();
 
 export class ObjectEntryBox {
   private readonly el: HTMLDivElement;

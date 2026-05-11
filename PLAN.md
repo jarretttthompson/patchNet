@@ -339,3 +339,100 @@ Completion signal: closed-LAN setup with no internet; two machines on a Thunderb
 - Multi-peer mesh (>1 remote peer simultaneously) — out of scope; v1 networking is 1:1.
 - TURN relay infrastructure — for v1, NAT-blocked peers fall back to manual SDP. Adding TURN is an ops decision, not an architecture decision.
 - Tight musical synchronization (clock alignment, sub-frame timing) — transport is best-effort; tight sync is a patch-design problem solved on top.
+
+---
+
+### Phase 8 — Dual-target: Browser + Native Desktop (Tauri)
+
+**Goal:** Ship patchNet as both a browser app and a high-performance native
+desktop app from a single codebase. Browser = accessible, shareable, ~10–20ms
+latency. Native = sub-3ms latency, MIDI, pro audio I/O, native file dialogs,
+future sidecar processes. Same patch format, same terminal DSL, same visual
+language across both.
+
+**Architecture:** See `src/platform/` — already built (Phase 8A complete).
+
+#### Phase 8A — Platform abstraction layer ✅ DONE (2026-05-10)
+
+- [x] `src/platform/index.ts` — `PLATFORM` / `isNative` / `isBrowser` constants,
+      resolved at build time via `__PLATFORM__` Vite `define` + runtime
+      `window.__TAURI__` fallback.
+- [x] `src/platform/audio.ts` — `AudioBackend` interface + `AudioCapabilities`
+      capability flags. All audio callers will talk to this interface; the
+      concrete implementation (Web Audio vs native CPAL) is injected at boot.
+- [x] `src/platform/fs.ts` — `saveTextFile` / `openTextFile` abstraction.
+      Browser: download link / `<input type=file>`. Native: Tauri dialog + fs
+      write (dynamic imports, `@ts-ignore` until `tauri init`).
+- [x] `ObjectSpec.platforms?: PlatformTarget[]` field — tags objects as
+      `"browser"` / `"native"` / both (omit = both).
+- [x] `isAvailableOnPlatform()` + `getAvailableObjectDefs()` helpers in
+      `objectDefs.ts` — filter the palette, autocomplete, and terminal by
+      current platform.
+- [x] `renderUnavailableObject()` in `ObjectRenderer.ts` — renders a dimmed
+      amber-outlined stub for native-only objects loaded in the browser.
+- [x] `__PLATFORM__` injected by `vite.config.ts` from `VITE_PLATFORM` env var.
+- [x] `tauri:dev` + `tauri:build` scripts in `package.json`
+      (`VITE_PLATFORM=native tauri dev/build`).
+
+#### Phase 8B — Tauri shell + native file I/O
+
+Tasks:
+- [ ] `npm install @tauri-apps/cli @tauri-apps/api @tauri-apps/plugin-dialog @tauri-apps/plugin-fs`
+- [ ] `npx tauri init` — scaffold `src-tauri/` pointing at existing Vite build
+- [ ] Wire `platform/fs.ts` native path through (remove `@ts-ignore` stubs)
+- [ ] Replace `Cmd+S` save and `Cmd+O` open in `builtinActions.ts` to call
+      `platform/fs.ts` instead of current browser download flow
+- [ ] Native window title reflects current patch name
+- [ ] `npm run tauri:dev` opens a desktop window running patchNet with native
+      file dialogs
+
+Completion signal: `Cmd+S` in the desktop build opens a native Save As dialog
+and writes a real `.patchnet` file to disk; `Cmd+O` opens a real file picker.
+Browser build still uses download/upload unchanged.
+
+#### Phase 8C — Native audio backend (CPAL)
+
+Tasks:
+- [ ] Add `cpal` + `cpal-jack` (optional) to `src-tauri/Cargo.toml`
+- [ ] Implement `AudioBackend` trait in Rust: start/stop, CPAL stream,
+      per-node signal graph execution
+- [ ] Tauri IPC commands: `audio_start`, `audio_stop`, `audio_sync_graph`,
+      `audio_trigger_click`, `audio_trigger_adsr`, `audio_set_param`
+- [ ] `NativeAudioBackend` TypeScript class implementing `AudioBackend`
+      interface — forwards calls to IPC commands
+- [ ] Boot-time injection: `isNative ? NativeAudioBackend : AudioGraph` wired
+      through a single `getAudioBackend()` factory in `src/platform/audio.ts`
+- [ ] `dac~` / `adc~` use CoreAudio direct on macOS — achieve <3ms latency
+
+Completion signal: `wave~ → dac~` in the desktop build has measurably lower
+latency than in the browser; RTL (round-trip latency) measured via loopback
+reaches <5ms on macOS with default CoreAudio buffer.
+
+#### Phase 8D — Native-only objects
+
+First objects to tag `platforms: ["native"]` and implement natively:
+- [ ] `midi` — MIDI device list outlet; connect/disconnect messages
+- [ ] `midiIn` — receives MIDI from a device; note/cc/pitchbend outlets
+- [ ] `midiOut` — sends MIDI to a device
+- [ ] `dac~` 32ch pro-interface mode — DirectWire/ASIO on Windows, CoreAudio
+      aggregate device on macOS for professional multi-channel interfaces
+
+Completion signal: `midiIn → metro` — MIDI clock drives a metro object.
+
+#### Phase 8E — Distribution
+
+- [ ] macOS `.dmg` + code signing via Tauri
+- [ ] Windows `.msi` installer
+- [ ] Auto-update via Tauri's built-in updater
+- [ ] Browser version deployed to a stable public URL
+- [ ] `README.md` updated with two install paths: browser (URL) and desktop
+      (download)
+
+#### Non-goals for Phase 8
+
+- iOS / Android mobile native app — the phone sensor objects (`phoneTilt` etc)
+  already cover the mobile use case via the browser.
+- Linux distribution in Phase 8E — CPAL supports it, Tauri supports it;
+  defer until there’s a user asking for it.
+- Replacing Web Audio in the browser build — browser stays on Web Audio;
+  native gets CPAL. No WASM audio engine in between.

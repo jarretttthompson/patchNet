@@ -2,7 +2,13 @@ import type { ActionContext } from "../actions/types";
 import { getPortPos } from "../canvas/CableRenderer";
 import { GRID_CELL_PX } from "../canvas/canvasSpace";
 import { validateNodeName } from "../graph/nodeNames";
-import { canonicalizeType, getObjectDef, OBJECT_DEFS } from "../graph/objectDefs";
+import { canonicalizeType, getObjectDef, getAvailableObjectDefs, OBJECT_DEFS } from "../graph/objectDefs";
+import { PLATFORM } from "../platform/index";
+
+// Objects available on the current platform. Used for type validation in
+// user-facing commands (add, phrase parser). The full OBJECT_DEFS is still
+// used for name-conflict checks so native-only type names stay reserved.
+const AVAILABLE_DEFS = getAvailableObjectDefs(PLATFORM);
 import { PatchGraph } from "../graph/PatchGraph";
 import type { PatchNode } from "../graph/PatchNode";
 
@@ -164,7 +170,7 @@ export class PatchTerminalEngine {
       if (
         moveMatch
         && !COMMANDS.has(moveMatch[1].toLowerCase())
-        && !OBJECT_DEFS[canonicalizeType(moveMatch[1])]
+        && !AVAILABLE_DEFS[canonicalizeType(moveMatch[1])]
       ) {
         const [, ref, gx, gy] = moveMatch;
         return this.moveByGrid(ref, gx, gy, ctx);
@@ -822,7 +828,7 @@ export class PatchTerminalEngine {
       }
 
       const type = canonicalizeType(typeToken.value);
-      if (!OBJECT_DEFS[type]) {
+      if (!AVAILABLE_DEFS[type]) {
         const nodeId = this.resolveSingleNode(typeToken.value, ctx);
         index += 1;
         const next = read();
@@ -948,7 +954,11 @@ export class PatchTerminalEngine {
     if (tokens.length === 0) throw new TerminalCommandError("usage: add <type> [args...] [as <alias>]");
 
     const type = canonicalizeType(tokens[0]);
-    if (!OBJECT_DEFS[type]) throw new TerminalCommandError(`unknown object type: ${tokens[0]}`);
+    if (!AVAILABLE_DEFS[type]) throw new TerminalCommandError(
+      OBJECT_DEFS[type]
+        ? `${tokens[0]} is only available in the desktop version`
+        : `unknown object type: ${tokens[0]}`,
+    );
 
     const args = tokens.slice(1);
     let alias: string | null = null;

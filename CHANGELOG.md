@@ -23,6 +23,37 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-10] COMPLETED | tooling: cost-tiered model workflow + local Qwen + vault RAG stub
+**Agent:** Claude Code
+**Phase:** Tooling / dev-environment (no patchNet code touched)
+
+**Done:**
+- Audited available models (Anthropic: Opus 4.7 / Sonnet 4.6 / Haiku 4.5) and machine (M5 Pro, 24 GB, 553 GB free) and defined a 5-tier escalator: local 7B → local 32B → Haiku → Sonnet (default) → Opus.
+- Switched pi `defaultModel` from `claude-opus-4-7` → `claude-sonnet-4-6` to stop accidentally burning Opus on routine work. Opus/Haiku still available via `/model`.
+- Started `ollama serve` and kicked off pulls for `qwen2.5-coder:7b` (~4.7 GB) and `qwen2.5-coder:32b` (~19 GB) as the free local tier. Old `qwen2.5:14b` (general, not coder-tuned) flagged for removal.
+- Registered both Qwen coder models with pi via `~/.pi/agent/models.json` (openai-completions API, `supportsDeveloperRole`/`supportsReasoningEffort` off for Ollama compatibility, $0 cost). They'll appear in `/model` once pulls finish; pi reloads `models.json` automatically, no restart needed.
+- Wrote `scripts/vault_rag.py`: PEP 723 self-contained semantic search over `patchNet-Vault/wiki/` + top-level `.md` docs. Uses already-cached `BAAI/bge-small-en-v1.5` embeddings + `sqlite-vec` storage in `scripts/.vault_rag.sqlite`. Subcommands: `index`, `query "..." [--k N] [--json]`. Output is `path:line` markdown chunks designed to paste into pi or pipe to a local model.
+- Added `scripts/.vault_rag.sqlite` to `.gitignore`.
+
+**Changed files:**
+- ~/.pi/agent/settings.json — defaultModel: opus → sonnet
+- ~/.pi/agent/models.json — new; registers ollama provider + 2 Qwen coder models
+- scripts/vault_rag.py — new; local RAG over the vault
+- .gitignore — ignore scripts/.vault_rag.sqlite
+
+**Notes / decisions:**
+- Tier rule of thumb: local for mechanical typing tasks (changelog/wiki/summaries/commit msgs), Sonnet as default workhorse, Opus reserved for planning + cross-cutting refactors + escalation after Sonnet fails twice. Expected spend reduction ~70–80% vs all-Opus baseline with negligible quality loss on execution-class tasks.
+- Chose Qwen 2.5 Coder over DeepSeek-Coder-V2 / Codestral / Phi-4 for the local tier — currently the strongest open coder model that fits 24 GB at 4-bit, and 32B at Q4_K_M is the largest size that runs without swapping on this machine.
+- RAG > LoRA fine-tune for a vault this small. Fine-tuning intentionally skipped.
+- Local 32B context set to 32k (Qwen 2.5 native); raise later via Ollama Modelfile + YaRN if longer windows needed.
+
+**Next needed:**
+- After downloads finish: `uv run scripts/vault_rag.py index` then a sanity `query`.
+- Try `Qwen2.5 Coder 7B (Local)` via `/model` on a real changelog/wiki task to calibrate where the local quality bar actually sits before trusting it for code.
+- Optional: `ollama rm qwen2.5:14b` to reclaim 9 GB once coder models verified working.
+
+---
+
 ## [2026-05-09] COMPLETED | phoneTilt: wrap yaw outlet to 0–360°
 **Agent:** Claude Code
 
@@ -2008,3 +2039,118 @@ Older entries archived to `AGENTS-archive.md`.
 - Manual smoke: drop `youtube~`, paste URL, drag from URL bar / iframe / buttons (locked = should drag); click lock icon (should unlock + show dashed outline + accent on the icon); now URL field + buttons + YouTube player controls interact normally; click lock again to relock and drag again. Save / reload should preserve locked state.
 - Phase B unchanged.
 ---
+
+## [2026-05-10] COMPLETED | vault_rag.py: index built + query bug fixed
+**Agent:** Claude Code
+**Phase:** Tooling
+
+**Done:**
+- Installed `uv` via homebrew (was missing from PATH at shell launch).
+- Ran `uv run scripts/vault_rag.py index` — indexed 50 files into 956 chunks, wrote `scripts/.vault_rag.sqlite`.
+- Fixed query bug: `sqlite-vec` knn queries require `AND k = ?` in the WHERE clause, not a bare `LIMIT ?`. Updated `cmd_query` accordingly.
+- Sanity query ("straight cables rationale") returned correct top-3 hits from `cable-rendering.md`, `DESIGN_LANGUAGE.md`, and `cables-gl.md`.
+
+**Changed files:**
+- scripts/vault_rag.py — WHERE clause fix in `cmd_query`
+- scripts/.vault_rag.sqlite — new (gitignored)
+
+**Notes / decisions:**
+- `uv` installs its own isolated venv per script run; no system Python packages touched.
+- HF model weights (`BAAI/bge-small-en-v1.5`) loaded from local cache, no download needed.
+
+**Next needed:**
+- Re-index after significant vault additions (`uv run scripts/vault_rag.py index` is fast, ~7s).
+- Try on a real task: pipe query output to a local Qwen model or paste into chat.
+
+## [2026-05-10] COMPLETED | tooling: DeepSeek V3 + R1 added to model tier
+**Agent:** Claude Code
+**Phase:** Tooling
+
+**Done:**
+- Added `deepseek` provider to `~/.pi/agent/models.json` with two models:
+  - `deepseek-chat` (DeepSeek V3) — $0.27/$1.10 per Mtok, strong coder, slots between Haiku and Sonnet
+  - `deepseek-reasoner` (DeepSeek R1) — $0.55/$2.19 per Mtok, reasoning model, ~7× cheaper than Sonnet
+- API key resolved at request time via shell command reading from `patchNet/.env` — never stored as a literal in models.json.
+- R1 configured with `compat.thinkingFormat: "deepseek"` for correct reasoning parameter format.
+- Both models set `supportsDeveloperRole: false` and `supportsReasoningEffort: false` (OpenAI-compat, not full OpenAI).
+- Updated `patchNet-Vault/wiki/concepts/model-tier-workflow.md`: 5-tier → 7-tier, added DeepSeek rows, updated cost comparisons.
+- Re-indexed vault (50 files, 957 chunks).
+
+**Changed files:**
+- ~/.pi/agent/models.json — added deepseek provider + 2 models
+- patchNet-Vault/wiki/concepts/model-tier-workflow.md — 7-tier table, DeepSeek wiring notes
+
+**Notes / decisions:**
+- DeepSeek V3 at $1.10/M output is ~14× cheaper than Sonnet. Primary use: code-heavy tasks where Haiku quality isn't enough but Sonnet feels wasteful.
+- R1 at $2.19/M output is ~7× cheaper than Sonnet with reasoning. Primary use: planning/reasoning tasks that don't need Sonnet's breadth.
+- Key loaded from .env via `!grep ... | cut | xargs` — survives key rotation without touching models.json.
+
+**Next needed:**
+- Smoke test both models via `/model` in pi to confirm auth resolves and completions return.
+
+## [2026-05-10] COMPLETED | Phase 8A — Platform abstraction layer
+**Agent:** Claude Code
+**Phase:** Phase 8 — Dual-target (Browser + Native)
+
+**Done:**
+- `src/platform/index.ts` — `PLATFORM: "browser" | "native"` constant resolved at build time from `__PLATFORM__` Vite define (set by `VITE_PLATFORM` env var) with `window.__TAURI__` runtime override. `isNative`, `isBrowser`, `platformLabel()` helpers.
+- `src/platform/audio.ts` — `AudioBackend` interface (start/stop/sync/destroy/sampleRate/latencyMs/isStarted) + `AudioCapabilities` flags (lowLatencyIO/midiIO/multiChannelProIO/nativeSidecar). All callers outside src/runtime/ will talk to this interface; concrete implementation injected at boot (Phase 8C).
+- `src/platform/fs.ts` — `saveTextFile` / `openTextFile` abstraction. Browser: download link + hidden `<input>`. Native: Tauri plugin-dialog + plugin-fs (dynamic imports with `@ts-ignore` stubs until `tauri init` in Phase 8B).
+- `ObjectSpec.platforms?: PlatformTarget[]` field on the interface in `objectDefs.ts`. Omit = both platforms. `["native"]` = desktop only.
+- `isAvailableOnPlatform(spec, platform)` + `getAvailableObjectDefs(platform)` helpers — filter palette, autocomplete, terminal by current platform.
+- `renderUnavailableObject(node)` in `ObjectRenderer.ts` — dimmed amber-outlined stub for native-only objects loaded in the browser. Inert (pointer-events: none), preserves the node in the patch file.
+- `.patch-object--unavailable` + `.pn-unavailable-*` styles added to `shell.css`.
+- `__PLATFORM__` injected by `vite.config.ts` from `VITE_PLATFORM` env var (default "browser").
+- `tauri:dev` + `tauri:build` scripts in `package.json` (`VITE_PLATFORM=native tauri dev/build`).
+- `tsc --noEmit` passes clean.
+
+**Changed files:**
+- src/platform/index.ts — new
+- src/platform/audio.ts — new
+- src/platform/fs.ts — new
+- src/graph/objectDefs.ts — PlatformTarget type, platforms field on ObjectSpec, isAvailableOnPlatform, getAvailableObjectDefs
+- src/canvas/ObjectRenderer.ts — import isAvailableOnPlatform + PLATFORM; renderUnavailableObject; guard in renderObject
+- src/shell.css — .patch-object--unavailable + .pn-unavailable-* styles
+- vite.config.ts — __PLATFORM__ define from VITE_PLATFORM env var
+- package.json — tauri:dev + tauri:build scripts
+- PLAN.md — Phase 8 (8A–8E) added
+- patchNet-Vault/wiki/concepts/dual-target-architecture.md — new
+- patchNet-Vault/wiki/log.md — decision entry
+- patchNet-Vault/wiki/index.md — new concept linked
+
+**Notes / decisions:**
+- All existing objects have no `platforms` field = available on both. No behaviour change to the browser build whatsoever.
+- The `AudioBackend` interface is the most important seam. `AudioGraph` will implement it in Phase 8B/8C; until then it's an interface only — no callers are wired to it yet.
+- `fs.ts` Tauri paths use `@ts-ignore` stubs — they'll throw at runtime if somehow called in the browser build (they can't be, since `isNative` is false), and will be un-ignored once Tauri packages are installed in Phase 8B.
+- `__TAURI__` runtime override means a developer can load the browser build inside a Tauri shell and still get correct platform detection.
+
+**Next needed:**
+- Phase 8B: `npm install @tauri-apps/cli ...`, `npx tauri init`, wire native file I/O.
+- Wire `getAvailableObjectDefs(PLATFORM)` into the object palette + autocomplete so native-only objects are actually hidden in the browser (currently the helpers exist but aren't called yet).
+
+## [2026-05-10] COMPLETED | Phase 8A cont. — wire platform filtering into palette, autocomplete, terminal, actions
+**Agent:** Claude Code
+**Phase:** Phase 8 — Dual-target (Browser + Native)
+
+**Done:**
+- `ObjectEntryBox.ts` — `VALID_TYPES` now built from `getAvailableObjectDefs(PLATFORM)`. Native-only objects no longer appear in the inline autocomplete dropdown in the browser.
+- `CanvasController.ts` — `OBJECT_TYPES` (right-click context menu object list) now built from `getAvailableObjectDefs(PLATFORM)`.
+- `objectCreateActions.ts` — `generateObjectCreateActions()` now iterates `getAvailableObjectDefs(PLATFORM)`. Native-only objects absent from the action palette in the browser.
+- `PatchTerminalEngine.ts` — added `AVAILABLE_DEFS = getAvailableObjectDefs(PLATFORM)`. Three type-validation sites switched to AVAILABLE_DEFS:
+  - Move-by-grid routing check (line ~173)
+  - Phrase parser type resolution (line ~831)
+  - `parseAddSpec` (line ~957) — now emits "X is only available in the desktop version" instead of generic "unknown object type" when a native-only type is used in the browser.
+  - Name-conflict checks (lines 444, 571) kept on full OBJECT_DEFS — native-only type names stay reserved even in the browser.
+
+**Changed files:**
+- src/canvas/ObjectEntryBox.ts
+- src/canvas/CanvasController.ts
+- src/actions/objectCreateActions.ts
+- src/terminal/PatchTerminalEngine.ts
+
+**Notes / decisions:**
+- Full OBJECT_DEFS still used everywhere that renders/parses existing nodes (ObjectRenderer, CableRenderer, PatchGraph, parse.ts) — a patch file containing native-only objects still loads and renders the stub correctly.
+- Terminal gives a clear, platform-specific error: "midiIn is only available in the desktop version" rather than "unknown object type".
+
+**Next needed:**
+- Phase 8B: `npx tauri init`, Tauri shell, wire native file I/O.

@@ -4,8 +4,17 @@ import { autosavePlugin } from "./vite-plugin-autosave";
 import { jsfxImportPlugin } from "./vite-plugin-jsfx-import";
 import { phoneSensorPlugin } from "./vite-plugin-phone-sensor";
 
+// Platform is set via the VITE_PLATFORM env var.
+//   browser build (default): VITE_PLATFORM unset or "browser"
+//   Tauri build:             VITE_PLATFORM=native  (set by tauri:dev / tauri:build scripts)
+const platform = (process.env.VITE_PLATFORM ?? "browser") as "browser" | "native";
+
 export default defineConfig({
   base: "/patchNet/",
+  define: {
+    // Injected at compile time — tree-shakes platform-only code in production.
+    __PLATFORM__: JSON.stringify(platform),
+  },
   server: {
     // host: true so the dev server binds to the LAN, letting a phone scan the
     // QR code and reach the sensor page without any tunnel.

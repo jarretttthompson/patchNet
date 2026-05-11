@@ -12,7 +12,8 @@ import {
 } from "./canvasSpace";
 import { getZoom, setZoomValue, MIN_ZOOM, MAX_ZOOM } from "./zoomState";
 import { getPatchMode, subscribePatchMode } from "./patchModeState";
-import { OBJECT_DEFS, audioPortDefaultWidth, deriveAdcPorts, deriveDacPorts, getObjectDef } from "../graph/objectDefs";
+import { getAvailableObjectDefs, audioPortDefaultWidth, deriveAdcPorts, deriveDacPorts, getObjectDef } from "../graph/objectDefs";
+import { PLATFORM } from "../platform/index";
 import type { AudioGraph } from "../runtime/AudioGraph";
 import { startDragSession, type DragSession } from "./dragSession";
 import {
@@ -22,8 +23,9 @@ import {
 } from "../graph/userObjectDefaults";
 import { REFERENCE_PATCHES } from "./referencePatches";
 
-// Derived from OBJECT_DEFS — do not maintain a separate list here.
-const OBJECT_TYPES = Object.keys(OBJECT_DEFS).sort();
+// Filtered to the current platform — native-only objects don't appear in
+// the right-click context menu when running in the browser.
+const OBJECT_TYPES = Object.keys(getAvailableObjectDefs(PLATFORM)).sort();
 
 const MENU_STYLE = `
 .pn-context-menu {

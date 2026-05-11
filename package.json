@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "tauri:dev": "VITE_PLATFORM=native tauri dev",
+    "tauri:build": "VITE_PLATFORM=native tauri build"
   },
   "devDependencies": {
     "@types/qrcode": "^1.5.6",

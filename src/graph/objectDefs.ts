@@ -29,6 +29,8 @@ export interface MessageDef {
   args?: string[];
 }
 
+export type PlatformTarget = "browser" | "native";
+
 export interface ObjectSpec {
   description: string;
   category: "ui" | "control" | "audio" | "scripting" | "visual";
@@ -38,6 +40,13 @@ export interface ObjectSpec {
   outlets: PortDef[];
   defaultWidth: number;
   defaultHeight: number;
+  /**
+   * Which platforms this object is available on.
+   * Omit (or set to both) for objects that work everywhere.
+   * Objects tagged ["native"] only are hidden in the browser build's palette,
+   * autocomplete, and terminal — and render as a placeholder if loaded.
+   */
+  platforms?: PlatformTarget[];
 }
 
 function mathOpDef(description: string, outLabel: string): ObjectSpec {
@@ -2231,4 +2240,33 @@ export function buildArgMessage(targetType: string, argIndex: number, value: str
 // autocomplete (ObjectEntryBox) and renderer dispatch see them on first read.
 for (const [type, spec] of getLocalPluginSpecs()) {
   OBJECT_DEFS[type] = spec;
+}
+
+// ─── Platform filtering ──────────────────────────────────────────────────────
+
+/**
+ * Returns true if the given ObjectSpec is available on the supplied platform.
+ * An object with no `platforms` field is available everywhere.
+ */
+export function isAvailableOnPlatform(
+  spec: ObjectSpec,
+  platform: PlatformTarget,
+): boolean {
+  if (!spec.platforms || spec.platforms.length === 0) return true;
+  return spec.platforms.includes(platform);
+}
+
+/**
+ * Returns a filtered copy of OBJECT_DEFS containing only the objects that
+ * are available on the given platform. Used by the palette, autocomplete,
+ * and terminal to hide objects that can't run in the current environment.
+ */
+export function getAvailableObjectDefs(
+  platform: PlatformTarget,
+): Record<string, ObjectSpec> {
+  return Object.fromEntries(
+    Object.entries(OBJECT_DEFS).filter(([, spec]) =>
+      isAvailableOnPlatform(spec, platform),
+    ),
+  );
 }
