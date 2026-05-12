@@ -47,6 +47,25 @@ export interface ObjectSpec {
    * autocomplete, and terminal — and render as a placeholder if loaded.
    */
   platforms?: PlatformTarget[];
+  /**
+   * Alternative type keywords (e.g. "trigger" for "t").
+   * These are auto-registered in TYPE_ALIASES at module init.
+   */
+  keywords?: string[];
+  /**
+   * Derive dynamic ports from creation arguments.
+   * Set on objects whose port count/types depend on args
+   * (sequencer, adc~, dac~, mixer~, fft~, js~, buffer~,
+   *  reaperVideo*, pack, unpack, route, t, subPatch).
+   * Called with the node's creation args; overrides static inlets/outlets.
+   */
+  derivePorts?: (args: string[]) => { inlets: PortDef[]; outlets: PortDef[] };
+  /**
+   * Fill missing positional creation args with defaults.
+   * Set on objects with sparse args that must be contiguous for
+   * serialization (sequencer, buffer~).
+   */
+  ensureArgs?: (args: string[]) => string[];
 }
 
 function mathOpDef(description: string, outLabel: string): ObjectSpec {
@@ -279,6 +298,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     defaultWidth:  80,
     defaultHeight: 40,
+        derivePorts: deriveTriggerPorts,
+        keywords: ["trigger"],
   },
 
   prepend: {
@@ -326,6 +347,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [{ index: 0, type: "message", label: "packed list" }],
     defaultWidth:  80,
     defaultHeight: 40,
+        derivePorts: derivePackPorts,
   },
 
   unpack: {
@@ -344,6 +366,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     defaultWidth:  80,
     defaultHeight: 40,
+        derivePorts: deriveUnpackPorts,
   },
 
   route: {
@@ -363,6 +386,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     defaultWidth:  100,
     defaultHeight: 40,
+        derivePorts: deriveRoutePorts,
   },
 
   scale: {
@@ -688,6 +712,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [],
     defaultWidth: 80,
     defaultHeight: 64,
+        derivePorts: deriveDacPorts,
   },
 
   "fft~": {
@@ -710,6 +735,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     defaultWidth:  160,
     defaultHeight: 200,
+        derivePorts: deriveFftPorts,
   },
 
   "adc~": {
@@ -727,6 +753,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     defaultWidth: 80,
     defaultHeight: 64,
+        derivePorts: deriveAdcPorts,
   },
 
   "browser~*": {
@@ -812,6 +839,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     defaultWidth: 180,
     defaultHeight: 140,
+        derivePorts: deriveMixerPorts,
   },
 
   "vbuf*": {
@@ -924,6 +952,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [],   // derived by deriveBufferPorts(args)
     defaultWidth:  280,
     defaultHeight: 110,
+        derivePorts: deriveBufferPorts,
+        ensureArgs: ensureBufferArgs,
   },
 
   "js~": {
@@ -950,6 +980,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     ],
     defaultWidth: 560,
     defaultHeight: 280,
+        derivePorts: deriveJsEffectPorts,
   },
 
   codebox: {
@@ -1290,6 +1321,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [{ index: 0, type: "media", label: "processed video out (→ layer / vFX)" }],
     defaultWidth:  560,
     defaultHeight: 320,
+        derivePorts: deriveReaperVideoPorts,
   },
 
   "vfxBlur*": {
@@ -1399,6 +1431,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [], // derived from rows
     defaultWidth:  240,
     defaultHeight: 120,
+        derivePorts: deriveSequencerPorts,
+        ensureArgs: ensureSequencerArgs,
   },
 
   dmx: {
@@ -1468,6 +1502,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [],
     defaultWidth:  120,
     defaultHeight: 40,
+        derivePorts: deriveSubPatchPorts,
   },
 
   peer: {
@@ -1567,29 +1602,53 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
  * creation, parse, and type-rename boundaries so the graph always stores
  * the canonical form that Max itself displays.
  */
-const TYPE_ALIASES: Record<string, string> = {
-  trigger: "t",
-  // Legacy video/image type names (pre-`*` suffix). Old saved patches and
+/**
+ * Autobuilt from ObjectSpec.keywords fields.
+ * Maps alternative type names to canonical keys for autocomplete and
+ * type-rename boundaries. The `keywords` field on each spec is the
+ * declarative source of truth.
+ */
+export function buildTypeAliases(defs: Record<string, ObjectSpec>): Record<string, string> {
+  const aliases: Record<string, string> = {};
+  // Legacy aliases: old video/image names (pre-`*` suffix) that shipped
+  // before the naming convention was standardized. Old saved patches and
   // anyone typing the old names in autocomplete still resolve to the new keys.
-  "frame~":      "frame*",
-  mediaVideo:    "mediaVideo*",
-  mediaImage:    "mediaImage*",
-  shaderToy:     "shaderToy*",
-  vfxCRT:        "vfxCRT*",
-  vfxBlur:       "vfxBlur*",
-  reaperVideo:   "reaperVideo*",
-  imageFX:       "imageFX*",
-  layer:         "layer*",
-  visualizer:    "visualizer*",
-  "browser~":    "browser~*",
-  "youtube~":    "youtube~*",
-};
+  const legacy: Record<string, string> = {
+    "frame~":      "frame*",
+    mediaVideo:    "mediaVideo*",
+    mediaImage:    "mediaImage*",
+    shaderToy:     "shaderToy*",
+    vfxCRT:        "vfxCRT*",
+    vfxBlur:       "vfxBlur*",
+    reaperVideo:   "reaperVideo*",
+    imageFX:       "imageFX*",
+    layer:         "layer*",
+    visualizer:    "visualizer*",
+    "browser~":    "browser~*",
+    "youtube~":    "youtube~*",
+  };
+  Object.assign(aliases, legacy);
+  for (const [key, spec] of Object.entries(defs)) {
+    if (spec.keywords) {
+      for (const kw of spec.keywords) {
+        aliases[kw] = key;
+      }
+    }
+  }
+  return aliases;
+}
+
+let TYPE_ALIASES = buildTypeAliases(OBJECT_DEFS);
+
 export function canonicalizeType(type: string): string {
   return TYPE_ALIASES[type] ?? type;
 }
 
-// Make `trigger` discoverable via autocomplete while sharing t's spec.
-OBJECT_DEFS.trigger = OBJECT_DEFS.t;
+// Rebuild TYPE_ALIASES when local plugins are merged (they may introduce
+// their own keywords or be discovered after OBJECT_DEFS is initially built).
+function rebuildTypeAliases(): void {
+  TYPE_ALIASES = buildTypeAliases(OBJECT_DEFS);
+}
 
 /**
  * Ensure all sequencer arg slots are present. The serializer spreads
@@ -2106,6 +2165,106 @@ export function extractReaperVideoParams(source: string): Array<{ name: string; 
   return parsed.program.params.map(p => ({ name: p.name, label: p.label || p.name, min: p.min, max: p.max }));
 }
 
+/**
+ * Derive subPatch ports from args: args[0] = inlet count, args[1] = outlet count.
+ */
+function deriveSubPatchPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
+  const ic = Math.max(0, parseInt(args[0] ?? "0", 10) || 0);
+  const oc = Math.max(0, parseInt(args[1] ?? "0", 10) || 0);
+  const inlets: PortDef[] = Array.from({ length: ic }, (_, i) => ({ index: i, type: "any" as PortType, label: `inlet ${i}` }));
+  const outlets: PortDef[] = Array.from({ length: oc }, (_, i) => ({ index: i, type: "any" as PortType, label: `outlet ${i}` }));
+  return { inlets, outlets };
+}
+
+/**
+ * Validate an ObjectSpec at module init. Returns an array of error messages
+ * (empty = valid). Called for every entry in OBJECT_DEFS at boot.
+ */
+export function validateObjectDef(type: string, spec: ObjectSpec): string[] {
+  const errors: string[] = [];
+
+  if (!spec.description) errors.push(`${type}: missing description`);
+  if (!["ui", "control", "audio", "scripting", "visual"].includes(spec.category)) {
+    errors.push(`${type}: invalid category "${spec.category}"`);
+  }
+  if (!Array.isArray(spec.args)) errors.push(`${type}: args must be an array`);
+  if (!Array.isArray(spec.messages)) errors.push(`${type}: messages must be an array`);
+  if (!Array.isArray(spec.inlets)) errors.push(`${type}: inlets must be an array`);
+  if (!Array.isArray(spec.outlets)) errors.push(`${type}: outlets must be an array`);
+  if (typeof spec.defaultWidth !== "number" || spec.defaultWidth <= 0) {
+    errors.push(`${type}: defaultWidth must be a positive number`);
+  }
+  if (typeof spec.defaultHeight !== "number" || spec.defaultHeight <= 0) {
+    errors.push(`${type}: defaultHeight must be a positive number`);
+  }
+  if (spec.platforms) {
+    if (!Array.isArray(spec.platforms)) errors.push(`${type}: platforms must be an array`);
+    else {
+      for (const p of spec.platforms) {
+        if (p !== "browser" && p !== "native") {
+          errors.push(`${type}: invalid platform "${p}"`);
+        }
+      }
+    }
+  }
+
+  // Validate args
+  if (Array.isArray(spec.args)) {
+    for (let i = 0; i < spec.args.length; i++) {
+      const arg = spec.args[i];
+      if (!arg || typeof arg.name !== "string") {
+        errors.push(`${type}: args[${i}] missing name`);
+      }
+      if (arg && !["int", "float", "symbol", "list"].includes(arg.type)) {
+        errors.push(`${type}: args[${i}].type "${arg.type}" invalid`);
+      }
+    }
+  }
+
+  // Validate messages reference valid inlet indices
+  if (Array.isArray(spec.messages)) {
+    const maxInlet = spec.inlets.length - 1;
+    for (let i = 0; i < spec.messages.length; i++) {
+      const msg = spec.messages[i];
+      if (!msg || typeof msg.selector !== "string") {
+        errors.push(`${type}: messages[${i}] missing selector`);
+      }
+      if (msg && msg.inlet > maxInlet && msg.inlet !== -1 && !spec.derivePorts && spec.inlets.length > 0) {
+        // Only warn if inlets are static and the index is out of range
+        errors.push(`${type}: messages[${i}] inlet ${msg.inlet} exceeds static inlet count ${spec.inlets.length}`);
+      }
+    }
+  }
+
+  // Validate inlets have valid types
+  if (Array.isArray(spec.inlets)) {
+    for (let i = 0; i < spec.inlets.length; i++) {
+      const port = spec.inlets[i];
+      if (!port || typeof port.type !== "string") {
+        errors.push(`${type}: inlets[${i}] missing type`);
+      }
+      if (port && port.index !== i) {
+        errors.push(`${type}: inlets[${i}] index mismatch: expected ${i}, got ${port.index}`);
+      }
+    }
+  }
+
+  // Validate outlets have valid types
+  if (Array.isArray(spec.outlets)) {
+    for (let i = 0; i < spec.outlets.length; i++) {
+      const port = spec.outlets[i];
+      if (!port || typeof port.type !== "string") {
+        errors.push(`${type}: outlets[${i}] missing type`);
+      }
+      if (port && port.index !== i) {
+        errors.push(`${type}: outlets[${i}] index mismatch: expected ${i}, got ${port.index}`);
+      }
+    }
+  }
+
+  return errors;
+}
+
 export function getObjectDef(type: string): ObjectSpec {
   const def = OBJECT_DEFS[type];
 
@@ -2240,6 +2399,21 @@ export function buildArgMessage(targetType: string, argIndex: number, value: str
 // autocomplete (ObjectEntryBox) and renderer dispatch see them on first read.
 for (const [type, spec] of getLocalPluginSpecs()) {
   OBJECT_DEFS[type] = spec;
+}
+
+// Rebuild TYPE_ALIASES after plugin merge (plugins may add keywords).
+rebuildTypeAliases();
+
+// Validate every ObjectSpec at module init. Call is side-effect-free
+// except for console warnings — runtime errors are thrown by getObjectDef
+// on access if a type is missing.
+if (typeof console !== "undefined") {
+  for (const [type, spec] of Object.entries(OBJECT_DEFS)) {
+    const errs = validateObjectDef(type, spec);
+    for (const err of errs) {
+      console.warn("[objectDefs] validation:", err);
+    }
+  }
 }
 
 // ─── Platform filtering ──────────────────────────────────────────────────────

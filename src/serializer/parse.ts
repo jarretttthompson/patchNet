@@ -1,7 +1,6 @@
 import { PatchEdge } from "../graph/PatchEdge";
-import { audioPortDefaultWidth, canonicalizeType, deriveAdcPorts, deriveBufferPorts, deriveDacPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveRoutePorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, getObjectDef } from "../graph/objectDefs";
+import { audioPortDefaultWidth, canonicalizeType, ensureBufferArgs, getObjectDef } from "../graph/objectDefs";
 import { PatchNode } from "../graph/PatchNode";
-import type { PortType } from "../graph/PatchNode";
 import { derivePortsFromCode } from "../canvas/codeboxPorts";
 import { validateNodeName } from "../graph/nodeNames";
 import { isBlobPlaceholder } from "./serialize";
@@ -104,7 +103,7 @@ export function parsePatch(text: string): ParsedPatch {
       }
 
       const type = canonicalizeType(parts[4]);
-      const args = parts.slice(5);
+      let args = parts.slice(5);
       const objectDef = getObjectDef(type);
       let inlets = objectDef.inlets;
       let outlets = objectDef.outlets;
@@ -131,9 +130,10 @@ export function parsePatch(text: string): ParsedPatch {
         }
       }
 
+      // ── js~ decode ──
       if (type === "js~") {
-        // args[0] = raw JSFX source (base64 on disk; ~b64:js-src…~ in display)
-        // args[1] = patch library JSON string (base64 on disk; "-" or missing = no library)
+        // args[0] = raw JSFX source (base64 on disk; ~b64:jsfx-src…~ in display)
+        // args[1] = patch library JSON (base64 on disk; "-" or missing = no library)
         // args[2] = locked flag ("0"/"1")
         // args[3] = sliderValues JSON (base64 on disk; "-" or missing = empty)
         const sourceIsPlaceholder = isBlobPlaceholder(args[0]);
@@ -174,14 +174,9 @@ export function parsePatch(text: string): ParsedPatch {
           }
           args[3] = sliderValues;
         }
-
-        // Port derivation reads source; placeholder source means
-        // "preserve old ports" (PatchGraph.deserialize handles rehydration).
-        if (!sourceIsPlaceholder) {
-          ({ inlets, outlets } = deriveJsEffectPorts(args));
-        }
       }
 
+      // ── reaperVideo* decode ──
       if (type === "reaperVideo*") {
         // args[0] = raw video-processor source (base64 on disk; ~b64:rv-src…~ in display)
         // args[1] = patch library JSON (base64 on disk; "-" or missing = no library)
@@ -225,34 +220,19 @@ export function parsePatch(text: string): ParsedPatch {
           }
           args[3] = paramValues;
         }
-
-        if (!sourceIsPlaceholder) {
-          ({ inlets, outlets } = deriveReaperVideoPorts(args));
-        }
       }
 
+      // ── buffer~ decode ──
       if (type === "buffer~") {
-        // Positional layout (13 slots):
-        //   mode rate loop maxLen transport position bufL bufR bufLStereo bufRStereo
-        //   rangeStart rangeEnd storageKey
-        // Blob slots (6..9) keep base64 on disk for legacy patches; new saves
-        // write "-" and persist PCM in OPFS via storageKey. Placeholders pass
-        // through verbatim — PatchGraph.deserialize rehydrates them from the
-        // matched in-memory node so a text-panel round-trip preserves PCM.
         ensureBufferArgs(args);
         for (let i = 6; i <= 9; i++) {
           if (args[i] === "-") args[i] = "";
         }
         if (args[12] === "-") args[12] = "";
-        ({ inlets, outlets } = deriveBufferPorts(args));
       }
 
+      // ── youtube~* decode ──
       if (type === "youtube~*") {
-        // args[0] = url ("-" placeholder for empty)
-        // args[1] = videoId ("-" placeholder for empty)
-        // args[2] = startSeconds (numeric string)
-        // args[3] = captureOnLoad ("0"/"1")
-        // args[4] = locked ("0"/"1"; default "0" — see objectDefs)
         args[0] = (args[0] && args[0] !== "-") ? args[0] : "";
         args[1] = (args[1] && args[1] !== "-") ? args[1] : "";
         args[2] = args[2] ?? "0";
@@ -260,48 +240,20 @@ export function parsePatch(text: string): ParsedPatch {
         args[4] = args[4] === "1" ? "1" : "0";
       }
 
-      if (type === "subPatch") {
-        const ic = Math.max(0, parseInt(args[0] ?? "0", 10) || 0);
-        const oc = Math.max(0, parseInt(args[1] ?? "0", 10) || 0);
-        inlets  = Array.from({length: ic}, (_, i) => ({ index: i, type: "any" as PortType, label: `inlet ${i}` }));
-        outlets = Array.from({length: oc}, (_, i) => ({ index: i, type: "any" as PortType, label: `outlet ${i}` }));
+      // ── Generic derivePorts/ensureArgs dispatch ──
+      // Objects with a derivePorts function on their spec compute dynamic
+      // ports from args. This covers: t, pack, unpack, route, sequencer,
+      // adc~, dac~, mixer~, fft~, js~, buffer~, reaperVideo*, subPatch.
+      // ensureArgs fills sparse positional args for deterministic serialization.
+      const spec = getObjectDef(type);
+      if (spec.ensureArgs) args = spec.ensureArgs(args);
+      if (spec.derivePorts) {
+        ({ inlets, outlets } = spec.derivePorts(args));
       }
 
-      if (type === "t") {
-        ({ inlets, outlets } = deriveTriggerPorts(args));
-      }
-
-      if (type === "pack") {
-        ({ inlets, outlets } = derivePackPorts(args));
-      }
-
-      if (type === "unpack") {
-        ({ inlets, outlets } = deriveUnpackPorts(args));
-      }
-
-      if (type === "route") {
-        ({ inlets, outlets } = deriveRoutePorts(args));
-      }
-
-      if (type === "sequencer") {
-        ensureSequencerArgs(args);
-        ({ inlets, outlets } = deriveSequencerPorts(args));
-      }
-
-      if (type === "fft~") {
-        ({ inlets, outlets } = deriveFftPorts(args));
-      }
-
-      if (type === "mixer~") {
-        ({ inlets, outlets } = deriveMixerPorts(args));
-      }
-
-      if (type === "adc~") {
-        ({ inlets, outlets } = deriveAdcPorts(args));
-      }
-
-      if (type === "dac~") {
-        ({ inlets, outlets } = deriveDacPorts(args));
+      // ── codebox: special case — ports derive from code string ──
+      if (type === "codebox") {
+        ({ inlets, outlets } = derivePortsFromCode(args[1] ?? ""));
       }
 
       const adcDacWidth =

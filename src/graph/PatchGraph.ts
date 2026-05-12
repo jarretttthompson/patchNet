@@ -1,5 +1,5 @@
 import { PatchEdge, type PatchEdgeData } from "./PatchEdge";
-import { audioPortDefaultWidth, canonicalizeType, deriveAdcPorts, deriveBufferPorts, deriveDacPorts, deriveFftPorts, deriveJsEffectPorts, deriveMixerPorts, derivePackPorts, deriveReaperVideoPorts, deriveRoutePorts, deriveSequencerPorts, deriveTriggerPorts, deriveUnpackPorts, ensureBufferArgs, ensureSequencerArgs, fillCreationDefaults, getObjectDef } from "./objectDefs";
+import { audioPortDefaultWidth, canonicalizeType, fillCreationDefaults, getObjectDef } from "./objectDefs";
 import { PatchNode, type PatchNodeData } from "./PatchNode";
 import { parsePatch } from "../serializer/parse";
 import { getBlobSchema, isBlobPlaceholder, serializePatch, serializePatchForDisplay } from "../serializer/serialize";
@@ -20,45 +20,14 @@ export class PatchGraph {
     type = canonicalizeType(type);
     const objectDef = getObjectDef(type);
     args = fillCreationDefaults(objectDef, args);
+    // Generic derivePorts/ensureArgs dispatch. Any object with a
+    // derivePorts function has its ports computed from args at
+    // creation time (overrides static inlets/outlets in the spec).
+    if (objectDef.ensureArgs) args = objectDef.ensureArgs(args);
     let inlets  = objectDef.inlets;
     let outlets = objectDef.outlets;
-    if (type === "t") {
-      ({ inlets, outlets } = deriveTriggerPorts(args));
-    }
-    if (type === "pack") {
-      ({ inlets, outlets } = derivePackPorts(args));
-    }
-    if (type === "unpack") {
-      ({ inlets, outlets } = deriveUnpackPorts(args));
-    }
-    if (type === "route") {
-      ({ inlets, outlets } = deriveRoutePorts(args));
-    }
-    if (type === "sequencer") {
-      ensureSequencerArgs(args);
-      ({ inlets, outlets } = deriveSequencerPorts(args));
-    }
-    if (type === "fft~") {
-      ({ inlets, outlets } = deriveFftPorts(args));
-    }
-    if (type === "mixer~") {
-      ({ inlets, outlets } = deriveMixerPorts(args));
-    }
-    if (type === "adc~") {
-      ({ inlets, outlets } = deriveAdcPorts(args));
-    }
-    if (type === "dac~") {
-      ({ inlets, outlets } = deriveDacPorts(args));
-    }
-    if (type === "js~") {
-      ({ inlets, outlets } = deriveJsEffectPorts(args));
-    }
-    if (type === "buffer~") {
-      ensureBufferArgs(args);
-      ({ inlets, outlets } = deriveBufferPorts(args));
-    }
-    if (type === "reaperVideo*") {
-      ({ inlets, outlets } = deriveReaperVideoPorts(args));
+    if (objectDef.derivePorts) {
+      ({ inlets, outlets } = objectDef.derivePorts(args));
     }
 
     // Auto-shift placement when the requested spot is occupied. Skips
