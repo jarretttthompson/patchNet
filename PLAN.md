@@ -1,193 +1,413 @@
 # patchNet — Project Plan
 
 **Started:** 2026-04-16
-**Workflow:** Solo dev (user) collaborating with Claude Code. Append work entries to `CHANGELOG.md` as phases complete.
+**Last updated:** 2026-05-12
+
+**Conversation recap (2026-05-12):** User clarified direction — patchNet is now a general creative coding platform (not just PD/Max audio). Performance targets: sub-5ms audio RTL via native CPAL, 60fps video via native GPU. Full platform abstraction confirmed (two backends per domain). De-prioritized peer networking / DMX expansion / mobile in favor of foundational architecture work. Six new active milestones replace old pending phases. See `## Current Direction` below. \
+**Workflow:** Solo dev (user) collaborating with Claude Code, Cursor, Codex. Append work entries to `CHANGELOG.md` as phases complete.
 
 ---
 
 ## What patchNet Is
 
-A browser-based visual programming environment modeled after **Pure Data** and **Max/MSP**.
+A **general-purpose creative coding platform for computer-aided art** — audio, video, lighting, and peer collaboration. One platform, many domains.
 
 Users build programs by placing objects on a canvas and connecting them with patch cables. A synchronized text view on the right side shows the patch as human-readable code, and changes in either panel reflect immediately in the other.
 
+patchNet draws UX inspiration from **Pure Data** and **Max/MSP**, but it is its own language and runtime, not a PD clone.
+
 ### Prior Art (reference, not copy)
-- **WebPd** (`github.com/sebpiq/WebPd`) — PD compiled to JS/WASM; patchNet is a fresh implementation with its own runtime and aesthetic
-- **pd.js** — older browser PD port; useful for reference
-- patchNet is not a PD runtime. It is its own language with PD/Max as the UX model.
+
+- **Pure Data** / **Max/MSP** — UX model (canvas + cables + objects)
+- **WebPd** (`github.com/sebpiq/WebPd`) — PD compiled to JS/WASM; useful reference
+- **pd.js** — older browser PD port; useful reference
+- **TouchDesigner** — node-based visual programming for media arts
+- **vvvv** — visual live-programming environment
+- **nannou** / **openFrameworks** — creative coding frameworks (reference for domain coverage)
 
 ---
 
 ## North Star
 
-> A musician or programmer sits down, opens a browser tab, and builds a working click-track with a button to start it and audio output — in under 2 minutes — without reading a manual.
+> A creative coder sits down — in a browser tab or a native desktop app — and builds a working patch that makes sound, processes video, controls lighting, or talks to another instance — in under 2 minutes — without reading a manual.
+
+---
+
+## Current Direction (2026-05-12)
+
+The project grew organically beyond its original scope. This section captures the strategic decisions made to align the architecture with the broader vision.
+
+### Core Identity
+
+> A **general-purpose creative coding platform for computer-aided art** — patchNet is not just an audio patcher, a video mixer, or a lighting console. It is all of these things, because art-making doesn't respect domain boundaries.
+
+### Target Delivery
+
+| Tier                  | Platform                        | Performance                         | Audience                           |
+| --------------------- | ------------------------------- | ----------------------------------- | ---------------------------------- |
+| 🥇 **Desktop native** | Tauri (macOS / Windows / Linux) | Sub-5ms audio RTL, native GPU video | Live performance, pro users        |
+| 🥈 **Browser**        | Any modern browser              | Web Audio API, canvas/WebGL         | Prototyping, education, casual use |
+
+**Architecture decision:** Full platform abstraction with two backends for every domain (audio, video, fs). See Phases 8C–8D.
+
+### Forward Priority Stack
+
+Before adding new objects or domains, the foundation must be solid. Priority order:
+
+| Priority | Milestone                                                                                     | Why                                                                         |
+| -------- | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| 1        | **Object API Contract** — strict types, written spec, canonical examples, runtime validation  | Everything depends on the object spec. Lock it first.                       |
+| 2        | **Serialization Stability** — versioned .patchnet format, migration path                      | Every new object serializes differently. Stability prevents patch breakage. |
+| 3        | **Audio Backend Abstraction** — interface with browser (Web Audio) + native (CPAL) impls      | Core performance bottleneck. Sub-5ms requires native.                       |
+| 4        | **Video Backend Abstraction** — interface with browser (canvas/WebGL) + native (GPU) impls    | Second performance bottleneck. Needed for reliable video.                   |
+| 5        | **Plugin System Maturity** — well-documented LocalPlugin API so objects can live outside core | Allows contributors to add objects without touching core code.              |
+| 6        | **Test Coverage + CI** — tests for every object, audio routing, serialization round-trip      | Without tests, refactoring the foundation breaks things silently.           |
+
+### Performance Targets
+
+| Domain                       | Browser                  | Desktop Native                 |
+| ---------------------------- | ------------------------ | ------------------------------ |
+| **Audio round-trip latency** | ~10–30ms (Web Audio API) | <3ms (CPAL + CoreAudio)        |
+| **Video frame rate**         | 30fps (canvas/WebGL)     | 60fps (native GPU compositing) |
+| **UI responsiveness**        | Snappy at ~100 objects   | Snappy at ~1000 objects        |
+
+### Decision Record
+
+- **2026-05-12:** Full platform abstraction confirmed — every domain gets browser + native implementations
+- **2026-05-12:** Object API Contract is the keystone — all other foundation work depends on it
+- **2026-05-12:** Plugin system is tier-5 priority — important but downstream of stable object API
+- **2026-05-12:** Tests happen in parallel with foundation work, not as a separate phase
 
 ---
 
 ## Architecture Overview
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                        patchNet app                          │
-│                                                              │
-│  ┌─────────────────────────┐   ┌──────────────────────────┐  │
-│  │     Patch Canvas        │   │    Text / Code View      │  │
-│  │  (DOM or SVG layer)     │◄──►  (serialized patch text) │  │
-│  │                         │   │                          │  │
-│  │  Objects + Cables       │   │  #X obj ... lines        │  │
-│  └────────────┬────────────┘   └──────────────────────────┘  │
-│               │                                              │
-│  ┌────────────▼────────────────────────────────────────┐     │
-│  │              Patch Graph (in-memory model)           │     │
-│  │  nodes: Map<id, PatchNode>                           │     │
-│  │  edges: Map<id, PatchEdge>                           │     │
-│  │  serialize() → text   deserialize(text) → graph      │     │
-│  └────────────┬────────────────────────────────────────┘     │
-│               │                                              │
-│  ┌────────────▼────────────────────────────────────────┐     │
-│  │              Audio Runtime (Web Audio API)           │     │
-│  │  AudioContext, scheduled clock, node graph           │     │
-│  └─────────────────────────────────────────────────────┘     │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        patchNet app                              │
+│                                                                  │
+│  ┌─────────────────────────┐   ┌──────────────────────────────┐  │
+│  │     Patch Canvas        │   │    Text / Code View          │  │
+│  │  (DOM object tiles +    │◄──►  (serialized patch text)     │  │
+│  │   SVG cable overlay)    │   │                              │  │
+│  │                         │   │  #X obj ... lines            │  │
+│  │  Objects + Cables       │   │  Terminal (Shift+T)          │  │
+│  └────────────┬────────────┘   └──────────────────────────────┘  │
+│               │                                                  │
+│  ┌────────────▼──────────────────────────────────────────────┐   │
+│  │              Patch Graph (in-memory model)                 │   │
+│  │  nodes: Map<id, PatchNode>  edges: Map<id, PatchEdge>     │   │
+│  │  undo: UndoManager (batch-aware)                          │   │
+│  │  names: nodeNames.ts (human-readable, auto-allocated)     │   │
+│  │  serialize() ↔ text   clonePartial() → copy/paste         │   │
+│  └──────┬────────────────────────────────────────────────────┘   │
+│         │                                                        │
+│  ┌──────┴─────────────────────────────────┐  ┌────────────────┐  │
+│  │         Audio Runtime (Web Audio)       │  │ Video Runtime  │  │
+│  │  AudioGraph + audio node types:         │  │ VisualizerGraph │  │
+│  │  ~25 types: wave~, noise~, lfo~, adsr~,│  │ layer*, vfx*,  │  │
+│  │  click~, buffer~, js~, mixer~, fft~,   │  │ shaderToy,     │  │
+│  │  transientFollower~, adc~/dac~ (N-ch)   │  │ reaperVideo*   │  │
+│  └─────────────────────────────────────────┘  └────────────────┘  │
+│         │                                                        │
+│  ┌──────┴────────────────────────────────────────────────────┐   │
+│  │              DMX Lighting Runtime                         │   │
+│  │  dmx object + DmxGraph, EnttecProTransport (Web Serial),  │   │
+│  │  FixtureProfiles, DmxPanel (inline UI)                    │   │
+│  └───────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌──────┴────────────────────────────────────────────────────┐   │
+│  │              Peer Networking                               │   │
+│  │  WebRTC sessions: peer, netsend, netreceive               │   │
+│  │  Topic-routed data channel (MessagePack)                   │   │
+│  │  7B pending: hosted rendezvous signaling                   │   │
+│  │  7C pending: audio/video tracks                            │   │
+│  └───────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌──────┴──────────────┐                                         │
+│  │  Platform Layer      │  browser ↔ Tauri (native desktop)      │
+│  │  platform/index.ts   │  isNative, audio/fs abstractions       │
+│  └─────────────────────┘                                         │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Layers
 
-| Layer | Role | Tech |
-|-------|------|------|
-| **Patch Canvas** | Drag, drop, connect objects visually | Vanilla DOM / SVG overlay for cables |
-| **Text View** | Synced serialization panel | Vulf Mono textarea or CodeMirror (later) |
-| **Patch Graph** | In-memory model of nodes + edges | TypeScript classes |
-| **Audio Runtime** | Executes the patch's audio logic | Web Audio API |
-| **Serializer** | patch ↔ text format | Custom parser (PD-inspired syntax) |
+| Layer               | Role                                  | Tech                                                           |
+| ------------------- | ------------------------------------- | -------------------------------------------------------------- |
+| **Patch Canvas**    | Drag, drop, connect objects visually  | Vanilla DOM, SVG cables, bounded canvas (2560×1440)            |
+| **Text View**       | Synced serialization panel + terminal | Vulf Mono textarea, Shift+T patch terminal                     |
+| **Patch Graph**     | In-memory model of nodes + edges      | TypeScript classes, batchChange, UndoManager                   |
+| **Action System**   | Keybindings, palette, user overrides  | ActionRegistry, ActionKeymap, ActionListDialog                 |
+| **Audio Runtime**   | Executes the patch's audio logic      | Web Audio API, AudioWorklet (js~, transientFollower~)          |
+| **Video Runtime**   | Compositing, shader effects           | OffscreenCanvas, WebGL, popup render window                    |
+| **DMX**             | Lighting control                      | Web Serial API, Enttec USB Pro protocol                        |
+| **Peer Networking** | Inter-instance communication          | WebRTC DataChannel, manual SDP (v1)                            |
+| **Serializer**      | patch ↔ text format                   | Custom parser (PD-inspired syntax), lossless round-trip        |
+| **Platform**        | Browser vs Tauri abstraction          | Runtime detection, fs/audio interface, platform-tagged objects |
 
 ---
 
 ## Tech Stack
 
-- **TypeScript + Vite** — single-page app, no heavy framework in v1
-- **Vanilla DOM** for object rendering (no React in v1 — canvas interaction is too direct)
-- **SVG layer** overlay for patch cables (absolute positioned, transparent, sits above canvas)
-- **Web Audio API** for all sound
-- **CSS custom properties** from `DESIGN_LANGUAGE.md` — zero hardcoded hex
-- **Vulf Mono + Vulf Sans** fonts from `fonts/` directory
+- **TypeScript + Vite** — single-page app
+- **Vanilla DOM** — object tile rendering (no React/canvas render)
+- **SVG** — patch cable overlay (straight cables, PD-style)
+- **Web Audio API** — all audio, with AudioWorklet for custom DSP
+- **Web Serial API** — DMX Enttec USB Pro transport
+- **WebRTC** — peer-to-peer data channels for networking
+- **Tauri 2** — native desktop shell (macOS/Windows/Linux)
+- **CPAL (Rust)** — pending native audio backend for sub-5ms latency
+- **CSS custom properties** — `--pn-*` design tokens
+- **Vulf Mono + Vulf Sans** — monospace + UI fonts
+- **Vitest** — test runner
 
 ---
 
-## v1 Object Suite
+## Shipped Object Suite (~45 objects)
 
-These are the only objects shipped in Phase 1. Everything else comes later.
+### Control / Math
 
-| Object | Category | Description |
-|--------|----------|-------------|
-| `button` | Control | Sends a bang message when clicked. One outlet. |
-| `toggle` | Control | Toggles between 0 and 1 on click. One outlet. Displays X when ON. |
-| `slider` | Control | Outputs a float 0.0–1.0 as the thumb moves. One outlet. |
-| `metro` | Logic | Sends bangs at a regular interval (ms). One inlet (start/stop), one inlet (interval), one outlet. |
-| `click~` | Audio | Generates a short click sound when banged. One inlet (bang), connects to `dac~`. |
-| `dac~` | Audio | Audio output — passes signal to the browser audio output. One or two inlets (L/R). |
+`button` · `toggle` · `slider` · `ezSlider` · `ezScale` · `metro` · `timer` · `count` · `drunk` · `pack` · `unpack` · `prepend` · `append` · `trigger` · `int` · `float` · `f` · `+` · `-` · `*` · `/` · `s` · `r` · `comment` · `message` · `sequencer` · `oscillateNumbers`
 
-### Message Flow Model (v1 — simplified)
+### Audio
 
-- Messages are synchronous and immediate (no sample-accurate scheduling in v1 except `metro`)
-- `metro` uses `setInterval` internally, fires bangs on its outlet
-- `click~` on bang creates a short `AudioBufferSourceNode` click and plays it
-- `dac~` is a passthrough — it holds the `AudioContext.destination` reference
-- All connections are typed `any` in v1 (no strict type checking between ports yet)
+`click~` · `noise~` · `wave~` · `lfo~` · `adsr~` · `transientFollower~` · `mixer~` · `buffer~` · `vbuf*` · `fft~` · `js~` (JSFX/EEL2) · `adc~ N` (1–32ch) · `dac~ N` (1–32ch)
+
+### Video
+
+`cam*` · `frame*` · `browser~*` · `youtube~*` · `mediaVideo*` · `mediaImage*` · `imageFX*` · `vfxCRT*` · `vfxBlur*` · `shaderToy*` · `reaperVideo*` · `layer*` · `visualizer*`
+
+### Lighting
+
+`dmx`
+
+### Peer Networking
+
+`peer` · `netsend` · `netreceive`
 
 ---
 
 ## Phases
 
-### Phase 0 — Scaffold (Claude Code leads)
+Phases are listed in the order they are planned, not necessarily the order they shipped — many shipped ahead of schedule.
+
+### Phase 0 — Scaffold ✅ DONE
+
 **Goal:** bare app shell, design tokens, font loading, two-panel layout
 
-Tasks:
-- [ ] `index.html` — app shell with toolbar, canvas area, text panel, status bar
-- [ ] `src/tokens.css` — all `--pn-*` design tokens from `DESIGN_LANGUAGE.md`
-- [ ] `src/fonts.css` — `@font-face` declarations for Vulf Mono + Vulf Sans
-- [ ] `src/shell.css` — toolbar, status bar, split-panel layout, CRT overlay
-- [ ] `src/canvas.css` — canvas surface, dot grid
-- [ ] `vite.config.ts` + `tsconfig.json` + `package.json`
-- [ ] Static placeholder: "patchNet" title in toolbar, empty canvas, empty text panel
+### Phase 1 — Patch Graph Model ✅ DONE
 
-Completion signal: app runs at `localhost:5173`, shows two-panel layout with correct fonts and colors.
+**Goal:** in-memory data model, serializer, basic canvas object rendering (no audio yet)
 
----
+Tasks expanded well beyond original spec:
 
-### Phase 1 — Patch Graph Model
-**Goal:** in-memory data model, serializer, and basic canvas object rendering (no audio yet)
+- `PatchNode`, `PatchEdge`, `PatchGraph` with batch changes, undo manager
+- `serialize.ts` + `parse.ts` — PD-inspired text format, lossless round-trip
+- `ObjectRenderer.ts` — DOM-based object tile rendering
+- Port rendering, object names (`nodeNames.ts`), persistent aliases
 
-Tasks:
-- [ ] `src/graph/PatchNode.ts` — node class: id, type, x, y, inlets[], outlets[]
-- [ ] `src/graph/PatchEdge.ts` — edge class: id, fromNode, fromPort, toNode, toPort
-- [ ] `src/graph/PatchGraph.ts` — graph: add/remove nodes and edges, serialize/deserialize
-- [ ] `src/serializer/serialize.ts` — graph → text format
-- [ ] `src/serializer/parse.ts` — text format → graph (basic, no error recovery yet)
-- [ ] `src/canvas/ObjectRenderer.ts` — renders a PatchNode as a DOM element on canvas
-- [ ] `src/canvas/PortRenderer.ts` — renders inlet/outlet port nubs on objects
-- [ ] Text view updates when graph changes
+### Phase 2 — Canvas Interaction ✅ DONE
 
-Completion signal: add a `button` node programmatically, see it on canvas, see it in text panel.
+**Goal:** full mouse-driven patch editing
 
----
+- Right-click context menu → pick object type
+- Drag to place, move, select, delete objects
+- Cable drawing: click outlet → drag → click inlet (straight SVG lines with preview)
+- Cable selection, deletion, hover states
+- Canvas pan (Space+drag / middle-click), zoom
+- Bounded canvas at 2560×1440 with coordinate rulers + grid
+- Patch mode toggle (P key) to lock cables
 
-### Phase 2 — Canvas Interaction
-**Goal:** drag to create objects, drag to move, click ports to draw cables
+### Phase 3 — Audio Runtime ✅ DONE
 
-Tasks:
-- [ ] Object palette / context menu — right-click canvas → pick object type
-- [ ] Drag to place object on canvas
-- [ ] Click and drag objects to reposition
-- [ ] Select object (click) — highlighted border
-- [ ] Delete selected object (Backspace/Delete)
-- [ ] Click outlet → drag → click inlet → creates cable (straight SVG line)
-- [ ] Cable preview while dragging (ghost line follows cursor)
-- [ ] Click cable to select, Backspace to delete
-- [ ] Canvas pan (middle-mouse drag or Space+drag)
-- [ ] Text view updates live as objects/cables are added/moved/removed
-
-Completion signal: user can build `button → metro → click~ → dac~` entirely by mouse.
-
----
-
-### Phase 3 — Audio Runtime
 **Goal:** the patch actually makes sound
 
-Tasks:
-- [ ] `src/runtime/AudioRuntime.ts` — wraps AudioContext, start/stop
-- [ ] `src/runtime/nodes/MetroNode.ts` — setInterval-based bang emitter
-- [ ] `src/runtime/nodes/ClickNode.ts` — creates AudioBufferSourceNode click on bang
-- [ ] `src/runtime/nodes/DacNode.ts` — holds destination, connects incoming audio
-- [ ] Message passing: outlet fires → walks graph edges → calls inlet handler on target node
-- [ ] `button` click → bang propagates through graph
-- [ ] `toggle` click → sends 0 or 1 downstream
-- [ ] `slider` move → sends float downstream
-- [ ] `metro` receives bang/0/1 on inlet 0 to start/stop, inlet 1 to set interval
-- [ ] Audio on/off toggle in toolbar (starts/stops AudioContext)
+Original 6 audio objects expanded to ~25 audio node types:
 
-Completion signal: `button → metro → click~ → dac~` produces a rhythmic click sound.
+- `click~`, `noise~`, `wave~` (morphing oscillator), `lfo~`, `adsr~`, `transientFollower~`, `mixer~`
+- `buffer~` (tape recorder), `vbuf*` (video-rate buffer)
+- `fft~`, `js~` (JSFX/EEL2 via AudioWorklet)
+- `adc~` / `dac~` multichannel (1–32 channels)
+- Audio Status panel (device picker, sample rate, channel config)
 
----
+### Phase 4 — Polish & Text-to-Patch ✅ DONE
 
-### Phase 4 — Polish & Text-to-Patch
 **Goal:** text panel edits reflect back to canvas; overall UX tightening
 
-Tasks:
-- [ ] Parse text panel on change (debounced) → update graph → re-render canvas
-- [ ] Syntax highlighting in text panel (`--pn-accent` for keywords)
-- [ ] Error state on parse failure (red border on text panel, status bar message)
-- [ ] Object labels editable (double-click to rename / set argument)
-- [ ] `metro` argument editable inline (e.g. `metro 500`)
-- [ ] Slider shows current value as Vulf Mono readout
-- [ ] Save/load patch as `.patchnet` text file (download/upload)
-- [ ] Basic undo/redo (Ctrl+Z / Ctrl+Shift+Z)
+- Bidirectional sync: text → canvas via parse + re-render
+- Syntax highlighting
+- Undo/redo (Ctrl+Z / Ctrl+Shift+Z) with compound undo via `batchChange`
+- Save/load as `.patchnet` files (download + upload in browser; native dialogs in Tauri)
+- Action system replacing scattered keydown handlers
+- REAPER-style action list palette (`?`) with search, section filtering, user keymap editing
 
-Completion signal: user can edit the text view and see the patch update on canvas in real time.
+### Phase 5 — Control / Render Split ✅ DONE
+
+- Split the graph into control-rate (message passing) and audio-rate (signal) domains
+- All objects come from a single `OBJECT_DEFS` registry
+
+### Phase 6 — Live Coding Surface ✅ DONE
+
+- **Patch terminal** (Shift+T): type commands to manipulate the patch
+- **Patch-phrase DSL** (`{ ... }`): build signal chains in one expression
+- **Object names**: auto-allocated human-readable names, persist through save/load
+- **Scratch tabs** (⌘T): independent top-level patches alongside the main patch
+- **Plugin actions**: `LocalPlugin.actions?()` extension point for searchable palette actions
+
+### Phase 7 — Peer Networking ⚡ PARTIAL
+
+**Phase 7A — Manual-SDP MVP ✅ DONE** (2026-05-01)
+Three objects shipped: `peer`, `netsend`, `netreceive`. Topic-routed data channel, manual SDP copy/paste. Browser-to-browser control messages working.
 
 ---
 
-## File Structure (target end of Phase 4)
+## Active Milestones (priority order)
+
+These replace the old Phase 7B–7D and 8C–8E pending items. Foundation work first.
+
+### M1 — Object API Contract
+
+**Goal:** A stable, documented contract that every object must conform to. No more ad-hoc `any` fields or missing hooks.
+
+| #   | Task                        | What                                                                                                         |
+| --- | --------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 1a  | **Strict ObjectSpec types** | Refactor `objectDefs.ts` — proper generics, discriminated port types, runtime `validateObjectDef()` function |
+| 1b  | **Written API spec**        | Create `docs/object-api.md` — every interface, lifecycle hook, port type, serialization contract             |
+| 1c  | **Canonical examples**      | Pick 1 simple + 1 complex object, refactor them to perfectly exemplify the spec                              |
+| 1d  | **Runtime validation**      | `validateObjectDef()` at boot — catches missing ports, wrong types, broken serializers before runtime errors |
+
+**Deliverable:** No new object types until the contract is stable. All ~45 existing objects conform to the validated spec.
+
+---
+
+### M2 — Serialization Stability
+
+**Goal:** The `.patchnet` text format is versioned, every object serializes deterministically, and old patches migrate forward.
+
+- [ ] Version header in `.patchnet` format (`#N patchnet v2`)
+- [ ] Format documentation (`docs/serialization-format.md`)
+- [ ] Object-level `serialize()` / `deserialize()` hooks in ObjectSpec
+- [ ] Migration path from v1 (current) to v2
+- [ ] Round-trip tests for every object
+
+**Depends on:** M1 (ObjectSpec must be stable first)
+
+---
+
+### M3 — Audio Backend Abstraction
+
+**Goal:** `AudioBackend` interface with two full implementations — browser (Web Audio API) and native (CPAL via Tauri IPC).
+
+- [ ] Finalize `AudioBackend` interface in `platform/audio.ts`
+- [ ] Refactor `AudioGraph` to talk to the interface, not Web Audio directly
+- [ ] `WebAudioBackend` — wraps current Web Audio API calls
+- [ ] `NativeAudioBackend` — CPAL via Tauri IPC commands (`audio_start`, `audio_stop`, `audio_sync_graph`, etc.)
+- [ ] Rust side: `cpal` + `cpal-jack` in `Cargo.toml`, IPC command handlers
+- [ ] Boot-time injection: `platform/audio.ts` selects backend based on `isNative`
+- [ ] Target: <3ms RTL on macOS CoreAudio
+
+**Depends on:** M1 (object port types influence audio routing contract)
+
+---
+
+### M4 — Video Backend Abstraction
+
+**Goal:** `VideoBackend` interface with browser (canvas/WebGL) and native (GPU compositing) implementations.
+
+- [ ] `VideoBackend` interface — frame sources, compositing, shader execution, render targets
+- [ ] `BrowserVideoBackend` — wraps current OffscreenCanvas/WebGL code
+- [ ] `NativeVideoBackend` — GPU compositing via Tauri (wgpu/metal/vulkan)
+- [ ] Refactor `VisualizerGraph`, `LayerNode`, `ShaderToyNode`, etc. to use the interface
+- [ ] Target: 60fps native compositing
+
+**Depends on:** M1 (object port types for video frames), M3 (shared IPC infrastructure)
+
+---
+
+### M5 — Plugin System Maturity
+
+**Goal:** A well-documented `LocalPlugin` API so third-party objects can live outside core.
+
+- [ ] Document `LocalPlugin.actions?()`, `LocalPlugin.objects?()`, lifecycle hooks
+- [ ] Plugin loading from external files / directories
+- [ ] Plugin dependency management
+- [ ] Example plugin with full docs
+
+**Depends on:** M1 (plugin API is the ObjectSpec contract exposed to outsiders)
+
+---
+
+### M6 — Test Coverage + CI
+
+**Goal:** Test every object, every audio routing pattern, serialization round-trip, and edge case.
+
+- [ ] Object-level unit tests (serialize/deserialize per type)
+- [ ] Audio routing integration tests (signal chain correctness)
+- [ ] Canvas interaction tests (drag, cable, selection)
+- [ ] Serialization round-trip tests (all objects)
+- [ ] CI pipeline (GitHub Actions)
+- [ ] Coverage target: >80%
+
+**Runs in parallel with** M1–M5 (add tests as each milestone ships)
+
+---
+
+## Backlog (de-prioritized)
+
+These features exist from the original plan and remain desirable, but are blocked by the foundation work above.
+
+### Peer Networking Expansion
+
+| Item                                                                          | Depends on                                                |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------- |
+| **7B — Hosted rendezvous** (WebSocket signaling, auto-connect)                | M1 (object spec for `peer`), M6 (tests for existing peer) |
+| **7C — Audio/video variants** (`netsend~`, `netreceive~`, audio/video tracks) | M3, M4 (audio + video abstractions must exist first)      |
+| **7D — Native discovery** (mDNS, LAN sidecar)                                 | M3 (audio backend stability), M6                          |
+
+### Native Desktop Expansion
+
+| Item                                                              | Depends on                           |
+| ----------------------------------------------------------------- | ------------------------------------ |
+| **8C — CPAL audio backend**                                       | M3 (already captured above — see M3) |
+| **8D — MIDI objects** (`midi`, `midiIn`, `midiOut`)               | M1 + M3 foundation stable            |
+| **8E — Distribution** (`.dmg`, `.msi`, auto-update, code signing) | M3, M4, M6 (all backends tested)     |
+
+### DMX Expansion
+
+| Item                          | Depends on |
+| ----------------------------- | ---------- |
+| Multi-universe DMX            | M1, M6     |
+| Art-Net / sACN over UDP       | M1         |
+| Fixture library import (GDTF) | M1         |
+| Curve editor                  | M1         |
+
+### Live Performance Mode
+
+| Item                          | Depends on                    |
+| ----------------------------- | ----------------------------- |
+| Full-screen presentation mode | M4 (stable video)             |
+| Scene recall / cue list       | M2 (stable serialization)     |
+| Performer UI                  | M1                            |
+| MIDI / OSC binding            | M3 (audio backend), 8D (MIDI) |
+
+### Mobile / Touch
+
+| Item                   | Depends on        |
+| ---------------------- | ----------------- |
+| Multi-touch, phone mic | Foundation stable |
+| Responsive canvas      | M4                |
+| Gesture cable drawing  | M1                |
+
+### Collaborative Editing
+
+| Item                         | Depends on                   |
+| ---------------------------- | ---------------------------- |
+| Real-time multi-user editing | M6 (tests), 7B (stable peer) |
+| CRDT / OT                    | 7B                           |
+| Shared cursors               | 7B                           |
+
+## File Structure (current)
 
 ```
 patchNet/
@@ -200,43 +420,111 @@ patchNet/
     VulfMono-Bold.woff2
     VulfSans-Regular.woff2
     VulfSans-Bold.woff2
+  src-tauri/              # Tauri desktop shell
+    Cargo.toml
+    tauri.conf.json
+    capabilities/
+    src/
+      main.rs
+      lib.rs
   src/
     main.ts
     tokens.css
     fonts.css
     shell.css
-    canvas.css
+    actions/
+      ActionRegistry.ts
+      ActionKeymap.ts
+      ActionDispatcher.ts
+      ActionListDialog.ts
+      builtinActions.ts
+      objectCreateActions.ts
+      types.ts
+      index.ts
+    canvas/
+      CanvasController.ts
+      ObjectRenderer.ts
+      ObjectInteractionController.ts
+      CableRenderer.ts
+      CableDrawController.ts
+      DragController.ts
+      ResizeController.ts
+      CanvasRulers.ts
+      TabManager.ts
+      ScratchTabSession.ts
+      SubPatchSession.ts
+      SubPatchManager.ts
+      patchModeState.ts
+      zoomState.ts
+      canvasSpace.ts
+      AudioConfigPanel.ts
+      DmxPanel.ts
+      JsEffectPanel.ts
+      JsEffectLibraryDialog.ts
+      ImageFXPanel.ts
+      ReaperVideoPanel.ts
+      YouTubePanel.ts
+    control/
+      ShareLoadController.ts
     graph/
       PatchNode.ts
       PatchEdge.ts
       PatchGraph.ts
+      objectDefs.ts
+      nodeNames.ts
+      userObjectDefaults.ts
+      localPlugins.ts
+      InteractableNode.ts
+    platform/
+      index.ts
+      audio.ts
+      fs.ts
+    runtime/
+      AudioGraph.ts
+      AudioRuntime.ts
+      AdcNode.ts / DacNode.ts / WaveNode.ts / LfoNode.ts
+      AdsrNode.ts / ClickNode.ts / NoiseNode.ts
+      BufferNode.ts / MixerNode.ts / FftAnalyzerNode.ts
+      JsEffectNode.ts / BrowserNode.ts
+      LayerNode.ts / FrameNode.ts
+      ImageFXNode.ts / MediaImageNode.ts / MediaVideoNode.ts
+      VisualizerGraph.ts / VisualizerNode.ts / PatchVizNode.ts
+      ShaderToyNode.ts / ReaperVideoNode.ts
+      dmx/ — DmxGraph, DmxNode, EnttecProTransport, FixtureProfile
+      peer/ — WebRTC session management
+      phoneSensor/ — PhoneSensorRegistry
+      buffer/ — streaming PCM, worklet ring
+      jsfx/ — JSFX library management
+      eel2/ — EEL2 parser/interpreter
     serializer/
       serialize.ts
       parse.ts
-    canvas/
-      CanvasView.ts
-      ObjectRenderer.ts
-      PortRenderer.ts
-      CableRenderer.ts
-      DragController.ts
-    runtime/
-      AudioRuntime.ts
-      nodes/
-        ButtonNode.ts
-        ToggleNode.ts
-        SliderNode.ts
-        MetroNode.ts
-        ClickNode.ts
-        DacNode.ts
-    ui/
-      Toolbar.ts
-      TextPanel.ts
-      StatusBar.ts
+    terminal/
+      PatchTerminalController.ts
+      PatchTerminalEngine.ts
+    share/
+      shareUrl.ts
+    cursors/
+    control/
+    crtOverlaySync.ts
+    IRenderContext.ts
+    ImageStore.ts
   docs/
-    object-reference.md
+    objects/              # ~9 of ~45 objects documented
+  tests/
+    actions.test.ts
+    batch-change.test.ts
+    jsfx-compat.test.ts
+    noise-object.test.ts
+    node-names.test.ts
+    round-trip.test.ts
+    terminal.test.ts
+  autosaves/
+    *.patchnet            # auto-saved patches
   PLAN.md
   DESIGN_LANGUAGE.md
   CHANGELOG.md
+  README.md
 ```
 
 ---
@@ -247,192 +535,30 @@ patchNet/
 - **After completing any task:** append a completion entry to `CHANGELOG.md`
 - **When blocked:** note the blocker in `CHANGELOG.md` and stop; don't guess past a blocker
 - **When making an architecture decision:** note it in the Architecture Decisions Log inside `CHANGELOG.md` and update this `PLAN.md`
+- **For cross-LLM agent handoff** (Claude Code / Cursor / Codex): use the `patchNet-Vault/wiki/` for detailed object specs, concept docs, and research notes
 
 ---
 
-## Definition of Done (Phase 1 MVP)
+## Open Items & Known Gaps
 
-- [ ] App loads in browser with correct fonts and colors
-- [ ] User can place all 6 v1 objects on canvas by right-clicking
-- [ ] User can connect objects with straight patch cables
-- [ ] Patch serializes to text panel in real time
-- [ ] `button → metro → click~ → dac~` chain produces rhythmic click audio
-- [ ] `toggle` starts/stops `metro`
-- [ ] `slider` can control `metro` interval
+### Documentation
 
----
+- [ ] Object reference docs: only 9 of ~45 objects have pages in `docs/objects/`
+- [ ] Objects needing docs: `ezScale`, `sequencer`, `drunk`, `pack`/`unpack`/`prepend`/`append`, `trigger`, `mixer~`, `fft~`, `dmx`, `shaderToy*`, `cam*`, `frame*`, `layer*`, `vfx*`, `reaperVideo*`, `peer`/`netsend`/`netreceive`, `buffer~`, `vbuf*`, `phoneTilt`, `timer`, `count`, `oscillateNumbers`, `imageFX*`, `mediaVideo*`, `mediaImage*`, `browser~*`, `youtube~*`, `visualizer*`, `message`, `comment`, `int`, `float`, `f`, `+`, `-`, `*`, `/`, `s`, `r`
 
-## Future Phases (post-v1, not planned yet)
+### Testing
 
-- Number box object
-- Message box object
-- Print / console object
-- Oscillator (`osc~`)
-- Gain (`*~`)
-- Low-pass filter (`lop~`)
-- MIDI input
-- Multiple patches / subpatches
-- Curved cable option (Max style, toggle)
-- Export to standalone HTML
-- Collaborative editing
-- **Peer networking** — see Phase 7 below
+- [ ] Only 8 test files — many objects lack round-trip or unit coverage
+- [ ] No integration tests for audio routing, DMX, video, or peer networking
+- [ ] No automated browser/visual regression tests
 
----
+### Polish & Quality of Life
 
-### Phase 7 — Peer Networking (planned)
-
-**Goal:** Two users running patchNet on different machines can exchange control messages, audio, and video. Same implementation covers wireless (Wi-Fi / internet) and wired (Thunderbolt-bridge / USB-C between TB4-capable machines). See `patchNet-Vault/wiki/concepts/peer-networking.md` for the full architecture.
-
-**Object family** (specced in `patchNet-Vault/wiki/entities/`):
-- `peer` — owns one WebRTC session, exposes connection state and peer-list outlets
-- `netsend` / `netreceive` — control-rate (data channel)
-- `netsend~` / `netreceive~` — audio (MediaStream audio track)
-- `netsend*` / `netreceive*` — video (MediaStream video track)
-
-#### Phase 7A — Manual-SDP minimum viable peer (closed-loop demo)
-
-Tasks:
-- [ ] `src/runtime/peer/PeerSession.ts` — wraps `RTCPeerConnection`, owns one data channel + media track set
-- [ ] `src/graph/localObjects/peer.ts` — peer object def + lifecycle controller
-- [ ] `src/graph/localObjects/netsend.ts` / `netreceive.ts` — control-rate variants, MessagePack payload, reliable mode only
-- [ ] Manual SDP copy/paste UI in the peer object panel (Tier-2 only — no server yet)
-- [ ] Topic routing: data channels keyed by topic prefix; multiple netsend/netreceive multiplex over one session
-
-Completion signal: two browser tabs (or two laptops) can paste SDP blobs into each other's `peer` object and exchange `netsend "foo" 42` → `netreceive "foo"` reliably.
-
-#### Phase 7B — Hosted rendezvous (Tier-1 discovery)
-
-Tasks:
-- [ ] Tiny WebSocket signaling server (deploy target TBD — Cloudflare Worker / Fly / Railway)
-- [ ] `peer` object `signaling=default` mode connects on load, announces room code
-- [ ] Peer-list outlet emits other peers in the same room
-- [ ] One-click connect from peer-list UI
-- [ ] Reliability mode arg on `netsend` (reliable / unreliable / lifetime ms)
-- [ ] Auto-rebind on reconnect
-
-Completion signal: user types a room code into the `peer` object on two machines; they connect with no copy/paste.
-
-#### Phase 7C — Audio + video variants
-
-Tasks:
-- [ ] `netsend~` taps inlet via `MediaStreamAudioDestinationNode`, adds track to peer connection
-- [ ] `netreceive~` consumes incoming track via `ontrack`, exposes Web Audio output
-- [ ] `netsend*` accepts a `MediaVideoSource` (same interface every video sink already understands), adds video track
-- [ ] `netreceive*` exposes a `MediaVideoSource` outlet — slots into existing sinks (`layer*`, `vfxCRT*`, `reaperVideo*`, `vbuf*`, `shaderToy*`) with no sink-side changes
-- [ ] Bandwidth/codec attribute panel (Opus bitrate; VP9/H.264 video preference)
-- [ ] Hold-last-frame on disconnect for `netreceive*`; mute-on-disconnect for `netreceive~`
-
-Completion signal: send `cam*` from machine A to a `reaperVideo*` chain on machine B over Wi-Fi; same patch unchanged works over a Thunderbolt bridge with sub-ms latency (ICE auto-prefers the bridge).
-
-#### Phase 7D — Native helper sidecar (Tier-3 discovery, optional)
-
-Tasks (defer until 7A–7C are stable):
-- [ ] Tauri or Go sidecar binary doing real mDNS on every interface, including `bridge0`
-- [ ] Localhost JSON API for the patchNet tab to query
-- [ ] `peer` object `signaling=localhost:<port>` mode
-- [ ] Installer / packaging story
-
-Completion signal: closed-LAN setup with no internet; two machines on a Thunderbolt bridge auto-discover each other; patchNet shows them in a peer list without any copy/paste.
-
-#### Non-goals for Phase 7
-
-- Multi-peer mesh (>1 remote peer simultaneously) — out of scope; v1 networking is 1:1.
-- TURN relay infrastructure — for v1, NAT-blocked peers fall back to manual SDP. Adding TURN is an ops decision, not an architecture decision.
-- Tight musical synchronization (clock alignment, sub-frame timing) — transport is best-effort; tight sync is a patch-design problem solved on top.
-
----
-
-### Phase 8 — Dual-target: Browser + Native Desktop (Tauri)
-
-**Goal:** Ship patchNet as both a browser app and a high-performance native
-desktop app from a single codebase. Browser = accessible, shareable, ~10–20ms
-latency. Native = sub-3ms latency, MIDI, pro audio I/O, native file dialogs,
-future sidecar processes. Same patch format, same terminal DSL, same visual
-language across both.
-
-**Architecture:** See `src/platform/` — already built (Phase 8A complete).
-
-#### Phase 8A — Platform abstraction layer ✅ DONE (2026-05-10)
-
-- [x] `src/platform/index.ts` — `PLATFORM` / `isNative` / `isBrowser` constants,
-      resolved at build time via `__PLATFORM__` Vite `define` + runtime
-      `window.__TAURI__` fallback.
-- [x] `src/platform/audio.ts` — `AudioBackend` interface + `AudioCapabilities`
-      capability flags. All audio callers will talk to this interface; the
-      concrete implementation (Web Audio vs native CPAL) is injected at boot.
-- [x] `src/platform/fs.ts` — `saveTextFile` / `openTextFile` abstraction.
-      Browser: download link / `<input type=file>`. Native: Tauri dialog + fs
-      write (dynamic imports, `@ts-ignore` until `tauri init`).
-- [x] `ObjectSpec.platforms?: PlatformTarget[]` field — tags objects as
-      `"browser"` / `"native"` / both (omit = both).
-- [x] `isAvailableOnPlatform()` + `getAvailableObjectDefs()` helpers in
-      `objectDefs.ts` — filter the palette, autocomplete, and terminal by
-      current platform.
-- [x] `renderUnavailableObject()` in `ObjectRenderer.ts` — renders a dimmed
-      amber-outlined stub for native-only objects loaded in the browser.
-- [x] `__PLATFORM__` injected by `vite.config.ts` from `VITE_PLATFORM` env var.
-- [x] `tauri:dev` + `tauri:build` scripts in `package.json`
-      (`VITE_PLATFORM=native tauri dev/build`).
-
-#### Phase 8B — Tauri shell + native file I/O
-
-Tasks:
-- [ ] `npm install @tauri-apps/cli @tauri-apps/api @tauri-apps/plugin-dialog @tauri-apps/plugin-fs`
-- [ ] `npx tauri init` — scaffold `src-tauri/` pointing at existing Vite build
-- [ ] Wire `platform/fs.ts` native path through (remove `@ts-ignore` stubs)
-- [ ] Replace `Cmd+S` save and `Cmd+O` open in `builtinActions.ts` to call
-      `platform/fs.ts` instead of current browser download flow
-- [ ] Native window title reflects current patch name
-- [ ] `npm run tauri:dev` opens a desktop window running patchNet with native
-      file dialogs
-
-Completion signal: `Cmd+S` in the desktop build opens a native Save As dialog
-and writes a real `.patchnet` file to disk; `Cmd+O` opens a real file picker.
-Browser build still uses download/upload unchanged.
-
-#### Phase 8C — Native audio backend (CPAL)
-
-Tasks:
-- [ ] Add `cpal` + `cpal-jack` (optional) to `src-tauri/Cargo.toml`
-- [ ] Implement `AudioBackend` trait in Rust: start/stop, CPAL stream,
-      per-node signal graph execution
-- [ ] Tauri IPC commands: `audio_start`, `audio_stop`, `audio_sync_graph`,
-      `audio_trigger_click`, `audio_trigger_adsr`, `audio_set_param`
-- [ ] `NativeAudioBackend` TypeScript class implementing `AudioBackend`
-      interface — forwards calls to IPC commands
-- [ ] Boot-time injection: `isNative ? NativeAudioBackend : AudioGraph` wired
-      through a single `getAudioBackend()` factory in `src/platform/audio.ts`
-- [ ] `dac~` / `adc~` use CoreAudio direct on macOS — achieve <3ms latency
-
-Completion signal: `wave~ → dac~` in the desktop build has measurably lower
-latency than in the browser; RTL (round-trip latency) measured via loopback
-reaches <5ms on macOS with default CoreAudio buffer.
-
-#### Phase 8D — Native-only objects
-
-First objects to tag `platforms: ["native"]` and implement natively:
-- [ ] `midi` — MIDI device list outlet; connect/disconnect messages
-- [ ] `midiIn` — receives MIDI from a device; note/cc/pitchbend outlets
-- [ ] `midiOut` — sends MIDI to a device
-- [ ] `dac~` 32ch pro-interface mode — DirectWire/ASIO on Windows, CoreAudio
-      aggregate device on macOS for professional multi-channel interfaces
-
-Completion signal: `midiIn → metro` — MIDI clock drives a metro object.
-
-#### Phase 8E — Distribution
-
-- [ ] macOS `.dmg` + code signing via Tauri
-- [ ] Windows `.msi` installer
-- [ ] Auto-update via Tauri's built-in updater
-- [ ] Browser version deployed to a stable public URL
-- [ ] `README.md` updated with two install paths: browser (URL) and desktop
-      (download)
-
-#### Non-goals for Phase 8
-
-- iOS / Android mobile native app — the phone sensor objects (`phoneTilt` etc)
-  already cover the mobile use case via the browser.
-- Linux distribution in Phase 8E — CPAL supports it, Tauri supports it;
-  defer until there’s a user asking for it.
-- Replacing Web Audio in the browser build — browser stays on Web Audio;
-  native gets CPAL. No WASM audio engine in between.
+- [ ] Per-tab text panel sync (currently only main patch shown)
+- [ ] Multi-tab save-to-file format (scratch tabs persist via localStorage only)
+- [ ] Rename object UX (names set only via `add ... as ...` or auto-allocated)
+- [ ] Tab completion in terminal
+- [ ] Saved phrase macros (disabled "New action…" button in action list)
+- [ ] Find shortcut feature in action list
+- [ ] Coordinate-input flow (slash-command for `(x,y)` object placement)
+- [ ] Dynamic native window title from patch name

@@ -48,11 +48,7 @@ async function saveTextFileNative(
   defaultName: string,
 ): Promise<string | null> {
   try {
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore — @tauri-apps/plugin-dialog not installed until tauri init
-    const { save }   = await import("@tauri-apps/plugin-dialog");
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore — @tauri-apps/plugin-fs not installed until tauri init
+    const { save }        = await import("@tauri-apps/plugin-dialog");
     const { writeTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await save({
       defaultPath: defaultName,
@@ -110,11 +106,7 @@ function openTextFileBrowser(): Promise<OpenedFile | null> {
 
 async function openTextFileNative(): Promise<OpenedFile | null> {
   try {
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore — @tauri-apps/plugin-dialog not installed until tauri init
-    const { open }    = await import("@tauri-apps/plugin-dialog");
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore — @tauri-apps/plugin-fs not installed until tauri init
+    const { open }        = await import("@tauri-apps/plugin-dialog");
     const { readTextFile } = await import("@tauri-apps/plugin-fs");
     const path = await open({
       multiple: false,

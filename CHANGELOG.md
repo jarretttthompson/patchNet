@@ -2154,3 +2154,44 @@ Older entries archived to `AGENTS-archive.md`.
 
 **Next needed:**
 - Phase 8B: `npx tauri init`, Tauri shell, wire native file I/O.
+
+## [2026-05-10] COMPLETED | Phase 8B — Tauri shell + native file I/O
+**Agent:** Claude Code
+**Phase:** Phase 8 — Dual-target (Browser + Native)
+
+**Done:**
+- Installed Rust toolchain (rustc 1.95.0) via rustup.
+- Installed `@tauri-apps/cli@latest`, `@tauri-apps/api@latest`, `@tauri-apps/plugin-dialog@latest`, `@tauri-apps/plugin-fs@latest`.
+- `npx tauri init` scaffolded `src-tauri/` with default structure.
+- Configured `src-tauri/tauri.conf.json`:
+  - identifier: `com.patchnet.app`
+  - window: 1440×900 min 900×600
+  - beforeBuildCommand uses `VITE_PLATFORM=native`
+  - fs scope: `$DOCUMENT/**`, `$DOWNLOAD/**`, `$HOME/**` (excluding .ssh/.cargo)
+  - plugins: dialog + fs registered
+- `src-tauri/Cargo.toml` — added `tauri-plugin-dialog` and `tauri-plugin-fs` deps.
+- `src-tauri/src/lib.rs` — registered both plugins via `.plugin(tauri_plugin_dialog::init())` + `.plugin(tauri_plugin_fs::init())`.
+- `src-tauri/capabilities/default.json` — granted dialog and fs permissions.
+- Removed `@ts-ignore` stubs from `src/platform/fs.ts` — packages now installed.
+- `src/main.ts` — `savePatchToFile()` branches on `isNative`: native uses `saveTextFile()` from `platform/fs.ts` (Tauri native Save As dialog); browser path unchanged.
+- `src/main.ts` — load button click handler branches on `isNative`: native uses `openTextFile()` from `platform/fs.ts`, sets patch name from filename, flashes "LOADED"; browser path unchanged.
+- `src-tauri/target/` added to `.gitignore`.
+- `package.json` `tauri:dev` / `tauri:build` scripts now use `npx tauri`.
+- `cargo check` passes clean (39s, 483 packages).
+- `tsc --noEmit` passes clean.
+
+**Changed files:**
+- src-tauri/ — new (scaffolded + configured)
+- src/platform/fs.ts — @ts-ignore stubs removed
+- src/main.ts — isNative branches in savePatchToFile + load button handler
+- package.json — tauri:dev/tauri:build scripts updated
+- .gitignore — src-tauri/target added
+
+**Notes / decisions:**
+- `document.title` is already kept in sync with the patch name in main.ts — Tauri reads it for the native window title automatically. No extra wiring needed.
+- Native save always opens a Save As dialog (no "save in place" yet — that requires storing the last-used path, deferred to Phase 8C or a follow-up).
+- Browser save/load flow completely unchanged.
+
+**Next needed:**
+- `npm run tauri:dev` smoke test — verify desktop window opens, Cmd+S opens native Save As dialog, load button opens native file picker.
+- Phase 8C: native audio backend (CPAL) for sub-3ms latency.

@@ -7,6 +7,9 @@ autosaves/
 .claude/
 .DS_Store
 .playwright-mcp/
+# AI-agent tooling runtime/cache (analogous to .claude/) — never commit
+.pi/
+.pi-lens/
 *.local
 .env
 .env.local
@@ -18,3 +21,4 @@ autosaves/
 src/graph/localObjects/*
 !src/graph/localObjects/.gitkeep
 scripts/.vault_rag.sqlite
+src-tauri/target
