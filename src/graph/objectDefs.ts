@@ -2404,15 +2404,25 @@ for (const [type, spec] of getLocalPluginSpecs()) {
 // Rebuild TYPE_ALIASES after plugin merge (plugins may add keywords).
 rebuildTypeAliases();
 
-// Validate every ObjectSpec at module init. Call is side-effect-free
-// except for console warnings — runtime errors are thrown by getObjectDef
-// on access if a type is missing.
+// Validate every ObjectSpec at module init (M1/1d). Non-fatal: the hard gate
+// is tests/object-spec-validation.test.ts (fails CI). Here we surface a single
+// consolidated, prominent report so a regression can't hide as one warn line
+// scrolled away among unrelated console noise.
 if (typeof console !== "undefined") {
+  const offenders: Array<[string, string[]]> = [];
   for (const [type, spec] of Object.entries(OBJECT_DEFS)) {
     const errs = validateObjectDef(type, spec);
-    for (const err of errs) {
-      console.warn("[objectDefs] validation:", err);
-    }
+    if (errs.length > 0) offenders.push([type, errs]);
+  }
+  if (offenders.length > 0) {
+    const report = offenders
+      .map(([type, errs]) => `  ${type}:\n${errs.map((e) => `    - ${e}`).join("\n")}`)
+      .join("\n");
+    console.error(
+      `[objectDefs] ObjectSpec contract violated by ${offenders.length}/` +
+        `${Object.keys(OBJECT_DEFS).length} objects (see tests/object-spec-validation.test.ts):\n` +
+        report,
+    );
   }
 }
 

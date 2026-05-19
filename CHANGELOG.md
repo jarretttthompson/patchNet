@@ -2195,3 +2195,83 @@ Older entries archived to `AGENTS-archive.md`.
 **Next needed:**
 - `npm run tauri:dev` smoke test — verify desktop window opens, Cmd+S opens native Save As dialog, load button opens native file picker.
 - Phase 8C: native audio backend (CPAL) for sub-3ms latency.
+
+## [2026-05-19] COMPLETED | Linux dev environment — second dev machine alongside MacBook
+**Agent:** Claude Code
+**Phase:** Tooling / dev-environment (no patchNet code touched)
+
+**Done:**
+- Confirmed source is fully portable: zero `/Users/`, `darwin`, `process.platform`, or `CoreAudio` references in real source (all `/Users/...` strings were inside the stale Mac `src-tauri/target/` only).
+- Removed stale 2.5 GB Mac `src-tauri/target/` (gitignored; `.d` files hardcoded `/Users/user/vibing/patchNet/...` — useless on Linux).
+- `npm install` on Ubuntu 26.04 / Node v26.0.0 / npm 11.12.1 (13 added, 153 audited, exit 0).
+- Installed Rust via rustup (stable, minimal profile) — rustc/cargo 1.95.0; rustup wired `~/.cargo/bin` into the shell profile.
+- Installed Tauri v2 Linux system libs via apt: `libwebkit2gtk-4.1-dev` (2.52.3), `libjavascriptcoregtk-4.1-dev`, `libsoup-3.0-dev` (3.6.6), `build-essential`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`, `file`, `pkg-config`.
+- **Browser mode verified:** `npm run dev` serves `https://localhost:5173/patchNet/` (HTTP 200, correct app HTML — `<title>patchNet</title>`, `#app`, `main.ts`).
+- **Native mode verified:** `cd src-tauri && cargo check` passes clean from a fresh target in 49.12s — `app v0.1.0` compiles against `tauri 2.11.1`, `webkit2gtk`, `soup3`, `gdk`, zero errors.
+
+**Changed files:**
+- CHANGELOG.md — this entry (no code touched)
+- src-tauri/target/ — deleted (stale Mac artifacts, regenerated on Linux)
+
+**Notes / decisions:**
+- This machine is now a second dev environment in tandem with the MacBook — Linux is a Tier-1 delivery target (Tauri) that was previously untested.
+- `sudo` requires a password here; the apt install had to be run by the user via the session `!` prefix. Claude cannot run privileged commands on this box.
+- Vite browser mode serves HTTPS (basicSsl plugin), not the HTTP shown in `tauri.conf.json` `devUrl` (that path is native-only).
+- `npm run tauri:dev` (launches the actual desktop window) was not run — it needs a display; left as the user's interactive step.
+
+**Next needed:**
+- `npm run tauri:dev` smoke test on Linux — verify the desktop window opens and native file dialogs work via WebKitGTK.
+- Continue M1 (Object API Contract): wire `validateObjectDef()` at boot (1d), write `docs/object-api.md` (1b), canonical examples (1c).
+
+## [2026-05-19] COMPLETED | M1/1d — ObjectSpec contract enforced + boot report
+**Agent:** Claude Code
+**Phase:** M1 — Object API Contract (task 1d, runtime validation)
+
+**Done:**
+- Found that `validateObjectDef()` was already invoked at module init in `objectDefs.ts` (NOT dead code — earlier "zero callers" assessment was wrong; the grep excluded the file itself). It only emitted N scattered `console.warn` lines, easy to miss.
+- Added `tests/object-spec-validation.test.ts` — the hard gate: iterates every entry in `OBJECT_DEFS`, runs `validateObjectDef()`, fails CI with a grouped per-object report if any object violates the contract. Also asserts a non-empty catalog.
+- Replaced the module-init warn loop with a single consolidated `console.error` (count + grouped report, points at the test). Still non-fatal — the test is the enforcement gate; boot stays visible but won't brick the app.
+- **Result: all 73 registered objects conform.** Zero conformance failures. (The "~45 objects" figure in PLAN/docs is stale — actual catalog is 73.)
+- `tsc --noEmit` clean. New validation test: 2/2 pass.
+
+**Changed files:**
+- tests/object-spec-validation.test.ts — new (M1/1d enforcement gate)
+- src/graph/objectDefs.ts — module-init validation: N console.warn → 1 consolidated console.error
+- CHANGELOG.md — this entry
+
+**Notes / decisions:**
+- 1a + 1d are effectively complete: strict types in place, validation runs at boot AND in CI, all objects pass. The remaining M1 work is documentation/exemplars (1b, 1c), not an object-fixing campaign.
+- Boot check kept non-fatal by design (matches prior intent); the vitest test is the actual gate so a dev-time spec nit can't block the app while the regression still fails CI.
+- Pre-existing UNRELATED failure: `tests/actions.test.ts:137` (keymap `view.zoomIn` resolving `Mod+=`/`Mod++`). Verified failing without my changes via `git stash`. Not introduced here, not in M1 scope — flagged for separate triage.
+
+**Next needed:**
+- M1/1b: write `docs/object-api.md` (reconcile with existing `docs/object-spec-standard.md`).
+- M1/1c: pick 1 simple + 1 complex object, refactor to perfectly exemplify the spec.
+- Separate: triage the `actions.test.ts` keymap-defaults failure.
+- Backfill CHANGELOG for the earlier m1a type-refactor commits (6a58141, d9c4b21) which were never logged.
+
+## [2026-05-19] COMPLETED | M1/1b — docs/object-api.md (authoritative Object API contract)
+**Agent:** Claude Code
+**Phase:** M1 — Object API Contract (task 1b, written spec)
+
+**Done:**
+- Wrote `docs/object-api.md` — the authoritative, code-cited Object API contract: `ObjectSpec` interface + all supporting types (`ArgDef`, `MessageDef`, `PortDef`/`PortType`, `PlatformTarget`) with required/optional and `file:line` refs; the 5 categories; both lifecycle hooks (`derivePorts`, `ensureArgs`) incl. the parse-time application order (ensureArgs → derivePorts, parse.ts:248-252); the generic positional serialization contract + blob-arg schema; an exact enumeration of what `validateObjectDef()` enforces AND its gaps; `button` (simple) and `buffer~` (complex) as canonical exemplars; a reconciliation appendix vs the old doc.
+- Source verified against live code before writing — the earlier exploration's `buffer~` arg list was a hallucinated paraphrase; the doc uses the real 13-slot definition (objectDefs.ts:900-957/1996-2011/2032-2057).
+- Superseded `docs/object-spec-standard.md`: replaced its body with a deprecation pointer to `object-api.md` (file kept so vault/links don't 404). `OBJECT_RECIPE.md` left as the companion "how to add an object" procedure and linked from the new doc.
+
+**Changed files:**
+- docs/object-api.md — new (authoritative contract)
+- docs/object-spec-standard.md — body replaced with deprecation pointer
+- CHANGELOG.md — this entry
+- patchNet-Vault/wiki/log.md — decision entry
+
+**Notes / decisions:**
+- No source code touched. Verification: `tests/object-spec-validation.test.ts` still 2/2 green (pins button/buffer~ conformance, so the embedded examples are faithful); `tsc --noEmit` clean.
+- Did NOT add a vault `index.md` concept entry: object-api.md is a `docs/` deliverable, not a new `wiki/concepts/` page — adding a non-`[[concept]]` line would break index.md's format and duplicate content. log.md decision entry added instead.
+- The "~45 objects" figure across PLAN/docs is stale; the doc states the real count (73).
+
+**Next needed:**
+- M1/1c: refactor `button` + `buffer~` (or chosen pair) to *perfectly* exemplify the spec; they're already cited as the canonical examples.
+- Separate: triage the `tests/actions.test.ts` keymap-defaults failure.
+- Backfill CHANGELOG for the earlier m1a type-refactor commits (6a58141, d9c4b21).
+- Consider updating PLAN.md / CLAUDE.md "~45 objects" → 73.
