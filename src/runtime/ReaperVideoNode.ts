@@ -85,6 +85,14 @@ export class ReaperVideoNode implements VideoFXSource {
   private inputScratch: HTMLCanvasElement | null = null;
   private inputScratchCtx: CanvasRenderingContext2D | null = null;
 
+  // Tier 1.3: satisfies VideoFXSource.outputVersion. ReaperVideo runs an
+  // EEL2 frame fn that may have time-dependent or memory-stateful effects,
+  // so we conservatively bump on every process() — downstream chained nodes
+  // see "input changed" every frame. A future pass could diff
+  // currentTime + params + mem-hash, but that's beyond Tier 1.3 scope.
+  private _outputVersion = 0;
+  get outputVersion(): number { return this._outputVersion; }
+
   constructor() {
     this.canvas = document.createElement("canvas");
     const ctx = this.canvas.getContext("2d");
@@ -278,6 +286,7 @@ export class ReaperVideoNode implements VideoFXSource {
       this.ctx.globalAlpha = 1;
       this.ctx.clearRect(0, 0, w, h);
       this.ctx.drawImage(effectivePrimary, 0, 0, w, h);
+      this._outputVersion++;
       return;
     }
 
@@ -302,6 +311,8 @@ export class ReaperVideoNode implements VideoFXSource {
       this.ctx.clearRect(0, 0, w, h);
       this.ctx.drawImage(effectivePrimary, 0, 0, w, h);
     }
+
+    this._outputVersion++;
   }
 
   destroy(): void {

@@ -26,6 +26,22 @@ export class VfxCrtNode implements VideoFXSource {
   curvature  = 0.15;   // 0–1: screen edge curvature / corner darkening
   brightness = 1.0;    // 0.5–2: overall brightness
 
+  // Tier 1.3: source-unchanged skip.
+  // _lastInputVideoTime / _lastInputVfxVersion record the input identity we
+  // last produced from. If process() is called and the input is identical,
+  // we early-return with our last output intact on the canvas.
+  // _outputVersion is bumped only when real work happened; downstream chained
+  // VFX (or a future LayerNode cache) reads it to detect our output changing.
+  // -2 is used as the "never processed" sentinel so a video at currentTime=0
+  // or a chained VFX at outputVersion=0 isn't mistaken for unchanged on the
+  // first call. (-1 would clash with the default-output-version of 0 if any
+  // upstream node initializes its version to -1 in the future; -2 is safe.)
+  private _lastInputVideoTime = -2;
+  private _lastInputVfxVersion = -2;
+  private _outputVersion = 0;
+
+  get outputVersion(): number { return this._outputVersion; }
+
   constructor() {
     this.canvas = document.createElement("canvas");
     const ctx = this.canvas.getContext("2d");
@@ -67,11 +83,21 @@ export class VfxCrtNode implements VideoFXSource {
 
     if (this.inputVfx) {
       this.inputVfx.process();
+      // Tier 1.3: chained-VFX input. If upstream didn't produce new output,
+      // our last-frame canvas is still correct — skip the entire body.
+      if (this.inputVfx.outputVersion === this._lastInputVfxVersion) return;
+      this._lastInputVfxVersion = this.inputVfx.outputVersion;
       src = this.inputVfx.canvas;
       w = src.width;
       h = src.height;
     } else {
       const v = this.inputVideo!;
+      // Tier 1.3: HTMLVideoElement input. currentTime only changes while the
+      // video is playing or seeking; for a paused/static video it's stable
+      // and we can skip. NOTE: when the video IS playing this check passes
+      // every frame, so this skip primarily helps paused/seek-stable cases.
+      if (v.currentTime === this._lastInputVideoTime) return;
+      this._lastInputVideoTime = v.currentTime;
       src = v;
       w = v.videoWidth;
       h = v.videoHeight;
@@ -161,6 +187,8 @@ export class VfxCrtNode implements VideoFXSource {
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, w, h);
     }
+
+    this._outputVersion++;
   }
 
   private ensureSize(c: HTMLCanvasElement, w: number, h: number): void {

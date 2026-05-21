@@ -18,6 +18,16 @@ export class VfxBlurNode implements VideoFXSource {
   saturation = 1;    // 0–3: saturation multiplier
   brightness = 1;    // 0.5–2: brightness multiplier
 
+  // Tier 1.3: source-unchanged skip. See VfxCrtNode for the full rationale —
+  // same sentinels (-2 = never-processed), same protocol: skip the process
+  // body when our input identity is unchanged; bump _outputVersion when work
+  // actually happened so chained-downstream nodes can detect that.
+  private _lastInputVideoTime = -2;
+  private _lastInputVfxVersion = -2;
+  private _outputVersion = 0;
+
+  get outputVersion(): number { return this._outputVersion; }
+
   constructor() {
     this.canvas = document.createElement("canvas");
     const ctx = this.canvas.getContext("2d");
@@ -49,11 +59,18 @@ export class VfxBlurNode implements VideoFXSource {
 
     if (this.inputVfx) {
       this.inputVfx.process();
+      // Tier 1.3 — skip body if upstream produced no new output this frame.
+      if (this.inputVfx.outputVersion === this._lastInputVfxVersion) return;
+      this._lastInputVfxVersion = this.inputVfx.outputVersion;
       src = this.inputVfx.canvas;
       w = src.width;
       h = src.height;
     } else {
       const v = this.inputVideo!;
+      // Tier 1.3 — skip body if HTMLVideoElement source identity (currentTime)
+      // is unchanged. Helps paused/seek-stable video; no-op when playing.
+      if (v.currentTime === this._lastInputVideoTime) return;
+      this._lastInputVideoTime = v.currentTime;
       src = v;
       w = v.videoWidth;
       h = v.videoHeight;
@@ -75,6 +92,8 @@ export class VfxBlurNode implements VideoFXSource {
     if (filterParts.length > 0) ctx.filter = filterParts.join(" ");
     ctx.drawImage(src, 0, 0, w, h);
     ctx.filter = "none";
+
+    this._outputVersion++;
   }
 
   destroy(): void {

@@ -38,6 +38,14 @@ export class ShaderToyNode implements VideoFXSource {
   private lastT     = performance.now() / 1000;
   private frameIdx  = 0;
 
+  // Tier 1.3: satisfies VideoFXSource.outputVersion. ShaderToy intentionally
+  // re-renders every frame (animated uniforms like iTime, iFrame), so we
+  // unconditionally bump on every process() — chained-downstream nodes will
+  // therefore always see "input changed" and run. Real source-unchanged
+  // skipping for ShaderToy would need uniform-set diffing, deferred.
+  private _outputVersion = 0;
+  get outputVersion(): number { return this._outputVersion; }
+
   // Normalized mouse position (0..1) and last-click position
   private mouseX = 0.5;
   private mouseY = 0.5;
@@ -113,6 +121,8 @@ export class ShaderToyNode implements VideoFXSource {
     gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    this._outputVersion++;
   }
 
   // ── Public API ───────────────────────────────────────────────────
