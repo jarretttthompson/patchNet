@@ -1,5 +1,4 @@
 import type { IRenderContext } from "./IRenderContext";
-import { VisualizerNode } from "./VisualizerNode";
 
 /**
  * VisualizerRuntime — singleton registry of named render contexts.
@@ -20,7 +19,6 @@ export class VisualizerRuntime {
 
   private nodes = new Map<string, IRenderContext[]>();
   private registerListeners = new Set<(name: string, node: IRenderContext) => void>();
-  private popupStateListeners = new Set<() => void>();
 
   /**
    * Subscribe to context-registration events. Lets a VisualizerGraph re-wire
@@ -65,40 +63,6 @@ export class VisualizerRuntime {
   /** Returns the first registered context across all names. Used as a fallback target. */
   getFirst(): IRenderContext | undefined {
     return this.nodes.values().next().value?.[0];
-  }
-
-  /**
-   * Subscribe to popup open/close transitions. Fires whenever a VisualizerNode
-   * opens or closes its popup window — used by main.ts to re-host the meter
-   * rAF loop on the visible popup (which the OS keeps un-throttled) instead of
-   * the main window (which Chrome throttles to ~1 Hz when backgrounded by a
-   * fullscreened popup). Returns an unsubscribe function.
-   */
-  onPopupStateChange(cb: () => void): () => void {
-    this.popupStateListeners.add(cb);
-    return () => this.popupStateListeners.delete(cb);
-  }
-
-  /** Called by VisualizerNode after open()/close()/beforeunload. */
-  notifyPopupStateChanged(): void {
-    for (const cb of this.popupStateListeners) cb();
-  }
-
-  /**
-   * First open VisualizerNode popup in registration order, or null if none.
-   * Registration order is stable (Map insertion order), so the same patch
-   * deterministically picks the same host.
-   */
-  getFirstOpenPopupWindow(): Window | null {
-    for (const list of this.nodes.values()) {
-      for (const node of list) {
-        if (node instanceof VisualizerNode && node.isOpen()) {
-          const w = node.getPopupWindow();
-          if (w) return w;
-        }
-      }
-    }
-    return null;
   }
 
   destroy(): void {

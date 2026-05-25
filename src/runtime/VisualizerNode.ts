@@ -3,10 +3,6 @@ import type { IRenderContext } from "./IRenderContext";
 import type { IRenderer } from "../control/IRenderer";
 import type { DownstreamMessage, UpstreamMessage } from "../control/ControlMessage";
 
-// VisualizerRuntime imports VisualizerNode for `instanceof` checks; both sides
-// touch the other only in method bodies, so the cycle is safe at module init.
-import { VisualizerRuntime } from "./VisualizerRuntime";
-
 /**
  * VisualizerNode — manages one named popup render window.
  *
@@ -232,7 +228,6 @@ export class VisualizerNode implements IRenderContext, IRenderer {
       this.canvas  = null;
       this.ctx     = null;
       if (!alreadyClosed) this.onClose?.();
-      VisualizerRuntime.getInstance().notifyPopupStateChanged();
     });
 
     this.startLoop();
@@ -240,7 +235,6 @@ export class VisualizerNode implements IRenderContext, IRenderer {
     this._lastScreenY = this.popup.screenY;
     this.startPositionPoll();
     this.onOpen?.();
-    VisualizerRuntime.getInstance().notifyPopupStateChanged();
   }
 
   /** Hide (close) the popup window. */
@@ -264,7 +258,6 @@ export class VisualizerNode implements IRenderContext, IRenderer {
     this.ctx    = null;
     this.onClose?.();
     popupRef.close();
-    VisualizerRuntime.getInstance().notifyPopupStateChanged();
     // Keep float setting intact so re-opening re-applies it,
     // but the focus handler stays registered — no popup to focus is harmless.
   }
@@ -466,15 +459,6 @@ export class VisualizerNode implements IRenderContext, IRenderer {
   /** Exposes the popup canvas so patchViz nodes can drawImage() from it. */
   getCanvas(): HTMLCanvasElement | null {
     return this.canvas;
-  }
-
-  /**
-   * Expose the popup `Window` so the meter rAF loop can re-host onto a
-   * non-throttled rAF when the main window is backgrounded by a fullscreened
-   * popup. Returns null while no popup is open. See main.ts:startMeterLoop.
-   */
-  getPopupWindow(): Window | null {
-    return this.popup && !this.popup.closed ? this.popup : null;
   }
 
   destroy(): void {

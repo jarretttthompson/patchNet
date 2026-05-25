@@ -303,223 +303,126 @@ async function populateDevices(): Promise<void> {
   }
 }
 
-// ── Meter loop: host swap to dodge Chrome's background-rAF throttle ─────
-//
-// All AnalyserNode reads (fft~, scopes, noise/lfo/wave/transientFollower,
-// mixer meters) and the outlet propagation that feeds audio-reactive layers
-// happen inside this single tick. When a visualizer popup goes fullscreen,
-// Chrome backgrounds the main window and throttles its rAF to ~1 Hz → analysis
-// freezes while the popup keeps drawing → visuals look frozen on the audio.
-//
-// Fix: re-host the tick on the first open popup's rAF (non-throttled because
-// the popup is the foreground window). Fall back to the main window's rAF
-// when no popup is open. Handoffs are notification-driven via
-// VisualizerRuntime.onPopupStateChange + a 1 Hz watchdog setInterval for
-// abnormal popup teardown (tab crash without beforeunload).
-//
-// ── Architectural debt (M3.5e) ─────────────────────────────────────────
-// This still couples audio analysis to a RENDER loop's focus state — now the
-// visible popup's instead of the main window's, which is better but not
-// right. The real fix is to drive AnalyserNode reads off a non-rAF clock
-// (AudioWorklet message tick, or a setInterval/setTimeout chain that the
-// browser can't throttle below ~250ms even backgrounded, sampled at the
-// right rate for FFT band updates) and have every render loop (main +
-// every popup + future second output window + recording path) consume the
-// latest snapshot when it paints. Adding a second output window or any
-// other surface that competes for focus will re-expose this exact bug in a
-// new form. Tracked in PLAN.md §M3.5e.
 let meterRafId = 0;
-let meterHost: Window = window;
-let meterGen  = 0;
-let meterRunning = false;
-let meterWatchdogId: ReturnType<typeof setInterval> | null = null;
-let meterPopupUnsub: (() => void) | null = null;
-let meterTickCounter = 0;
-
-function pickMeterHost(): Window {
-  return VisualizerRuntime.getInstance().getFirstOpenPopupWindow() ?? window;
-}
-
-/**
- * Swap the meter rAF onto `newHost`. Synchronous critical section: cancel old
- * → bump gen → schedule new. The gen counter neutralises any stale callback
- * that already fired before cancel took effect — it returns early without
- * executing the body or rescheduling, so exactly one tick is active per frame
- * from the next frame on. Worst case is one skipped frame on swap.
- */
-function selectMeterHost(newHost: Window): void {
-  if (!meterRunning) return;
-  if (meterHost === newHost && meterRafId !== 0) return;
-  if (meterRafId !== 0) {
-    try { meterHost.cancelAnimationFrame(meterRafId); }
-    catch { /* old host already torn down — gen counter still neutralises */ }
-  }
-  meterRafId = 0;
-  const myGen = ++meterGen;
-  meterHost = newHost;
-  const tick = () => {
-    if (myGen !== meterGen) return;
-    if (newHost !== window && (newHost as Window).closed) {
-      meterRafId = 0;
-      selectMeterHost(pickMeterHost());
-      return;
-    }
-    meterRafId = newHost.requestAnimationFrame(tick);
-    meterTickRun();
-  };
-  meterRafId = newHost.requestAnimationFrame(tick);
-}
 
 function startMeterLoop(): void {
-  if (meterRunning) return;
-  meterRunning = true;
   panGroup.querySelectorAll<HTMLElement>('[data-node-type="fft~"]').forEach(
     el => el.setAttribute("data-dsp-active", "true"),
   );
-  // React to popup open/close events instantly.
-  meterPopupUnsub = VisualizerRuntime.getInstance().onPopupStateChange(() => {
-    selectMeterHost(pickMeterHost());
-  });
-  // Belt-and-braces: catches popup death without beforeunload (tab crash).
-  // setInterval at 1 Hz works even when main is backgrounded — Chrome's
-  // 1 Hz cap on background timers is the design rate here, not a problem.
-  meterWatchdogId = setInterval(() => selectMeterHost(pickMeterHost()), 1000);
-  selectMeterHost(pickMeterHost());
-}
+  const tick = () => {
+    meterRafId = requestAnimationFrame(tick);
+    if (!audioGraph) return;
+    audioGraph.mountFftNodes(panGroup);
+    audioGraph.updateFftDisplay(panGroup);
+    audioGraph.updateWaveDisplay(panGroup);
+    audioGraph.updateNoiseDisplay(panGroup);
+    audioGraph.updateLfoDisplay(panGroup);
+    audioGraph.updateTransientFollowerDisplay(panGroup);
+    audioGraph.flushAdsrCompletions(performance.now());
 
-function meterTickRun(): void {
-  meterTickCounter++;
-  if (!audioGraph) return;
-  audioGraph.mountFftNodes(panGroup);
-  audioGraph.updateFftDisplay(panGroup);
-  audioGraph.updateWaveDisplay(panGroup);
-  audioGraph.updateNoiseDisplay(panGroup);
-  audioGraph.updateLfoDisplay(panGroup);
-  audioGraph.updateTransientFollowerDisplay(panGroup);
-  audioGraph.flushAdsrCompletions(performance.now());
+    // Push fft~ band values: update the directly-connected node's display,
+    // then fire its outlet so the full downstream chain propagates.
+    // Avoids graph.emit (no 60fps re-render) and avoids template contamination
+    // in message boxes (deliverMessageValue would lock node.args to first value).
+    const fftBands = audioGraph.getFftBandLevels();
+    for (const [nodeId, bands] of fftBands) {
+      for (const edge of graph.getEdges()) {
+        if (edge.fromNodeId !== nodeId) continue;
+        const val = bands[edge.fromOutlet];
+        if (val === undefined) continue;
+        const formatted = val.toFixed(4);
+        const targetNode = graph.nodes.get(edge.toNodeId);
+        if (!targetNode) continue;
 
-  // Push fft~ band values: update the directly-connected node's display,
-  // then fire its outlet so the full downstream chain propagates.
-  // Avoids graph.emit (no 60fps re-render) and avoids template contamination
-  // in message boxes (deliverMessageValue would lock node.args to first value).
-  const fftBands = audioGraph.getFftBandLevels();
-  for (const [nodeId, bands] of fftBands) {
-    for (const edge of graph.getEdges()) {
-      if (edge.fromNodeId !== nodeId) continue;
-      const val = bands[edge.fromOutlet];
-      if (val === undefined) continue;
-      const formatted = val.toFixed(4);
-      const targetNode = graph.nodes.get(edge.toNodeId);
-      if (!targetNode) continue;
+        const targetEl = panGroup.querySelector<HTMLElement>(
+          `[data-node-id="${edge.toNodeId}"]`,
+        );
 
-      const targetEl = panGroup.querySelector<HTMLElement>(
-        `[data-node-id="${edge.toNodeId}"]`,
-      );
-
-      if (targetNode.type === "float" || targetNode.type === "integer") {
-        const isFloat = targetNode.type === "float";
-        const stored = isFloat ? formatted : String(Math.trunc(val));
-        targetNode.args[0] = stored;
-        const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
-        if (odo) buildOdometerContent(odo, isFloat ? val : Math.trunc(val), isFloat, null);
-        // Hot inlet 0 stores + fires; cold inlet 1 stores silently.
-        if (edge.toInlet === 0) {
-          objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
+        if (targetNode.type === "float" || targetNode.type === "integer") {
+          const isFloat = targetNode.type === "float";
+          const stored = isFloat ? formatted : String(Math.trunc(val));
+          targetNode.args[0] = stored;
+          const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
+          if (odo) buildOdometerContent(odo, isFloat ? val : Math.trunc(val), isFloat, null);
+          // Hot inlet 0 stores + fires; cold inlet 1 stores silently.
+          if (edge.toInlet === 0) {
+            objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
+          }
+        } else if (targetNode.type === "message") {
+          targetNode.args[0] = formatted;
+          const contentEl = targetEl?.querySelector(".patch-object-message-content");
+          if (contentEl) contentEl.textContent = formatted;
+          objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+        } else {
+          // Processor targets (scale, math ops, s/send, …) must run their own
+          // inlet handler so the value is transformed before being forwarded.
+          objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
         }
-      } else if (targetNode.type === "message") {
-        targetNode.args[0] = formatted;
-        const contentEl = targetEl?.querySelector(".patch-object-message-content");
-        if (contentEl) contentEl.textContent = formatted;
-        objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
-      } else {
-        // Processor targets (scale, math ops, s/send, …) must run their own
-        // inlet handler so the value is transformed before being forwarded.
-        objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
       }
     }
-  }
-  // Push buffer~ position values out the position outlet (last outlet) and
-  // repaint each body waveform with the current cursor.
-  // Stereo mode → outlet index 2; mono mode → outlet index 1.
-  const bufferPositions = audioGraph.getBufferPositions();
-  for (const [nodeId, pos] of bufferPositions) {
-    const sourceNode = graph.nodes.get(nodeId);
-    if (!sourceNode) continue;
-    const bn = audioGraph.getBufferNode(nodeId);
-    if (bn) drawBufferWaveform(nodeId, bn.getPeaks(), bn.bufferLength, pos, bn.state, bufferRange(sourceNode.args));
-    const posOutlet = sourceNode.outlets.length - 1;
-    const formatted = pos.toFixed(4);
-    for (const edge of graph.getEdges()) {
-      if (edge.fromNodeId !== nodeId) continue;
-      if (edge.fromOutlet !== posOutlet) continue;
-      const targetNode = graph.nodes.get(edge.toNodeId);
-      if (!targetNode) continue;
-      const targetEl = panGroup.querySelector<HTMLElement>(
-        `[data-node-id="${edge.toNodeId}"]`,
-      );
-      if (targetNode.type === "float" || targetNode.type === "integer") {
-        const isFloat = targetNode.type === "float";
-        const stored  = isFloat ? formatted : String(Math.trunc(pos));
-        targetNode.args[0] = stored;
-        const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
-        if (odo) buildOdometerContent(odo, isFloat ? pos : Math.trunc(pos), isFloat, null);
-        if (edge.toInlet === 0) {
-          objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
+    // Push buffer~ position values out the position outlet (last outlet) and
+    // repaint each body waveform with the current cursor.
+    // Stereo mode → outlet index 2; mono mode → outlet index 1.
+    const bufferPositions = audioGraph.getBufferPositions();
+    for (const [nodeId, pos] of bufferPositions) {
+      const sourceNode = graph.nodes.get(nodeId);
+      if (!sourceNode) continue;
+      const bn = audioGraph.getBufferNode(nodeId);
+      if (bn) drawBufferWaveform(nodeId, bn.getPeaks(), bn.bufferLength, pos, bn.state, bufferRange(sourceNode.args));
+      const posOutlet = sourceNode.outlets.length - 1;
+      const formatted = pos.toFixed(4);
+      for (const edge of graph.getEdges()) {
+        if (edge.fromNodeId !== nodeId) continue;
+        if (edge.fromOutlet !== posOutlet) continue;
+        const targetNode = graph.nodes.get(edge.toNodeId);
+        if (!targetNode) continue;
+        const targetEl = panGroup.querySelector<HTMLElement>(
+          `[data-node-id="${edge.toNodeId}"]`,
+        );
+        if (targetNode.type === "float" || targetNode.type === "integer") {
+          const isFloat = targetNode.type === "float";
+          const stored  = isFloat ? formatted : String(Math.trunc(pos));
+          targetNode.args[0] = stored;
+          const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
+          if (odo) buildOdometerContent(odo, isFloat ? pos : Math.trunc(pos), isFloat, null);
+          if (edge.toInlet === 0) {
+            objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
+          }
+        } else if (targetNode.type === "message") {
+          targetNode.args[0] = formatted;
+          const contentEl = targetEl?.querySelector(".patch-object-message-content");
+          if (contentEl) contentEl.textContent = formatted;
+          objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+        } else {
+          objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
         }
-      } else if (targetNode.type === "message") {
-        targetNode.args[0] = formatted;
-        const contentEl = targetEl?.querySelector(".patch-object-message-content");
-        if (contentEl) contentEl.textContent = formatted;
-        objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
-      } else {
-        objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
       }
     }
-  }
 
-  const levels = audioGraph.getMeterLevels();
-  for (const [nodeId, info] of levels) {
-    const el = panGroup.querySelector<HTMLElement>(`[data-node-id="${nodeId}"]`);
-    if (!el) continue;
-    const combined = Math.min(info.level * 4, 1);
-    el.style.setProperty("--pn-meter", String(combined));
-    if (info.l !== undefined) {
-      const lv = Math.min(info.l * 4, 1);
-      const fillL = el.querySelector<HTMLElement>(".pn-meter-l .pn-meter-fill");
-      if (fillL) fillL.style.height = `${lv * 100}%`;
+    const levels = audioGraph.getMeterLevels();
+    for (const [nodeId, info] of levels) {
+      const el = panGroup.querySelector<HTMLElement>(`[data-node-id="${nodeId}"]`);
+      if (!el) continue;
+      const combined = Math.min(info.level * 4, 1);
+      el.style.setProperty("--pn-meter", String(combined));
+      if (info.l !== undefined) {
+        const lv = Math.min(info.l * 4, 1);
+        const fillL = el.querySelector<HTMLElement>(".pn-meter-l .pn-meter-fill");
+        if (fillL) fillL.style.height = `${lv * 100}%`;
+      }
+      if (info.r !== undefined) {
+        const lv = Math.min(info.r * 4, 1);
+        const fillR = el.querySelector<HTMLElement>(".pn-meter-r .pn-meter-fill");
+        if (fillR) fillR.style.height = `${lv * 100}%`;
+      }
     }
-    if (info.r !== undefined) {
-      const lv = Math.min(info.r * 4, 1);
-      const fillR = el.querySelector<HTMLElement>(".pn-meter-r .pn-meter-fill");
-      if (fillR) fillR.style.height = `${lv * 100}%`;
-    }
-  }
-}
-
-// DEV-only test hook for tests/focus-throttle/ — exposed under
-// `window.__patchnetTest`. Production builds (`vite build`) drop this block.
-if (import.meta.env.DEV) {
-  (window as unknown as { __patchnetTest: unknown }).__patchnetTest = {
-    runtime: VisualizerRuntime.getInstance(),
-    getMeterHost: () => (meterHost === window ? "main" : "popup"),
-    getMeterTickCount: () => meterTickCounter,
-    resetMeterTickCount: () => { meterTickCounter = 0; },
-    pickMeterHost,
-    selectMeterHost,
   };
+  meterRafId = requestAnimationFrame(tick);
 }
 
 function stopMeterLoop(): void {
-  if (!meterRunning) return;
-  meterRunning = false;
-  if (meterRafId !== 0) {
-    try { meterHost.cancelAnimationFrame(meterRafId); } catch { /* host gone */ }
-    meterRafId = 0;
-  }
-  meterGen++; // invalidate any stale callback still in the rAF queue
-  if (meterWatchdogId !== null) { clearInterval(meterWatchdogId); meterWatchdogId = null; }
-  if (meterPopupUnsub) { meterPopupUnsub(); meterPopupUnsub = null; }
-  meterHost = window;
+  cancelAnimationFrame(meterRafId);
+  meterRafId = 0;
   panGroup.querySelectorAll<HTMLElement>('[data-node-type="fft~"]').forEach(
     el => el.removeAttribute("data-dsp-active"),
   );
