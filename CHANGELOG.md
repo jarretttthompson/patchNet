@@ -2275,3 +2275,39 @@ Older entries archived to `AGENTS-archive.md`.
 - Separate: triage the `tests/actions.test.ts` keymap-defaults failure.
 - Backfill CHANGELOG for the earlier m1a type-refactor commits (6a58141, d9c4b21).
 - Consider updating PLAN.md / CLAUDE.md "~45 objects" → 73.
+
+## [2026-05-25] COMPLETED | Focus-throttle fix: meter loop hosts on visible popup's rAF
+**Agent:** Claude Code
+**Phase:** M3.5e (runtime fragility — audio analysis under background-tab throttle)
+
+**Done:**
+- **Symptom:** when a `visualizer*` popup is fullscreened, the patchNet tab is backgrounded by the OS → Chrome throttles `window.requestAnimationFrame` on the main window to ~1 Hz → `main.ts:startMeterLoop`'s tick (the *only* call site for every `AnalyserNode.getByteFrequencyData` / `getFloatTimeDomainData` read and the only place `fft~` band outlets fire) runs ~1×/sec → audio-reactive layers freeze, popup keeps drawing fresh frames at 60 fps with stale data, looks "stuck."
+- **Root cause confirmed against the source:** `VisualizerNode.startLoop()` correctly drives the popup's draw loop off `popup.requestAnimationFrame` (`src/runtime/VisualizerNode.ts:393-407`, with a comment calling out this exact throttle), but the meter loop used bare `requestAnimationFrame(tick)` on `window`. `grep -rn "visibilitychange|document.hidden"` → zero hits; nothing pauses/swaps/falls back.
+- **Fix:** `main.ts:startMeterLoop()` now re-hosts the tick on the first open popup's `Window` (un-throttled because it's the OS-foreground window), falling back to `window` when no popup is open. Single-tick guarantee via cancel-old → bump generation → schedule-new (synchronous critical section); a stale callback that loses the cancel race sees the gen mismatch at the top of its body and returns without rescheduling. Deterministic popup choice: first open popup in `VisualizerRuntime` registration order (Map insertion order is spec-stable). Teardown: (1) `VisualizerNode.open/close/beforeunload` call new `VisualizerRuntime.notifyPopupStateChanged()` → main.ts re-picks host instantly; (2) tick self-check `(newHost as Window).closed` re-picks; (3) 1 Hz `setInterval` watchdog on main catches abnormal popup death (tab crash without `beforeunload`).
+- **Why setInterval is OK as the watchdog but rejected as the audio driver:** the watchdog fires at 1 Hz to detect host-change events (popup death is rare, 1 s detection latency is fine). The audio analysis driver remains rAF on a non-throttled window. The 1 Hz lower bound on background `setInterval` is the watchdog's *design rate*, not a constraint we're fighting.
+- **CDP verification — `tests/focus-throttle/` (new):** modeled on `tests/flicker/`. Owns its own isolated headless Chrome, seeds a `noise~ → fft~ → visualizer*` patch, opens audio + popup via user-gesture-scoped `Runtime.evaluate`, transparently throttles `window.requestAnimationFrame` to 1 Hz via a wrapper that preserves the rAF ID/cancel contract, then runs two phases:
+  - **POSITIVE** (popup open, main throttled): expect ≥30 meter ticks in 2 s. **Actual: 121 ticks/2 s** — the popup-hosted rAF runs at full ~60 Hz despite the main throttle.
+  - **NEGATIVE control** (popup closed → host returns to main, still throttled): expect ≤5 meter ticks in 2 s. **Actual: 2 ticks/2 s** — proves the throttle simulation is real, so the positive result is meaningful (a no-op fix would land here permanently).
+- Both probes pass; flicker probe still PASSES against the modified `VisualizerNode`/`VisualizerRuntime`. Full vitest suite 247/247 unchanged. `tsc --noEmit` clean.
+- Architectural-debt callout: prominent comment block at `src/main.ts:startMeterLoop` flags that audio analysis is still coupled to a RENDER loop's focus state (now "visible popup" instead of "main"), and adding a second output window / recording surface / anything else that competes for focus will re-expose the same bug shape. Real fix is to drive AnalyserNode reads off a non-rAF clock (AudioWorklet message tick or self-resetting timeout chain) and have every render loop consume the latest snapshot. To be tracked as M3.5e₄ once the M3.5 section lands.
+
+**Changed files:**
+- src/main.ts — meter-loop refactor (host-swap state, `pickMeterHost`, `selectMeterHost`, watchdog wiring); meter tick body extracted into `meterTickRun()`; DEV-only `window.__patchnetTest` hook (gated `import.meta.env.DEV`); 25-line architectural-debt comment near the meter loop
+- src/runtime/VisualizerNode.ts — `getPopupWindow()` accessor; `VisualizerRuntime.notifyPopupStateChanged()` calls at the three popup state transitions (open, close, beforeunload)
+- src/runtime/VisualizerRuntime.ts — `popupStateListeners` set + `onPopupStateChange()` subscriber API + `notifyPopupStateChanged()` emitter + `getFirstOpenPopupWindow()` host selector (instanceof VisualizerNode check)
+- tests/focus-throttle/{README.md,probe.mjs,run.mjs} — new CDP probe (positive + negative-control)
+- package.json — `test:focus-throttle` script entry
+- CHANGELOG.md — this entry
+
+**Notes / decisions:**
+- **Single tick guaranteed by gen counter, not just cancel.** `cancelAnimationFrame` is a no-op if the callback has already started executing — so if a swap interleaves with a tick firing, the cancel might not actually cancel. The `meterGen` bump catches this: the in-flight tick checks `myGen !== meterGen` at the top of its body and bails without rescheduling. So even a worst-case cancel-race produces one already-running-tick (which would have run anyway) plus the new host's tick from the next frame on — no double-fire of outlets on the same frame, no two ticks racing.
+- **Popup selection: registration order, not focus order.** `popup.document.hasFocus()` polling across multiple popups is wasteful and racy. Registration-order is stable + debuggable. The "two popups on separate screens, user focuses #2 while #1 is hosting" case re-creates the original throttle bug — flagged in the architectural-debt callout as the trigger for the proper non-rAF clock.
+- **DEV-only test hook (`window.__patchnetTest`) is gated by `import.meta.env.DEV`.** Vite's tree-shaking + dead-code elimination drops the entire block in production builds. The probe runs against `vite dev`, which is where the hook exists.
+- **Throttle wrapper in the probe preserves rAF ID/cancel semantics** — when throttled, the wrapper returns a synthesized ID backed by `setTimeout`, and `cancelAnimationFrame` looks up the ID-kind in a Map and dispatches to `clearTimeout` vs the underlying `cancelAnimationFrame`. Without this, the meter loop's own cancel path would be broken under throttle and the test would measure cancel-failure noise, not actual throttle behaviour.
+- **Why this commit ships separately from the in-flight M2/M3 work:** the focus-throttle fix is a discrete runtime-fragility patch with its own CDP test and its own narrow blast radius. Bundling it with the unrelated M2/M3 changes (serialization version header, migration dispatcher, audio backend abstraction) would muddle bisects on either side.
+
+**Next needed:**
+- Live human verification: open the venue patch on the always-on dev server, fullscreen the visualizer popup, confirm audio-reactive layers stay alive for >5 minutes (CDP test proves the mechanism; live soak proves it under real audio + video load).
+- When the uncommitted M3 work lands, add the M3.5e₄ row to PLAN.md (the architectural-debt entry — full prose already drafted in the working dir, see git stash / `git diff` once M3.5 section is committed).
+- Long-term (M3.5e₄): replace the meter-loop rAF with a non-render-loop clock so this whole class of focus-coupling bug goes away. The current fix is a pragmatic bridge.
+

@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:focus-throttle": "node tests/focus-throttle/run.mjs",
     "tauri:dev": "VITE_PLATFORM=native npx tauri dev",
     "tauri:build": "VITE_PLATFORM=native npx tauri build"
   },
