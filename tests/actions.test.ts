@@ -130,12 +130,17 @@ describe("ActionKeymap", () => {
   });
 
   it("supports multiple bindings for one action", () => {
+    // ActionKeymap treats Meta as Mod only on macOS; in Node tests `navigator` is
+    // undefined ⇒ IS_MAC = false ⇒ Ctrl is the Mod key. Match the production
+    // resolver instead of assuming a platform.
+    const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+    const mod = { metaKey: isMac, ctrlKey: !isMac };
     const r = new ActionRegistry();
     r.register(makeAction({ id: "view.zoomIn", defaultKeys: ["Mod+=", "Mod++"] }));
     const km = new ActionKeymap(r);
     km.rebuildFromDefaults();
-    expect(km.resolve(new FakeKeyEvent({ key: "=", metaKey: true }) as unknown as KeyboardEvent)).toEqual(["view.zoomIn"]);
-    expect(km.resolve(new FakeKeyEvent({ key: "+", metaKey: true }) as unknown as KeyboardEvent)).toEqual(["view.zoomIn"]);
+    expect(km.resolve(new FakeKeyEvent({ key: "=", ...mod }) as unknown as KeyboardEvent)).toEqual(["view.zoomIn"]);
+    expect(km.resolve(new FakeKeyEvent({ key: "+", ...mod }) as unknown as KeyboardEvent)).toEqual(["view.zoomIn"]);
     expect(km.shortcutsFor("view.zoomIn")).toEqual(["Mod+=", "Mod++"]);
   });
 

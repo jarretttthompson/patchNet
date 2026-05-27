@@ -22,3 +22,6 @@ src/graph/localObjects/*
 !src/graph/localObjects/.gitkeep
 scripts/.vault_rag.sqlite
 src-tauri/target
+
+# Flicker-probe test clip — generated on demand by tests/flicker/run.mjs
+tests/flicker/clip.webm

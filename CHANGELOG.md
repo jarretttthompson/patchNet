@@ -2196,6 +2196,57 @@ Older entries archived to `AGENTS-archive.md`.
 - `npm run tauri:dev` smoke test — verify desktop window opens, Cmd+S opens native Save As dialog, load button opens native file picker.
 - Phase 8C: native audio backend (CPAL) for sub-3ms latency.
 
+## [2026-05-12] COMPLETED | M1/1a — strict ObjectSpec types + derivePorts/ensureArgs/keywords (backfill)
+**Agent:** Claude Code
+**Phase:** M1 — Object API Contract (task 1a, strict types) | **Commit:** `6a58141`
+
+**Done:**
+- Enhanced the `ObjectSpec` interface (`src/graph/objectDefs.ts`) with three new optional fields:
+  - `derivePorts(args) => { inlets, outlets }` — declared on the spec for every dynamic-port object (`sequencer`, `adc~`, `dac~`, `mixer~`, `fft~`, `js~`, `buffer~`, `reaperVideo*`, `pack`, `unpack`, `route`, `t`, `subPatch`).
+  - `ensureArgs(args) => args` — sparse-arg normalizer for objects that need deterministic positional serialization (`sequencer`, `buffer~`).
+  - `keywords: string[]` — alternative type names (e.g. `"trigger"` → `t`); auto-registered into `TYPE_ALIASES` at module init.
+- Added `validateObjectDef(type, spec)` — runs at module init and returns an error list per spec; catches broken specs before runtime errors.
+- Generic dispatch replaces three duplicated if/else chains in `PatchGraph.addNode` and `serializer/parse.ts`: the call sites now do `if (spec.ensureArgs) args = spec.ensureArgs(args); if (spec.derivePorts) ({inlets, outlets} = spec.derivePorts(args));`. ~60 lines of per-object branching collapsed to ~6 lines of generic code.
+- `TYPE_ALIASES` auto-builds from spec `keywords` fields; legacy aliases preserved as an explicit allow-list.
+
+**Changed files:**
+- src/graph/objectDefs.ts — interface extended; per-object hooks declared; `validateObjectDef` added (+210 lines)
+- src/graph/PatchGraph.ts — if/else dispatch replaced with generic spec dispatch (-45 lines net)
+- src/serializer/parse.ts — same generic dispatch refactor (-88 lines net)
+- Net: +219 / -124
+
+**Notes / decisions:**
+- This is the foundation of M1 (the "Object API Contract" milestone). `validateObjectDef` shipped at this point but was non-enforcing (warn-only at module init) — 1d (CI gate) finished that story on 2026-05-19; 1b (written contract) on 2026-05-19; 1c (canonical exemplars polish) on 2026-05-20.
+- Hooks were chosen as spec fields (not subclasses) so every object stays a plain data record — serializable, diffable, registry-iterable. The whole contract is one interface.
+
+**Next needed:** (resolved later) 1d runtime enforcement; 1b written spec; 1c canonical exemplars.
+
+## [2026-05-18] COMPLETED | Phase 8A finalization + Tauri shell scaffold + m1a follow-ups (backfill)
+**Agent:** Claude Code
+**Phase:** Phase 8 — Native desktop target | **Commit:** `d9c4b21` (WIP)
+
+**Done:**
+- Landed the `src-tauri/` scaffold: Rust shell, Cargo workspace, tauri.conf, the full Tauri v2 icon set, default capabilities, `lib.rs` + `main.rs`. (Tauri v2 webkitgtk-4.1 base.)
+- Added `pi-theme/`: PatchNet editor theme + extension for the in-house pi agent (PatchNet syntax highlighting + commands).
+- Strict object-spec follow-ups from m1a: tightened `src/main.ts`, `src/platform/fs.ts`, and `vite.config.ts` to fit the new typed contract (no behavior change — type cleanup).
+- Updated `PLAN.md` to reflect the Phase 8 dual-target architecture; `context.md` added.
+- Ignored `.pi/` and `.pi-lens/` (agent tooling + binary cache DB).
+
+**Changed files:**
+- src-tauri/* — new (Tauri scaffold + icons + Cargo.lock)
+- pi-theme/* — new (editor extension + theme)
+- src/main.ts, src/platform/fs.ts, vite.config.ts — m1a type alignment
+- PLAN.md — dual-target architecture (large rewrite)
+- .gitignore — `.pi/`, `.pi-lens/`
+- package.json / package-lock.json — Tauri deps
+- Net: +6899 / -336 (most of which is generated Cargo.lock + icon binaries)
+
+**Notes / decisions:**
+- Tagged WIP because Tauri end-to-end (native window opens, file dialogs, audio routing) wasn't smoke-tested until the May 19 Linux box brought up `npm run tauri:dev`. Behavior on the browser target was unaffected.
+- Theme/extension landed alongside the shell so the pi agent could keep working through the refactor.
+
+**Next needed:** (resolved later) Linux dev parity (2026-05-19); M1 finish (2026-05-19/20).
+
 ## [2026-05-19] COMPLETED | Linux dev environment — second dev machine alongside MacBook
 **Agent:** Claude Code
 **Phase:** Tooling / dev-environment (no patchNet code touched)
@@ -2275,3 +2326,226 @@ Older entries archived to `AGENTS-archive.md`.
 - Separate: triage the `tests/actions.test.ts` keymap-defaults failure.
 - Backfill CHANGELOG for the earlier m1a type-refactor commits (6a58141, d9c4b21).
 - Consider updating PLAN.md / CLAUDE.md "~45 objects" → 73.
+
+## [2026-05-20] COMPLETED | M1/1c — `button` + `buffer~` polished as canonical exemplars
+**Agent:** Claude Code
+**Phase:** M1 — Object API Contract (task 1c, canonical examples) — **closes M1**
+
+**Done:**
+- Audited both exemplars against the doc + spec. `button` already met "minimal-perfect" — no args, no hooks, one bang in / one bang out — left as-is to avoid drift.
+- `buffer~`: two real polish issues fixed.
+  1. **Indentation glitch**: `derivePorts` / `ensureArgs` declarations were 8-space-indented (vs the 4-space convention used everywhere else in the file). Fixed and aligned. Cosmetic but unfit for a "canonical example."
+  2. **Hidden / persisted-state boundary made visible.** `buffer~`'s 13 args split into 4 user-facing settings (mode/rate/loop/maxLen) and 9 hidden persisted slots (transport/position, PCM blobs, range, OPFS key). The boundary is a real serialization invariant — inserting in the middle would break round-trip — but the visual cue (just `hidden: true` repeating) was easy to miss. Added a 2-line comment between args[3] and args[4] stating "append new persisted slots at the end."
+- Did NOT add "this is the canonical exemplar" anchor comments (drew the CLAUDE.md line at non-rotting WHY-comments; the test/doc/validation triad already pins these objects).
+- Updated `docs/object-api.md` line refs to track the +2 shift below buffer~'s args (`validateObjectDef` 2183-2266 → 2185-2268; `ensureBufferArgs` 1996-2011 → 1998-2013; `deriveBufferPorts` 2032-2057 → 2034-2059; `buffer~` body 900-957 → 900-959).
+- `tests/object-spec-validation.test.ts` still 2/2 green (both exemplars still conform); `tsc --noEmit` clean.
+
+**Changed files:**
+- src/graph/objectDefs.ts — `buffer~` indentation fix + 2-line "args 4-12 are hidden persisted state" comment
+- docs/object-api.md — 4 line-ref updates (validateObjectDef, ensureBufferArgs ×2, deriveBufferPorts, buffer~)
+- CHANGELOG.md — this entry
+
+**Notes / decisions:**
+- **M1 is now complete:** 1a (types) ✅ 1b (doc) ✅ 1c (exemplars) ✅ 1d (validation) ✅. The Object API contract is locked. New object work no longer needs to "wait on M1."
+- Resisted scope creep: the prior session's recommendation floated "complete port labels/descriptions, idiomatic structure, anchor comments." Reality was the objects were already very close to exemplary; the meaningful delta was the indentation + the persisted-state invariant. Overdoing it would have diluted, not strengthened, the exemplar.
+- Behavior unchanged: no runtime semantics shift, no validation rules added, no port shapes altered. This is a polish + doc-sync change.
+
+**Next needed:**
+- M2 — Serialization Stability (next milestone per PLAN.md). Versioning, migrations, blob-arg evolution rules.
+- Housekeeping (small): triage `tests/actions.test.ts` keymap failure; backfill CHANGELOG for m1a commits (6a58141, d9c4b21); fix "~45 objects" → 73 across PLAN.md and CLAUDE.md.
+
+## [2026-05-20] COMPLETED | Housekeeping sweep: keymap fix + m1a CHANGELOG backfill + object-count refresh
+**Agent:** Claude Code
+**Phase:** Pre-M2 cleanup (CHANGELOG, PLAN, tests)
+
+**Done:**
+- **Keymap test fix (`tests/actions.test.ts:132-144`).** "supports multiple bindings for one action" was asserting `metaKey: true` resolves to Mod — but `ActionKeymap` only treats Meta as Mod when `IS_MAC=true`, and in Vitest's Node env `navigator` is undefined ⇒ `IS_MAC=false` ⇒ Ctrl is the Mod key. The test was Mac-only by accident. Fixed by adopting the same `isMac`/`mod` shim the round-trip test at line 159 already uses. Full suite now 21/21 (was 20/21).
+- **CHANGELOG backfill** for the two unlogged m1a commits: `6a58141` (2026-05-12: strict ObjectSpec types + derivePorts/ensureArgs/keywords + `validateObjectDef`) and `d9c4b21` (2026-05-18: Tauri shell + pi-theme + m1a type follow-ups). Both inserted in chronological position between the Phase 8B entry and the 2026-05-19 entries — not appended at the bottom — so the timeline reads correctly.
+- **Object count refreshed** "~45" → "73" in PLAN.md (4 spots: §"Shipped Object Suite", M1 deliverable, repo-tree comment, Documentation gap row). CLAUDE.md had no occurrences. The "~9 of … documented" figure left as-is (still accurate).
+
+**Changed files:**
+- tests/actions.test.ts — Mac-vs-Node platform shim added to the keymap test
+- CHANGELOG.md — 2 backfill entries (2026-05-12 / 2026-05-18) + this entry
+- PLAN.md — 4 occurrences of "~45 objects" → "73"
+
+**Notes / decisions:**
+- The keymap fix is in the *test*, not production code, because the production behavior is correct: Meta-on-Mac, Ctrl-elsewhere is intentional. The test had silently coupled to Mac.
+- Backfill entries are dated to the commits (not today) so chronological readers see the actual landing date. They also explicitly cross-reference the later M1 entries that completed the contract.
+
+**Next needed:**
+- M2 (kickoff is the next entry).
+
+## [2026-05-20] COMPLETED | M2/a — docs/serialization-format.md (authoritative `.patchnet` format spec)
+**Agent:** Claude Code
+**Phase:** M2 — Serialization Stability (task 2a, format spec)
+
+**Done:**
+- Wrote `docs/serialization-format.md` — the authoritative, code-cited spec for the on-disk format: file grammar (`#N canvas;` header, `#X` statements, `;` terminator, `//` comments, `\s+` tokenizer); the five statement types (`#X obj`, `#X connect`, `#X id`, `#X name`, `#X size`, `#X panel`, `#X group`); the generic positional object-line contract + per-type special encodings (`codebox` / `js~` / `reaperVideo*` / `buffer~` / `youtube~*`); blob args (`BLOB_ARG_SCHEMA`, `preEncoded` pass-through, the `-` empty-marker convention, display placeholders `~b64:label:hash:summary~`); disk vs display modes; the compatibility surface (what's permanent vs what can change); the v1 (current) → v2 (planned) versioning plan; a complete `PatchParseError` catalog with code refs; and an appendix BNF.
+- Same discipline as M1/1b: every claim has a `file:line` citation; wrote the doc against the live code (not paraphrase) so it's faithful from day one. All citations verified resolved (`parsePatch:33`, header check:84, canvas-required guard:377, `BLOB_ARG_SCHEMA:65`, `serializeNode:116`, `serializePatch:246`, `serializePatchForDisplay:250`, etc.).
+- Fixed a stale line ref in `docs/object-api.md` while there: `BLOB_ARG_SCHEMA` was cited as `serialize.ts:116-165` (actually `serializeNode`); corrected to `65-83`. Added a cross-link from §6 to the new format spec.
+- Restructured M2 in PLAN.md from a flat checklist to the 2a/2b/2c/2d layout (mirrors M1's shape). Recorded the design decision dropping per-object `serialize`/`deserialize` hooks (contradicted M1's generic-positional contract — see §6 of the format spec for the rationale).
+
+**Changed files:**
+- docs/serialization-format.md — new (~330 lines, the authoritative format spec)
+- docs/object-api.md — §6 cross-link added; `BLOB_ARG_SCHEMA` line ref corrected (`116-165` → `65-83`)
+- PLAN.md — M2 restructured into 2a–2d table with the hooks decision recorded
+- CHANGELOG.md — this entry
+
+**Notes / decisions:**
+- **Per-object `serialize`/`deserialize` hooks dropped from M2.** PLAN.md had this as the third bullet, but M1/1b explicitly locked in *generic, positional* serialization with `BLOB_ARG_SCHEMA` as the only per-type surface. Reversing that would create a permanent maintenance tax on every object author for no current motivation (no object today can't be expressed positionally + blobs). The hooks line item is now formally dropped, with the rationale recorded in PLAN.md and the format spec §9.
+- **Doc-first ordering** intentional. M2/b (the version header) is small and safe, but writing the spec first surfaced two real fixups (the stale `BLOB_ARG_SCHEMA` cite and the `-` convention's true scope) that would have been silent drift if we'd jumped to code first. Same payoff as M1/1b.
+- No code touched. Verification: `npx vitest run tests/object-spec-validation.test.ts tests/round-trip.test.ts` → 5/5 green; `npx tsc --noEmit` → clean.
+
+**Next needed:**
+- M2/b: implement the `#N patchnet v2;` header — accept on read (treating headerless as v1, unknown versions as error), defer write-side activation until a real format change motivates it.
+- M2/c: per-object round-trip test — data-driven loop over `OBJECT_DEFS` constructing default instances and asserting serialize→parse→serialize is byte-identity.
+- M2/d: migration dispatch stub (single point of entry; real migrations added only when a v2 format change actually lands).
+
+## [2026-05-20] COMPLETED | M2/b — optional `#N patchnet vN;` version header (parser side)
+**Agent:** Claude Code
+**Phase:** M2 — Serialization Stability (task 2b, version header)
+
+**Done:**
+- `src/serializer/parse.ts`: parser now accepts an optional `#N patchnet vN;` as the **first** non-comment statement. Headerless patches parse as v1 (no behavior change for existing files). Version is exposed as `ParsedPatch.version` so M2/d's migration dispatcher has a hook.
+- Exported `KNOWN_VERSIONS: ReadonlySet<number> = new Set([1, 2])` (`parse.ts:30`). v1 and v2 share the same grammar today — v2 is reserved so the upgrade path is wired before any v2-specific format change actually lands.
+- Hard rejections (each is a `PatchParseError` with a clear message):
+  - Version header not the first statement (`Version header (#N patchnet vN;) must be the first statement`)
+  - Missing version token (`Version header missing version token (expected \`#N patchnet vN;\`)`)
+  - Malformed `v…` token (`Malformed version token "<…>" (expected "v<digits>")`)
+  - Unknown version (`Unknown patchnet format version v<n> (known: v1, v2)`)
+- **Serializer not touched.** Patches saved today are still headerless v1. The serializer write-side flip is deferred until a v2-specific format change actually motivates it — adding the parser-side acceptance first means that flip is a single-release change, not a coordinated two-step.
+- New test file `tests/serialization-version.test.ts` with 15 cases: headerless / explicit v1 / explicit v2 happy paths, unknown / malformed / missing / out-of-order error paths, comment-before-header tolerated, v1↔v2 grammar parity check, `PatchParseError` instance check, `KNOWN_VERSIONS` membership. All green.
+- Spec doc refresh in `docs/serialization-format.md`: §3 ("optional version line" callout), §10 (full rewrite from "planned" → "implemented today, write-side deferred"), §11 (error catalog gained 4 new rows), §12 (BNF appendix gained the optional `version` production), §1 frontmatter status line. Every `parse.ts:N` ref in the doc was refreshed for the +50-line shift below the new version handler (computed + spot-checked: `parsePatch:33→42`, canvas check `84-87→134-137`, canvas-required guard `377-379→427-429`, group UUID `444-450→494-500`, etc.).
+
+**Changed files:**
+- src/serializer/parse.ts — `ParsedPatch.version` field, `KNOWN_VERSIONS` export, version-header handler block (~35 lines)
+- tests/serialization-version.test.ts — new (15 cases)
+- docs/serialization-format.md — §1/§3/§10/§11/§12 prose updates + 40+ line-ref refreshes
+- PLAN.md — M2/b marked ✅ with one-line summary
+- CHANGELOG.md — this entry
+
+**Notes / decisions:**
+- **Parser-first, writer-later** rationale recorded in spec §10. The alternative (parser + writer at once) would mean a single release flips disk-emitted v2 patches *and* the readers that understand them. With parser-first, readers from this release forward already handle v2; the writer-side flip becomes a small, independent change when v2 actually means something.
+- `firstStatementSeen` flag guards "version header must precede everything else." Comments/blank lines don't count as statements, so a `// saved …` line before the version header is fine. A `#N canvas;` before the header is rejected.
+- `KNOWN_VERSIONS` is a `ReadonlySet` so the rejection error can list "known: v1, v2" without callers being able to mutate it. Sorted in the error string for stable output.
+- `ParsedPatch.version` adds one field to a returned object — backward-compatible for the two existing consumers (`PatchGraph.deserialize` uses only `.nodes`/`.edges`; `tests/round-trip.test.ts` likewise).
+- The doc's line-ref refresh used a sentinel-based two-phase substitution to avoid prefix collisions (e.g., `parse.ts:33` partially matching inside `parse.ts:338-348`). Caught and corrected two such collisions during verification.
+
+**Next needed:**
+- M2/c: per-object round-trip test — data-driven over `OBJECT_DEFS` (all 73). Construct a default instance from each spec's args + `ensureArgs`, serialize → parse → serialize, assert byte-identity.
+- M2/d: migration dispatcher stub. Single function (`migrate(version, patch) => v_current_patch`). Identity transform today; real migrations added only when a v2-specific format change lands.
+
+## [2026-05-20] COMPLETED | M2/c — per-object round-trip CI gate (all 73 pass)
+**Agent:** Claude Code
+**Phase:** M2 — Serialization Stability (task 2c, per-object round-trip)
+
+**Done:**
+- New `tests/per-object-round-trip.test.ts`: data-driven loop over every entry in `OBJECT_DEFS`. For each type, builds a minimal seed (`#N canvas;\n#X obj 0 0 <type>;\n#X id 0 <type>-fixed-id;\n`), loads it into a `PatchGraph`, serializes twice through `deserialize → serializePatch`, and asserts byte-identity between the two serializations.
+- **All 73 objects pass on first run** — no source fixes required. The seed approach lets the parser's per-type decoders + `ensureArgs` + `derivePorts` fill in the canonical "fresh node" state; the test asserts that the resulting state serializes deterministically. M1's generic-positional discipline + M2/a's data-driven blob-arg schema together make this work without per-object special-casing.
+- The fixed-id seed pins `crypto.randomUUID()` out of the round-trip so the second `#X id` line emits the same UUID as the first. The id format (`<type>-fixed-id`, e.g. `buffer~-fixed-id`) is a non-whitespace string — the parser accepts any non-empty token there.
+- Full suite: **221/221 green across 12 files** (was 220/221 with this file's predecessor missing). `tsc --noEmit` clean.
+
+**Changed files:**
+- tests/per-object-round-trip.test.ts — new (data-driven loop, ~40 lines)
+- PLAN.md — M2/c marked ✅
+- CHANGELOG.md — this entry
+
+**Notes / decisions:**
+- **Seed-from-parse, not construct-by-hand.** I considered building each test node directly (instantiate `PatchNode` with arg defaults from `ArgDef.default`, run `ensureArgs`, etc.). The seed approach is strictly better: it exercises the same parse path the serializer round-trips through, so any inconsistency between a default-builder and the parser's per-type decoders would be invisible. With the seed, the parser is the authoritative builder.
+- **Two serializations, not one.** A single `serialize(parse(seed)) === seed` assertion would fail trivially (the seed lacks `#X id`'s assigned-by-parse fields, ports the parser derives, etc.). The pattern `serialize(load(serialize(load(seed))))` lets the first round normalize, then asserts the second round is identical — same shape as the existing fixture round-trip test in `tests/round-trip.test.ts:47-57`.
+- **Why this caught nothing today**: the M1/1d contract test plus M2/a's documentation discipline already locked the format down enough that no object was secretly non-deterministic. The value of M2/c is not retroactive fixes — it's the *gate* that catches any future regression at the offending object name, instead of as a vague fixture-test failure.
+- Did NOT add round-trip checks for non-default-arg variations of each object (e.g., `buffer~` in mono mode, `mixer~` with 8 channels). Those are M3+ territory if needed. Default-instance coverage gets us the contract guarantee for the common path.
+
+**Next needed:**
+- M2/d (last M2 task): migration dispatcher stub. Single entry point `migrate(version, patch) => v_current_patch`. Identity transform today (v1 ≡ v2). Wire-only — no real migrations until a v2-specific format change motivates one.
+
+## [2026-05-20] COMPLETED | M2/d — migration dispatcher + PatchGraph wire-up — **closes M2**
+**Agent:** Claude Code
+**Phase:** M2 — Serialization Stability (task 2d, migration helper)
+
+**Done:**
+- New `src/serializer/migrate.ts`: exports `LATEST_VERSION = 2`, `migrate(patch: ParsedPatch) => ParsedPatch`. Internal `STEPS: Record<number, MigrationStep>` keyed by from-version; only entry today is `1 → (p) => ({ ...p, version: 2 })` (identity-with-relabel, since v1 and v2 share the in-memory shape today). The dispatch loop walks `current.version → LATEST_VERSION`, applying each step. Defensive throws for: input version > LATEST_VERSION (parser bug — `KNOWN_VERSIONS` should have rejected); missing step for a known version (contract bug); step that fails to advance the version (would loop forever).
+- Wired into `src/graph/PatchGraph.ts`: `deserialize(text)` now does `migrate(parsePatch(text))` instead of just `parsePatch(text)`. One-line change. Today's identity transform means no observable change for any existing consumer; the wire-up is what matters — when v2 actually diverges from v1, the migration runs automatically.
+- New `tests/migration.test.ts` (7 cases): `LATEST_VERSION` constant, v1-migrates-up, v2-no-op, identity-preserves-nodes-edges, no-mutation-of-input, PatchGraph-routes-through-migrate (wire test), defensive-future-version-rejection. All green.
+- Doc updates in `docs/serialization-format.md`: §1 frontmatter reflects "M2/d wired the migration dispatcher"; §10 gained a "Migration dispatcher (M2/d — implemented)" subsection covering the API, the `STEPS` registry mechanic, the wire-up, and the 3-step recipe for shipping v3 later.
+- Full suite: **228/228 green across 13 files** (was 221/221 across 12 — +7 new migration cases). `tsc --noEmit` clean.
+
+**Changed files:**
+- src/serializer/migrate.ts — new (LATEST_VERSION, MigrationStep, STEPS, migrate())
+- src/graph/PatchGraph.ts — import migrate, call it in deserialize() (2-line change)
+- tests/migration.test.ts — new (7 cases)
+- docs/serialization-format.md — §1 + §10 prose updates
+- PLAN.md — M2/d marked ✅
+- CHANGELOG.md — this entry
+
+**Notes / decisions:**
+- **Wire-up vs explicit-call.** I considered exporting `migrate()` but not auto-calling it (consumers opt in). The wire-up via `PatchGraph.deserialize` is the right call: forgetting to migrate would be a silent bug when v2 means something, and the round-trip tests would silently pass against pre-migration state. Auto-call means the migration *is* part of "loading a patch."
+- **Identity step is real, not a no-op.** I deliberately registered `STEPS[1]` rather than making `migrate()` skip when nothing changes. Two reasons: (1) it exercises the dispatch path on every load, so wire bugs would surface in tests instead of in production when v2 first diverges; (2) the post-migration `version` is `LATEST_VERSION` regardless of input version, which is the contract every consumer can assume. Without the step, a v1-only patch would carry `version: 1` indefinitely.
+- **Where it does NOT run:** tests using `parsePatch` directly (e.g. `serialization-version.test.ts`) see the raw on-disk version. That's intentional — those tests test the parser, not the full load pipeline. The split is documented in §10.
+- **Defensive throw on `version > LATEST_VERSION` is unreachable today** (KNOWN_VERSIONS guards it). It's a belt-and-braces safety: if a future parser bug ever lets a v99 through, `migrate()` refuses rather than silently treating it as known.
+
+**Next needed:**
+- **M2 is complete.** All four sub-tasks closed: 2a (format spec) ✅, 2b (version header parser) ✅, 2c (per-object round-trip CI) ✅, 2d (migration dispatcher) ✅. The format is documented, versioned, deterministic, and migration-ready.
+- M3 — Audio Backend Abstraction opens. Per PLAN.md: `AudioBackend` interface, refactor `AudioGraph` to talk to it, `WebAudioBackend` + `NativeAudioBackend` (CPAL via Tauri IPC). Targets sub-3ms latency on native.
+- Housekeeping (optional, low-priority): the `~9 of … documented` figure on `docs/objects/` could be updated to reflect actual count (was 7 last I checked); the docs/objects backlog still pending.
+
+## [2026-05-20] COMPLETED | M3/a-e — Audio Backend Abstraction foundation (interface + 2 implementations + registry + tests)
+**Agent:** Claude Code
+**Phase:** M3 — Audio Backend Abstraction (tasks 3a-3e; 3f wire-up + 3g native CPAL deferred)
+
+**Done:**
+- **M3/a — Spec doc.** New `docs/audio-backend.md` (~210 lines, code-cited). Sections: interface (`AudioBackend` verbatim from `src/platform/audio.ts:19-58`), capability matrix (`AudioCapabilities` with per-platform values), lifecycle (start-from-user-gesture rule, event-driven sync, terminal destroy), platform selection (the registry pattern), **escape-hatch policy** (controllers needing Web-Audio-specific access cast to `BrowserAudioBackend` and read `.audioGraph` — rationale: promoting AudioGraph's 40+ method surface into the interface would inflate it past the point of usefulness, so we draw the seam at "universal vs platform-specific"), implementation tables for both backends, native roadmap (M3/g — CPAL deps, IPC command list, sub-3ms latency target), and the compatibility surface.
+- **M3/b — `BrowserAudioBackend`.** New `src/runtime/BrowserAudioBackend.ts`. Wraps `AudioRuntime` (singleton AudioContext + master gain) and `AudioGraph` (per-object node sync) without changing either's behavior. Lifecycle: `start()` unlocks the AudioContext then constructs AudioGraph on top; `stop()` tears down both; `destroy()` releases the AudioGraph but leaves the runtime singleton intact (reusable by a future backend). `latencyMs` = `(baseLatency + outputLatency) * 1000` with a 15ms fallback when neither value is reported. `sampleRate` returns 0 pre-start so UI can render "—" without try/catch. Public `audioGraph` and `audioRuntime` accessors are the escape hatches.
+- **M3/c — `NativeAudioBackend` skeleton.** New `src/runtime/NativeAudioBackend.ts`. All methods are non-throwing no-ops so the rest of the app boots cleanly on native without real audio. `start()` flips `isStarted: true` and logs a one-time stub notice; `sampleRate` returns placeholder `48000` after start; `latencyMs` stays `0`. Real CPAL audio lands in M3/g — when it does, only this file changes (plus Rust); consumers stay the same.
+- **M3/d — Registry.** New `src/platform/registry.ts`. `getAudioBackend(graph, subPatchManager?)` is a lazy singleton: first call constructs the right backend per `isNative`, subsequent calls return that instance. Test-only `_resetAudioBackendForTests()` exposed for hermetic test isolation. The registry is the **only** call site outside `runtime/` that names a specific backend class — everywhere else uses the `AudioBackend` interface.
+- **M3/e — Tests.** New `tests/audio-backend.test.ts` (19 cases): registry singleton behavior + first-call-wins semantics; `BrowserAudioBackend` constructor + no-start lifecycle (zero state, safe-no-op destroy/sync) + structural interface conformance; `NativeAudioBackend` full lifecycle including `start()`/`stop()` (testable in Node since the stub has no AudioContext dependency); `AudioCapabilities` platform matrix.
+- **Made `AudioGraph.sync` public** (was `private`). Required by `BrowserAudioBackend.sync(graph)` so external callers can force an idempotent reconciliation. Pre-existing internal "change" subscription still fires sync automatically — public exposure is additive.
+- **Full suite: 247/247 across 14 files** (was 228/228 across 13 — +19 new audio-backend cases, +1 new file). `tsc --noEmit` clean.
+
+**Changed files:**
+- docs/audio-backend.md — new (authoritative spec)
+- src/runtime/BrowserAudioBackend.ts — new
+- src/runtime/NativeAudioBackend.ts — new (stub)
+- src/platform/registry.ts — new
+- tests/audio-backend.test.ts — new (19 cases)
+- src/runtime/AudioGraph.ts — `private sync()` → public `sync()` (1-token change)
+- PLAN.md — M3 restructured into 3a-3g table; 3a-3e marked ✅, 3f/3g deferred with rationale
+
+**Notes / decisions:**
+- **Discovery from recon: M3 was *half-done already*.** Phase 8A (2026-05-10) left `src/platform/audio.ts` with the `AudioBackend` interface drafted (~90 lines including `AudioCapabilities`), but nothing implemented it. M3/a-e completes that scaffolding; M3/f-g remain.
+- **Why split 3f (wire-up) out of this milestone.** `main.ts` is 1500+ lines with intricate startup ordering — replacing the inline `AudioRuntime.getInstance() + new AudioGraph(...)` calls is a real refactor that needs careful browser-side testing. Bundling it with the foundation would risk a botched session breaking the dev loop. The registry is fully testable standalone, so foundation ships clean and adoption is a separate small change.
+- **Why split 3g (CPAL) out.** Native audio is a multi-hour Rust + IPC + performance effort that touches `src-tauri/` deeply. Deserves its own planning session — and a real CoreAudio / ALSA testbed.
+- **Escape-hatch policy was the only real architectural decision.** Two options: (1) inflate `AudioBackend` to cover all ~40 of `AudioGraph`'s methods (mixer meters, FFT bands, per-node worklet handles) — would force `NativeAudioBackend` to stub everything; or (2) expose `BrowserAudioBackend.audioGraph` as a typed escape hatch for browser-only consumers. Chose (2) — keeps the interface minimal, the seam between universal and platform-specific is explicit at call sites. Documented in `docs/audio-backend.md §6`.
+- **`destroy()` deliberately leaves the AudioRuntime singleton intact.** The contract calls for "release all resources" but Web Audio's `AudioContext.close()` is async — and the singleton can be reused by a future backend instance in the same tab. Use `stop()` if hardware release is actually needed.
+
+**Next needed:**
+- **M3/f** — main.ts wire-up. Replace inline `AudioRuntime.getInstance() + new AudioGraph(...)` with `getAudioBackend(graph, subPatchManager)`. The ~10 controllers receiving `audioGraph` via `setAudioGraph(...)` continue to work — they get the AudioGraph from `(backend as BrowserAudioBackend).audioGraph` after `backend.start()` resolves. Browser dev-server smoke test required. Small but invasive.
+- **M3/g (deferred)** — native CPAL implementation. Rust side: `cpal` + `cpal-jack` in `Cargo.toml`, Tauri command handlers (`audio_start`/`audio_stop`/`audio_sync_graph`/`audio_meter_levels`), per-object sync. Sub-3ms RTL target on macOS CoreAudio. Own milestone planning.
+
+## [2026-05-20] COMPLETED | M3/f — main.ts routes audio lifecycle through the backend
+**Agent:** Claude Code
+**Phase:** M3 — Audio Backend Abstraction (task 3f, main.ts wire-up)
+
+**Done:**
+- `src/main.ts`: `startAudio()` and `stopAudio()` now route through `getAudioBackend(graph, subPatchManager)` instead of constructing `AudioRuntime + AudioGraph` inline. The browser path is behaviorally identical — `BrowserAudioBackend.start()` does exactly what the old inline code did (runtime.start() then `new AudioGraph(...)`), and `BrowserAudioBackend.stop()` does the same teardown in the same order.
+- `audioGraph` is now obtained via `audioBackend instanceof BrowserAudioBackend ? audioBackend.audioGraph : null`. On browser this is the same AudioGraph the old code constructed; on native it's `null`, so `startAudio()` early-returns after `setDspUi(true)` to avoid feeding `null` into 10+ controllers that expect a real AudioGraph. The native skeleton is harmless either way — `NativeAudioBackend.start()` flips `isStarted` and logs a one-time "stub" notice.
+- Removed the explicit `audioGraph?.destroy()` in `stopAudio()` — `audioBackend.stop()` handles it (audioGraph teardown + AudioContext close, in that order). Controllers are nulled *before* `backend.stop()` runs, so by the time AudioGraph destruction starts, no controller has a reference to observe a half-disconnected state.
+- **Web-Audio-specific call sites kept using the `AudioRuntime` singleton.** Specifically: `audioRuntime.sampleRate` (status line), `getOutputDevices()` / `getInputDevices()` (device dropdowns), `setOutputDevice(...)`, `masterVolume = v`. These are not on `AudioBackend` because they don't generalize to native (device enumeration is a browser-only concept; native uses CPAL device discovery). Promoting them to `BrowserAudioBackend.audioRuntime` via the escape hatch is deferred cleanup — would change a lot of call sites for zero behavior change. The `audioRuntime` import + module-level singleton declaration is retained for this reason.
+- **Verified:**
+  - `npx tsc --noEmit` → clean.
+  - Full suite **247/247 across 14 files** unchanged.
+  - Dev server (`patchnet-dev-server.service` on :5273) hot-reloaded all three edits without error. `journalctl` shows three `[vite] page reload src/main.ts` events and no compilation failures. `curl https://localhost:5273/patchNet/` returns HTTP 200.
+
+**Changed files:**
+- src/main.ts — 3 edits: added `BrowserAudioBackend` + `getAudioBackend` imports; `startAudio()` body routed through backend with native-skeleton early-return; `stopAudio()` body routed through `backend.stop()` with the explicit destroy removed
+- PLAN.md — M3/f marked ✅
+
+**Notes / decisions:**
+- **Native early-return in `startAudio()` is the M3-shape compromise.** When the backend is `NativeAudioBackend`, there's no `AudioGraph` to distribute. Three options were: (a) skip the wire-up entirely and let controllers handle null; (b) construct a "null AudioGraph" stub; (c) early-return after `setDspUi(true)`. Chose (c) — it's the least invasive (controllers don't see new code paths), it lets the audio button reflect the engine-started state (consistent with the user pressing it), and it cleanly demarcates "post-M3/g, this branch goes away because `audioBackend.audioGraph` would be non-null on native too." Alternative (a) would silently work today but break the moment a controller does anything during a null transition.
+- **`audioRuntime` singleton stays imported.** Following the escape-hatch policy from `docs/audio-backend.md §6`: only universal lifecycle methods (`start`/`stop`/`sync`/`destroy`/getters) go through `AudioBackend`. Device enumeration, output-device selection, master volume are Web-Audio-specific concepts that don't generalize, so they keep the direct `AudioRuntime` access. M3/g lands the corresponding native APIs through Tauri commands; *those* won't reach for `AudioRuntime` either — they'll go through `NativeAudioBackend` directly.
+- **No new tests added.** The unit-test coverage is already 247-strong with 19 cases for the audio-backend layer; what's missing here is browser-side smoke testing — the audio button, mixer panel, FFT display, scratch tabs all behave identically. That's a human-eye check, not a vitest one.
+
+**Next needed:**
+- **Browser smoke test by user**: open `https://100.107.90.171:5273/patchNet/` from any Meshnet machine (the always-on dev server is the Linux box `atlas`); press the audio button on; verify a `noise~` → `dac~` patch makes sound; verify the mixer panel still meters; verify the FFT analyzer still draws; press the audio button off; press on again — should reactivate cleanly. The behavior expected is **identical** to pre-M3 — if anything differs, that's a regression in the M3/f wire-up.
+- **M3/g (still deferred)** — native CPAL implementation. Own milestone planning. Rust side, IPC commands, sub-3ms RTL target.
+- **M4 — Video Backend Abstraction** (per PLAN.md) opens up structurally now that M3's seam pattern is proven; same shape (interface + 2 backends + registry + wire-up).

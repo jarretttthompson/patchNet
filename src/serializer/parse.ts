@@ -16,9 +16,18 @@ export class PatchParseError extends Error {
 }
 
 export interface ParsedPatch {
+  /** Format version. 1 = no `#N patchnet …;` header (the historical default).
+   *  See docs/serialization-format.md §10. */
+  version: number;
   nodes: PatchNode[];
   edges: PatchEdge[];
 }
+
+/** Format versions this parser knows how to read. Unknown versions are
+ *  rejected with a clear error rather than silently parsed as the closest
+ *  known version. v1 and v2 share the same grammar today; v2 is reserved so
+ *  the upgrade path is wired before any v2-specific format change lands. */
+export const KNOWN_VERSIONS: ReadonlySet<number> = new Set([1, 2]);
 
 function decodeCodeboxSource(encoded: string): string {
   return decodeURIComponent(escape(atob(encoded)));
@@ -34,7 +43,7 @@ export function parsePatch(text: string): ParsedPatch {
   // Empty (or whitespace-only) text = empty patch. The text panel is the
   // source of truth: clearing it must clear the canvas, not raise an error.
   if (!text.trim()) {
-    return { nodes: [], edges: [] };
+    return { version: 1, nodes: [], edges: [] };
   }
 
   const rawLines = text.split(/\r?\n/);
@@ -63,6 +72,11 @@ export function parsePatch(text: string): ParsedPatch {
   const pendingNames: Array<{ nodeIndex: number; name: string; lineNumber: number }> = [];
   const pendingGroups: Array<{ indices: number[]; lineNumber: number }> = [];
   let sawCanvasHeader = false;
+  let parsedVersion = 1;
+  // True after the first non-comment statement is handled. The version header
+  // (`#N patchnet vN;`) must precede everything else, so any other statement
+  // setting this flag locks the version-header branch out.
+  let firstStatementSeen = false;
 
   for (let lineIndex = 0; lineIndex < rawLines.length; lineIndex += 1) {
     const lineNumber = lineIndex + 1;
@@ -80,6 +94,42 @@ export function parsePatch(text: string): ParsedPatch {
     const parts = statement.split(/\s+/);
 
     requireParts(parts, 2, lineNumber, "Incomplete statement");
+
+    // ── #N patchnet vN; — format version header (must be first) ────────
+    if (parts[0] === "#N" && parts[1] === "patchnet") {
+      if (firstStatementSeen) {
+        throw new PatchParseError(
+          lineNumber,
+          "Version header (#N patchnet vN;) must be the first statement",
+        );
+      }
+      if (parts.length < 3) {
+        throw new PatchParseError(
+          lineNumber,
+          "Version header missing version token (expected `#N patchnet vN;`)",
+        );
+      }
+      const versionMatch = /^v(\d+)$/.exec(parts[2]);
+      if (!versionMatch) {
+        throw new PatchParseError(
+          lineNumber,
+          `Malformed version token "${parts[2]}" (expected "v<digits>")`,
+        );
+      }
+      const ver = parseInt(versionMatch[1], 10);
+      if (!KNOWN_VERSIONS.has(ver)) {
+        throw new PatchParseError(
+          lineNumber,
+          `Unknown patchnet format version v${ver} ` +
+            `(known: ${[...KNOWN_VERSIONS].sort().map((v) => `v${v}`).join(", ")})`,
+        );
+      }
+      parsedVersion = ver;
+      firstStatementSeen = true;
+      continue;
+    }
+
+    firstStatementSeen = true;
 
     if (parts[0] === "#N" && parts[1] === "canvas") {
       sawCanvasHeader = true;
@@ -449,5 +499,5 @@ export function parsePatch(text: string): ParsedPatch {
     }
   }
 
-  return { nodes, edges };
+  return { version: parsedVersion, nodes, edges };
 }

@@ -909,6 +909,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
         description: "Loop mode: 1 = loop, 0 = stop at end (or start when reversing)." },
       { name: "maxLen",   type: "float",  default: "180", min: 1, max: 3600, step: 1,
         description: "Maximum recording length in seconds (1–3600). Default 3 min, max 60 min." },
+      // Args 4-12 below are hidden persisted runtime state. Append new persisted
+      // slots at the end — inserting in the middle breaks positional serialization.
       { name: "transport",   type: "symbol", default: "stop", hidden: true,
         description: "Persisted transport state: record | play | pause | stop." },
       { name: "position",    type: "float",  default: "0",  hidden: true,
@@ -952,8 +954,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
     outlets: [],   // derived by deriveBufferPorts(args)
     defaultWidth:  280,
     defaultHeight: 110,
-        derivePorts: deriveBufferPorts,
-        ensureArgs: ensureBufferArgs,
+    derivePorts: deriveBufferPorts,
+    ensureArgs:   ensureBufferArgs,
   },
 
   "js~": {

@@ -455,7 +455,7 @@ export class AudioGraph {
     return this.jsfxWorkletReady;
   }
 
-  private sync(): void {
+  sync(): void {
     const graphs = this.allGraphs();
     const activeNodeIds = new Set(graphs.flatMap(g => g.getNodes().map(n => n.id)));
 
