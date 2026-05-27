@@ -6,6 +6,9 @@ import type { ImageFXNode }    from "./ImageFXNode";
 export interface VideoFXSource {
   readonly canvas: HTMLCanvasElement;
   readonly isReady: boolean;
+  /** Monotonic counter bumped each frame the node did real work — lets
+   *  downstream VFX skip processing when the input is unchanged. */
+  readonly outputVersion: number;
   process(): void;
 }
 
