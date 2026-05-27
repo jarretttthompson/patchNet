@@ -22,3 +22,4 @@ src/graph/localObjects/*
 !src/graph/localObjects/.gitkeep
 scripts/.vault_rag.sqlite
 src-tauri/target
+src-tauri/gen

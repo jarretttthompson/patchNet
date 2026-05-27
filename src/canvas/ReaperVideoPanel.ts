@@ -328,12 +328,99 @@ export class ReaperVideoPanel {
         this.graph.emit("change");
       });
 
+      // Double-click the slider track → reset to the param's declared default.
+      range.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        const v = decl.defaultValue;
+        range.value = String(v);
+        readout.textContent = formatReadout(v, decl);
+        this.paramValuesByName.set(decl.name, v);
+        this.getNode()?.setParam(paramIndex, v);
+        this.writeParamValuesToArgs();
+        this.graph.emit("change");
+      });
+
+      // Double-click the readout number → open an inline text-entry field.
+      readout.style.cursor = "text";
+      readout.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        this.beginInlineEdit(readout, range, decl, paramIndex);
+      });
+
       row.append(label, range, readout);
       this.knobPane.appendChild(row);
       this.knobInputs.set(i, { range, readout });
     }
 
     this.ensureMinHeight(this.paramDecls.length);
+  }
+
+  /**
+   * Replace the readout span with a text <input> so the user can type a value.
+   * Commits on Enter or blur; cancels on Escape. Keyboard events are stopped
+   * at the input so canvas shortcuts don't fire while the user types numbers.
+   */
+  private beginInlineEdit(
+    readout: HTMLSpanElement,
+    range:   HTMLInputElement,
+    decl:    ParamDecl,
+    paramIndex: number,
+  ): void {
+    // Don't open a second editor if one is already active on this row.
+    if (readout.querySelector("input")) return;
+
+    const currentVal = this.paramValuesByName.get(decl.name) ?? decl.defaultValue;
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "pn-rvideo-knob-edit";
+    input.value = formatReadout(currentVal, decl);
+    // Prevent canvas keyboard shortcuts while typing.
+    input.addEventListener("keydown", (e) => e.stopPropagation());
+    input.addEventListener("keyup",   (e) => e.stopPropagation());
+
+    // Swap span text out, insert the input.
+    readout.textContent = "";
+    readout.appendChild(input);
+    input.focus();
+    input.select();
+
+    let committed = false;
+
+    const commit = () => {
+      if (committed) return;
+      committed = true;
+
+      const raw = input.value.trim();
+      const parsed = parseFloat(raw);
+      const v = Number.isFinite(parsed) ? clamp(parsed, decl.min, decl.max) : currentVal;
+
+      // Restore the span first (removes input from DOM).
+      readout.textContent = formatReadout(v, decl);
+
+      if (v !== currentVal) {
+        range.value = String(v);
+        this.paramValuesByName.set(decl.name, v);
+        this.getNode()?.setParam(paramIndex, v);
+        this.writeParamValuesToArgs();
+        this.graph.emit("change");
+      }
+    };
+
+    const cancel = () => {
+      if (committed) return;
+      committed = true;
+      readout.textContent = formatReadout(currentVal, decl);
+    };
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter")  { e.preventDefault(); commit(); }
+      if (e.key === "Escape") { e.preventDefault(); cancel(); }
+    });
+
+    // blur fires after Enter's keydown in most browsers, so the `committed`
+    // guard keeps us from double-applying.
+    input.addEventListener("blur", commit);
   }
 
   /** Grow the object vertically so every knob row (22px header + N*24px) fits

@@ -2275,3 +2275,30 @@ Older entries archived to `AGENTS-archive.md`.
 - Separate: triage the `tests/actions.test.ts` keymap-defaults failure.
 - Backfill CHANGELOG for the earlier m1a type-refactor commits (6a58141, d9c4b21).
 - Consider updating PLAN.md / CLAUDE.md "~45 objects" → 73.
+
+---
+
+## [2026-05-27] COMPLETED | Fullscreen audio reactivity + ReaperVideoNode error hardening
+
+**Agent:** Claude Code
+**Done:**
+- Extracted FFT/band-value propagation from `startMeterLoop()` into `tickAudioControl()` with an 8ms dedup guard
+- Added `onControlTick` callback to `VisualizerNode` (fires at top of each popup rAF frame)
+- Added `setControlTickCallback()` to `VisualizerGraph` — wires the callback into all current and future popup nodes
+- On `startAudio()`, bridges `tickAudioControl` into every open popup's rAF so FFT reads keep running at 60fps when the main window is backgrounded by macOS fullscreen
+- On `stopAudio()`, clears the callback
+- Double-buffered `ReaperVideoNode.process()`: frame fn now renders to a back canvas; only blits to the front canvas on success, so a shader throw shows the last good frame instead of a raw-video flash
+
+**Changed files:**
+- `src/runtime/VisualizerNode.ts`
+- `src/runtime/VisualizerGraph.ts`
+- `src/runtime/ReaperVideoNode.ts`
+- `src/main.ts`
+
+**Notes:**
+- The audio reactivity fix is the main deliverable — fullscreen now stays audio-reactive
+- The ReaperVideoNode fix is defensive hardening (error fallback was causing dry-video flashes on shader throws)
+- "Dry video" glitch the user noticed was ultimately caused by the RGB decompose shader's own `!gdf || !bdf ? gfx_blit(0)` fallback when audio-reactive channel offsets converge
+
+**Next needed:**
+- None outstanding on this front

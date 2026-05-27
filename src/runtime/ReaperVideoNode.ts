@@ -93,11 +93,24 @@ export class ReaperVideoNode implements VideoFXSource {
   private _outputVersion = 0;
   get outputVersion(): number { return this._outputVersion; }
 
+  /**
+   * Back-buffer for double-buffered rendering. The frame fn draws here; on
+   * success the result is blitted to `this.canvas`. On throw, `this.canvas`
+   * retains the last good frame — no dry-video flash from error fallback.
+   */
+  private back: HTMLCanvasElement;
+  private backCtx: CanvasRenderingContext2D;
+
   constructor() {
     this.canvas = document.createElement("canvas");
     const ctx = this.canvas.getContext("2d");
     if (!ctx) throw new Error("[ReaperVideoNode] 2D context unavailable");
     this.ctx = ctx;
+
+    this.back = document.createElement("canvas");
+    const bctx = this.back.getContext("2d");
+    if (!bctx) throw new Error("[ReaperVideoNode] back-buffer 2D context unavailable");
+    this.backCtx = bctx;
   }
 
   /** Override the default render cap. Values below MIN_RENDER_DIM clamp up
@@ -277,11 +290,14 @@ export class ReaperVideoNode implements VideoFXSource {
       resolved[0] = this.inputScratch;
     }
 
-    if (this.canvas.width  !== w) this.canvas.width  = w;
-    if (this.canvas.height !== h) this.canvas.height = h;
+    // Size the back buffer to match the render dimensions.
+    if (this.back.width  !== w) this.back.width  = w;
+    if (this.back.height !== h) this.back.height = h;
 
     // Passthrough when no compiled frame fn: just show the primary input.
     if (!this.frame) {
+      if (this.canvas.width  !== w) this.canvas.width  = w;
+      if (this.canvas.height !== h) this.canvas.height = h;
       this.ctx.globalCompositeOperation = "source-over";
       this.ctx.globalAlpha = 1;
       this.ctx.clearRect(0, 0, w, h);
@@ -290,9 +306,11 @@ export class ReaperVideoNode implements VideoFXSource {
       return;
     }
 
-    // Normal path: set up host + run compiled frame.
-    this.ctx.clearRect(0, 0, w, h);
-    this.host.beginFrame(this.ctx, effectivePrimary, w, h);
+    // Normal path: render into the back buffer, blit to canvas only on success.
+    // This keeps `this.canvas` showing the last good frame when the shader
+    // throws — no dry-video flash from the error fallback.
+    this.backCtx.clearRect(0, 0, w, h);
+    this.host.beginFrame(this.backCtx, effectivePrimary, w, h);
     this.host.setSources(resolved);
 
     // Seed the snippet's common size vars so code that reads them before
@@ -303,13 +321,18 @@ export class ReaperVideoNode implements VideoFXSource {
     try {
       this.frame(this.state, this.params, this.host, this.mem);
       this.runtimeError = "";
-    } catch (e) {
-      // Latch the error; don't clobber the output — caller will see the
-      // last good frame until compile() replaces the fn.
-      this.runtimeError = e instanceof Error ? e.message : String(e);
-      // Fall back to passthrough so the display doesn't go black on throw.
+      // Success — blit back buffer to the front canvas.
+      if (this.canvas.width  !== w) this.canvas.width  = w;
+      if (this.canvas.height !== h) this.canvas.height = h;
+      this.ctx.globalCompositeOperation = "source-over";
+      this.ctx.globalAlpha = 1;
       this.ctx.clearRect(0, 0, w, h);
-      this.ctx.drawImage(effectivePrimary, 0, 0, w, h);
+      this.ctx.drawImage(this.back, 0, 0, w, h);
+    } catch (e) {
+      // Latch the error; leave `this.canvas` untouched so downstream
+      // consumers see the last successfully rendered frame rather than
+      // a flash of the dry (unprocessed) passthrough video.
+      this.runtimeError = e instanceof Error ? e.message : String(e);
     }
 
     this._outputVersion++;

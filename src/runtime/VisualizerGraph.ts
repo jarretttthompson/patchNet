@@ -58,6 +58,7 @@ export class VisualizerGraph {
   private webcamNodes     = new Map<string, WebcamNode>();        // patchNodeId → WebcamNode
   private videoBufferNodes = new Map<string, VideoBufferNode>();  // patchNodeId → VideoBufferNode
   private videoBufferStateChangeCallback: ((nodeId: string) => void) | null = null;
+  private _controlTickCb: (() => void) | null = null;
   private videoBufferStateListeners = new Map<string, () => void>();
   private videoIdbKeys    = new Map<string, string>();            // patchNodeId → idb key
   private imageIdbKeys    = new Map<string, string>();            // patchNodeId → idb key
@@ -140,6 +141,21 @@ export class VisualizerGraph {
    *  back into the patch text and trigger redraw). */
   setVideoBufferStateChangeCallback(cb: ((nodeId: string) => void) | null): void {
     this.videoBufferStateChangeCallback = cb;
+  }
+
+  /**
+   * Register a callback that fires once per popup rAF frame from every open
+   * VisualizerNode. Used by main.ts to keep the FFT/band-value control tick
+   * running at full rate even when the main window is backgrounded (macOS
+   * fullscreen moves the popup to its own Space, throttling the main window
+   * rAF to ~1 fps). The callback deduplicates itself by timestamp so it fires
+   * at most once per frame even when multiple popups are open.
+   */
+  setControlTickCallback(cb: (() => void) | null): void {
+    this._controlTickCb = cb;
+    for (const vn of this.vizNodes.values()) {
+      vn.onControlTick = cb ?? undefined;
+    }
   }
 
   /** Mount each vbuf* node's playback <video> into its panel preview slot.
@@ -428,6 +444,7 @@ export class VisualizerGraph {
           this.graph.emit("change");
         };
         vn.setFloat((node.args[1] ?? "0") !== "0");
+        if (this._controlTickCb) vn.onControlTick = this._controlTickCb;
         this.vizNodes.set(node.id, vn);
         this.runtime.register(contextName, vn);
         this.director.attach(node.id, vn);
@@ -445,6 +462,9 @@ export class VisualizerGraph {
         const posX     = parseFloat(node.args[4] ?? "0");
         const posY     = parseFloat(node.args[5] ?? "0");
         const opacity  = parseFloat(node.args[6] ?? "1");
+        const rotX     = parseFloat(node.args[7] ?? "0");
+        const rotY     = parseFloat(node.args[8] ?? "0");
+        const rotZ     = parseFloat(node.args[9] ?? "0");
         this.layerNodes.set(node.id, new LayerNode(
           node.id,
           isNaN(priority) ? 0  : priority,
@@ -453,6 +473,9 @@ export class VisualizerGraph {
           isNaN(posX)     ? 0  : posX,
           isNaN(posY)     ? 0  : posY,
           isNaN(opacity)  ? 1  : opacity,
+          isNaN(rotX)     ? 0  : rotX,
+          isNaN(rotY)     ? 0  : rotY,
+          isNaN(rotZ)     ? 0  : rotZ,
         ));
       }
 
@@ -631,6 +654,15 @@ export class VisualizerGraph {
             if (adopted) {
               this.fireIntOutlet(node.id, 5, vbn.effectiveDurMs);
               this.fireFloatOutlet(node.id, 6, vbn.loopLenMs);
+              // Restore transport from persisted args. "record" never auto-resumes.
+              const transport = node.args[3] ?? "stop";
+              const pos = parseFloat(node.args[4] ?? "0");
+              if (transport === "play") {
+                if (isFinite(pos) && pos > 0) vbn.seek(pos);
+                void vbn.play();
+              } else if (transport === "pause") {
+                if (isFinite(pos) && pos > 0) vbn.seek(pos);
+              }
             }
           });
         }
@@ -723,7 +755,7 @@ export class VisualizerGraph {
       if (vn.floating !== shouldFloat) vn.setFloat(shouldFloat);
     }
 
-    // Sync layer priority/scale/position/opacity in case args changed
+    // Sync layer priority/scale/position/opacity/rotation in case args changed
     for (const [id, layer] of this.layerNodes) {
       const pn = this.graph.nodes.get(id);
       if (!pn) continue;
@@ -733,12 +765,18 @@ export class VisualizerGraph {
       const posX     = parseFloat(pn.args[4] ?? "0");
       const posY     = parseFloat(pn.args[5] ?? "0");
       const opacity  = parseFloat(pn.args[6] ?? "1");
+      const rotX     = parseFloat(pn.args[7] ?? "0");
+      const rotY     = parseFloat(pn.args[8] ?? "0");
+      const rotZ     = parseFloat(pn.args[9] ?? "0");
       layer.priority = isNaN(priority) ? 0  : priority;
       layer.scaleX   = isNaN(scaleX)   ? 1  : scaleX;
       layer.scaleY   = isNaN(scaleY)   ? 1  : scaleY;
       layer.posX     = isNaN(posX)     ? 0  : posX;
       layer.posY     = isNaN(posY)     ? 0  : posY;
       layer.opacity  = isNaN(opacity)  ? 1  : opacity;
+      layer.rotX     = isNaN(rotX)     ? 0  : rotX;
+      layer.rotY     = isNaN(rotY)     ? 0  : rotY;
+      layer.rotZ     = isNaN(rotZ)     ? 0  : rotZ;
     }
 
     // Apply mediaVideo transport from patch args (text / attribute edits)
@@ -1062,6 +1100,29 @@ export class VisualizerGraph {
         layer.opacity = val;
         patchNode.args[6] = String(val);
         break;
+      case "rotX":
+        layer.rotX = val;
+        patchNode.args[7] = String(val);
+        break;
+      case "rotY":
+        layer.rotY = val;
+        patchNode.args[8] = String(val);
+        break;
+      case "rotZ":
+        layer.rotZ = val;
+        patchNode.args[9] = String(val);
+        break;
+      case "rot": {
+        const val2 = parseFloat(args[1] ?? "0");
+        const val3 = parseFloat(args[2] ?? "0");
+        layer.rotX = val;
+        layer.rotY = isNaN(val2) ? 0 : val2;
+        layer.rotZ = isNaN(val3) ? 0 : val3;
+        patchNode.args[7] = String(layer.rotX);
+        patchNode.args[8] = String(layer.rotY);
+        patchNode.args[9] = String(layer.rotZ);
+        break;
+      }
       default:
         return;
     }

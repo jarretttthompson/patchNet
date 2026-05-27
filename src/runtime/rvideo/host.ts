@@ -591,11 +591,19 @@ export class RVideoHost {
     const n = rectW * rectH * 4;
 
     const lumaMode = (flags & 1) !== 0;
+    // When the shader has set colorspace to a YUV format (YV12 / YUY2), REAPER's
+    // gfx_procrect indexes the three LUT planes by the pixel's actual Y, U, V
+    // values. Our canvas is always RGBA, so we emulate this by converting each
+    // pixel to YUV (BT.601), doing the LUT lookups, then converting back.
+    // Without this, the brightness/contrast curve only hits the R channel and
+    // the saturation curve distorts G and B independently — wrong.
+    const yvMode = !lumaMode &&
+      (this.colorspace === "YV12" || this.colorspace === "YUY2");
 
     if (lumaMode) {
       // RGB → Y_idx (BT.601) → LUT lookup → YUV → RGB.
-      // Inline everything in one tight loop — matches the gfx_evalrect
-      // inlining strategy. At 360p this is ~130k pixels; V8 handles it.
+      // Used by the Colorize preset: Y/U/V output values are all keyed by luma,
+      // so this maps luma → arbitrary colour rather than adjusting per-channel.
       for (let i = 0; i < n; i += 4) {
         const r = data[i];
         const g = data[i + 1];
@@ -622,8 +630,46 @@ export class RVideoHost {
         data[i + 2] = bOut <= 0 ? 0 : bOut >= 1 ? 255 : (bOut * 255 + 0.5) | 0;
         // alpha untouched
       }
+    } else if (yvMode) {
+      // YV12-emulation mode: RGB → YUV → LUT-by-channel → YUV → RGB.
+      // This is the correct path for presets that set colorspace='YV12' and
+      // build a 3×256 LUT with separate Y/U/V curves (e.g. Brightness/Contrast,
+      // Saturation). In real REAPER the framebuffer IS in YV12 so gfx_procrect
+      // naturally uses Y/U/V indices; we reproduce that here via conversion.
+      for (let i = 0; i < n; i += 4) {
+        const r = data[i]     / 255;
+        const g = data[i + 1] / 255;
+        const b = data[i + 2] / 255;
+
+        // RGB → YUV (BT.601, U/V centered at 0.5 so they map 0..1).
+        const yIn =  0.299   * r + 0.587   * g + 0.114   * b;
+        const uIn = -0.14713 * r - 0.28886 * g + 0.436   * b + 0.5;
+        const vIn =  0.615   * r - 0.51499 * g - 0.10001 * b + 0.5;
+
+        const yIdx = yIn <= 0 ? 0 : yIn >= 1 ? 255 : (yIn * 255 + 0.5) | 0;
+        const uIdx = uIn <= 0 ? 0 : uIn >= 1 ? 255 : (uIn * 255 + 0.5) | 0;
+        const vIdx = vIn <= 0 ? 0 : vIn >= 1 ? 255 : (vIn * 255 + 0.5) | 0;
+
+        const yOut = mem[offY + yIdx];   // 0..1
+        const uOut = mem[offU + uIdx];   // 0..1, 0.5 = neutral
+        const vOut = mem[offV + vIdx];   // 0..1, 0.5 = neutral
+
+        // YUV → RGB (BT.601).
+        const cy = yOut;
+        const cu = uOut - 0.5;
+        const cv = vOut - 0.5;
+        const rOut = cy + 1.402   * cv;
+        const gOut = cy - 0.344136 * cu - 0.714136 * cv;
+        const bOut = cy + 1.772   * cu;
+
+        data[i    ] = rOut <= 0 ? 0 : rOut >= 1 ? 255 : (rOut * 255 + 0.5) | 0;
+        data[i + 1] = gOut <= 0 ? 0 : gOut >= 1 ? 255 : (gOut * 255 + 0.5) | 0;
+        data[i + 2] = bOut <= 0 ? 0 : bOut >= 1 ? 255 : (bOut * 255 + 0.5) | 0;
+        // alpha untouched
+      }
     } else {
-      // Per-channel LUT: R → Y-plane, G → U-plane, B → V-plane.
+      // Per-channel LUT (RGBA colorspace): R → Y-plane, G → U-plane, B → V-plane.
+      // Used by presets that explicitly work in RGBA and build per-channel curves.
       for (let i = 0; i < n; i += 4) {
         const rIdx = data[i];
         const gIdx = data[i + 1];

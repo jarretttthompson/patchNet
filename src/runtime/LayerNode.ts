@@ -33,6 +33,14 @@ export class LayerNode {
   posX    = 0.0;
   posY    = 0.0;
   opacity = 1.0;
+  /** Rotation around the horizontal axis (top/bottom tilt), in radians.
+   *  Simulated as a vertical perspective squash: scale-Y by cos(rotX). */
+  rotX    = 0.0;
+  /** Rotation around the vertical axis (left/right tilt), in radians.
+   *  Simulated as a horizontal perspective squash: scale-X by cos(rotY). */
+  rotY    = 0.0;
+  /** Rotation around the Z axis (in-plane spin), in radians. Exact. */
+  rotZ    = 0.0;
 
   constructor(
     public readonly patchNodeId: string,
@@ -42,12 +50,18 @@ export class LayerNode {
     posX    = 0.0,
     posY    = 0.0,
     opacity = 1.0,
+    rotX    = 0.0,
+    rotY    = 0.0,
+    rotZ    = 0.0,
   ) {
     this.scaleX  = scaleX;
     this.scaleY  = scaleY;
     this.posX    = posX;
     this.posY    = posY;
     this.opacity = opacity;
+    this.rotX    = rotX;
+    this.rotY    = rotY;
+    this.rotZ    = rotZ;
   }
 
   setMediaVideo(node: MediaVideoSource | null): void { this.mediaVideo = node; this.mediaImage = null; this.mediaFX = null; this.videoFX = null; }
@@ -70,12 +84,7 @@ export class LayerNode {
     if (this.videoFX) {
       if (!this.videoFX.isReady) { ctx.restore(); return; }
       this.videoFX.process();
-      const source = this.videoFX.canvas;
-      const drawW = w * this.scaleX;
-      const drawH = h * this.scaleY;
-      const x     = (w - drawW) / 2 + this.posX * w;
-      const y     = (h - drawH) / 2 + this.posY * h;
-      try { ctx.drawImage(source, x, y, drawW, drawH); } catch { /* skip */ }
+      this.drawSourceTransformed(ctx, this.videoFX.canvas, w, h);
       ctx.restore();
       return;
     }
@@ -99,17 +108,45 @@ export class LayerNode {
 
     if (!source) { ctx.restore(); return; }
 
+    this.drawSourceTransformed(ctx, source as CanvasImageSource, w, h);
+    ctx.restore();
+  }
+
+  /**
+   * Draw `source` into `ctx` with all layer transforms applied:
+   *   - positioned by posX/posY (fraction of canvas)
+   *   - scaled by scaleX/scaleY
+   *   - rotZ: exact in-plane rotation (ctx.rotate)
+   *   - rotX: perspective tilt around horizontal axis — simulated as vertical
+   *     squash by cos(rotX); negative cos (angle > π/2) produces a mirror flip,
+   *     which is the correct visual for a 3D rotation past 90°.
+   *   - rotY: perspective tilt around vertical axis — simulated as horizontal
+   *     squash by cos(rotY).
+   * All rotations pivot around the layer's display center (posX/posY point).
+   */
+  private drawSourceTransformed(
+    ctx: CanvasRenderingContext2D,
+    source: CanvasImageSource,
+    w: number,
+    h: number,
+  ): void {
     const drawW = w * this.scaleX;
     const drawH = h * this.scaleY;
-    const x     = (w - drawW) / 2 + this.posX * w;
-    const y     = (h - drawH) / 2 + this.posY * h;
+    // Center of the layer in canvas space
+    const cx = w / 2 + this.posX * w;
+    const cy = h / 2 + this.posY * h;
+
+    ctx.translate(cx, cy);
+    if (this.rotZ !== 0) ctx.rotate(this.rotZ);
+    if (this.rotX !== 0 || this.rotY !== 0) {
+      ctx.scale(Math.cos(this.rotY), Math.cos(this.rotX));
+    }
 
     try {
-      ctx.drawImage(source as CanvasImageSource, x, y, drawW, drawH);
+      ctx.drawImage(source, -drawW / 2, -drawH / 2, drawW, drawH);
     } catch {
       // media not yet decodable — skip frame silently
     }
-    ctx.restore();
   }
 
   private drawVideoPlaceholder(

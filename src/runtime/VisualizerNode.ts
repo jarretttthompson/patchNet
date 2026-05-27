@@ -36,6 +36,13 @@ export class VisualizerNode implements IRenderContext, IRenderer {
   onResize?: (w: number, h: number) => void;
   /** Fired when the popup is moved — args are new screen x/y. */
   onMove?: (x: number, y: number) => void;
+  /**
+   * Called once per popup rAF frame, before layers are composited.
+   * Used by main.ts to drive the audio-control tick (FFT reads, band-value
+   * propagation) from the popup's rAF when the main window is backgrounded
+   * due to macOS fullscreen moving the popup to its own Space.
+   */
+  onControlTick?: () => void;
 
   /**
    * When true, the popup is brought to the front each time the main
@@ -414,6 +421,7 @@ export class VisualizerNode implements IRenderContext, IRenderer {
   }
 
   private drawFrame(): void {
+    this.onControlTick?.();
     const ctx = this.ctx;
     if (!ctx) return;
     ctx.clearRect(0, 0, this.width, this.height);

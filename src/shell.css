@@ -5094,6 +5094,23 @@ html {
   font-variant-numeric: tabular-nums;
 }
 
+/* Inline text input that appears when the user double-clicks a readout number */
+.pn-rvideo-knob-edit {
+  width: 100%;
+  font-family: var(--pn-font-mono);
+  font-size: 9px;
+  color: var(--pn-accent);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--pn-accent);
+  outline: none;
+  text-align: right;
+  padding: 0;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  caret-color: var(--pn-accent);
+}
+
 .pn-rvideo-knob-range {
   flex: 1 1 auto;
   min-width: 0;

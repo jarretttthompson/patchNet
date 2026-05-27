@@ -305,6 +305,116 @@ async function populateDevices(): Promise<void> {
 
 let meterRafId = 0;
 
+// Timestamp of the last tickAudioControl() execution. Used to deduplicate when
+// both the main-window rAF and a popup rAF call tickAudioControl() in the same
+// frame (e.g. popup open but not yet fullscreen). 8ms window covers 60–120fps.
+let lastControlTickMs = 0;
+
+/**
+ * Read FFT data, propagate band values downstream, and flush ADSR completions.
+ * This is the audio-reactivity control plane — it must run at ~60fps regardless
+ * of the main window's visibility state.
+ *
+ * Called from two sources:
+ *   1. The main-window meter rAF (startMeterLoop) — runs at 60fps when the main
+ *      window is visible and focused.
+ *   2. Every open VisualizerNode's popup rAF (via onControlTick) — takes over
+ *      when macOS fullscreen moves the popup to its own Space and Chrome
+ *      throttles the main window rAF to ~1fps.
+ *
+ * The lastControlTickMs guard ensures the work runs at most once per ~8ms even
+ * when both call sites are active simultaneously.
+ */
+function tickAudioControl(): void {
+  if (!audioGraph) return;
+  const now = performance.now();
+  if (now - lastControlTickMs < 8) return;
+  lastControlTickMs = now;
+
+  audioGraph.mountFftNodes(panGroup);
+  audioGraph.updateFftDisplay(panGroup);
+  audioGraph.flushAdsrCompletions(now);
+
+  // Push fft~ band values: update the directly-connected node's display,
+  // then fire its outlet so the full downstream chain propagates.
+  // Avoids graph.emit (no 60fps re-render) and avoids template contamination
+  // in message boxes (deliverMessageValue would lock node.args to first value).
+  const fftBands = audioGraph.getFftBandLevels();
+  for (const [nodeId, bands] of fftBands) {
+    for (const edge of graph.getEdges()) {
+      if (edge.fromNodeId !== nodeId) continue;
+      const val = bands[edge.fromOutlet];
+      if (val === undefined) continue;
+      const formatted = val.toFixed(4);
+      const targetNode = graph.nodes.get(edge.toNodeId);
+      if (!targetNode) continue;
+
+      const targetEl = panGroup.querySelector<HTMLElement>(
+        `[data-node-id="${edge.toNodeId}"]`,
+      );
+
+      if (targetNode.type === "float" || targetNode.type === "integer") {
+        const isFloat = targetNode.type === "float";
+        const stored = isFloat ? formatted : String(Math.trunc(val));
+        targetNode.args[0] = stored;
+        const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
+        if (odo) buildOdometerContent(odo, isFloat ? val : Math.trunc(val), isFloat, null);
+        // Hot inlet 0 stores + fires; cold inlet 1 stores silently.
+        if (edge.toInlet === 0) {
+          objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
+        }
+      } else if (targetNode.type === "message") {
+        targetNode.args[0] = formatted;
+        const contentEl = targetEl?.querySelector(".patch-object-message-content");
+        if (contentEl) contentEl.textContent = formatted;
+        objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+      } else {
+        // Processor targets (scale, math ops, s/send, …) must run their own
+        // inlet handler so the value is transformed before being forwarded.
+        objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
+      }
+    }
+  }
+  // Push buffer~ position values out the position outlet (last outlet) and
+  // repaint each body waveform with the current cursor.
+  // Stereo mode → outlet index 2; mono mode → outlet index 1.
+  const bufferPositions = audioGraph.getBufferPositions();
+  for (const [nodeId, pos] of bufferPositions) {
+    const sourceNode = graph.nodes.get(nodeId);
+    if (!sourceNode) continue;
+    const bn = audioGraph.getBufferNode(nodeId);
+    if (bn) drawBufferWaveform(nodeId, bn.getPeaks(), bn.bufferLength, pos, bn.state, bufferRange(sourceNode.args));
+    const posOutlet = sourceNode.outlets.length - 1;
+    const formatted = pos.toFixed(4);
+    for (const edge of graph.getEdges()) {
+      if (edge.fromNodeId !== nodeId) continue;
+      if (edge.fromOutlet !== posOutlet) continue;
+      const targetNode = graph.nodes.get(edge.toNodeId);
+      if (!targetNode) continue;
+      const targetEl = panGroup.querySelector<HTMLElement>(
+        `[data-node-id="${edge.toNodeId}"]`,
+      );
+      if (targetNode.type === "float" || targetNode.type === "integer") {
+        const isFloat = targetNode.type === "float";
+        const stored  = isFloat ? formatted : String(Math.trunc(pos));
+        targetNode.args[0] = stored;
+        const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
+        if (odo) buildOdometerContent(odo, isFloat ? pos : Math.trunc(pos), isFloat, null);
+        if (edge.toInlet === 0) {
+          objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
+        }
+      } else if (targetNode.type === "message") {
+        targetNode.args[0] = formatted;
+        const contentEl = targetEl?.querySelector(".patch-object-message-content");
+        if (contentEl) contentEl.textContent = formatted;
+        objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+      } else {
+        objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
+      }
+    }
+  }
+}
+
 function startMeterLoop(): void {
   panGroup.querySelectorAll<HTMLElement>('[data-node-type="fft~"]').forEach(
     el => el.setAttribute("data-dsp-active", "true"),
@@ -312,92 +422,11 @@ function startMeterLoop(): void {
   const tick = () => {
     meterRafId = requestAnimationFrame(tick);
     if (!audioGraph) return;
-    audioGraph.mountFftNodes(panGroup);
-    audioGraph.updateFftDisplay(panGroup);
+    tickAudioControl();
     audioGraph.updateWaveDisplay(panGroup);
     audioGraph.updateNoiseDisplay(panGroup);
     audioGraph.updateLfoDisplay(panGroup);
     audioGraph.updateTransientFollowerDisplay(panGroup);
-    audioGraph.flushAdsrCompletions(performance.now());
-
-    // Push fft~ band values: update the directly-connected node's display,
-    // then fire its outlet so the full downstream chain propagates.
-    // Avoids graph.emit (no 60fps re-render) and avoids template contamination
-    // in message boxes (deliverMessageValue would lock node.args to first value).
-    const fftBands = audioGraph.getFftBandLevels();
-    for (const [nodeId, bands] of fftBands) {
-      for (const edge of graph.getEdges()) {
-        if (edge.fromNodeId !== nodeId) continue;
-        const val = bands[edge.fromOutlet];
-        if (val === undefined) continue;
-        const formatted = val.toFixed(4);
-        const targetNode = graph.nodes.get(edge.toNodeId);
-        if (!targetNode) continue;
-
-        const targetEl = panGroup.querySelector<HTMLElement>(
-          `[data-node-id="${edge.toNodeId}"]`,
-        );
-
-        if (targetNode.type === "float" || targetNode.type === "integer") {
-          const isFloat = targetNode.type === "float";
-          const stored = isFloat ? formatted : String(Math.trunc(val));
-          targetNode.args[0] = stored;
-          const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
-          if (odo) buildOdometerContent(odo, isFloat ? val : Math.trunc(val), isFloat, null);
-          // Hot inlet 0 stores + fires; cold inlet 1 stores silently.
-          if (edge.toInlet === 0) {
-            objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
-          }
-        } else if (targetNode.type === "message") {
-          targetNode.args[0] = formatted;
-          const contentEl = targetEl?.querySelector(".patch-object-message-content");
-          if (contentEl) contentEl.textContent = formatted;
-          objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
-        } else {
-          // Processor targets (scale, math ops, s/send, …) must run their own
-          // inlet handler so the value is transformed before being forwarded.
-          objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
-        }
-      }
-    }
-    // Push buffer~ position values out the position outlet (last outlet) and
-    // repaint each body waveform with the current cursor.
-    // Stereo mode → outlet index 2; mono mode → outlet index 1.
-    const bufferPositions = audioGraph.getBufferPositions();
-    for (const [nodeId, pos] of bufferPositions) {
-      const sourceNode = graph.nodes.get(nodeId);
-      if (!sourceNode) continue;
-      const bn = audioGraph.getBufferNode(nodeId);
-      if (bn) drawBufferWaveform(nodeId, bn.getPeaks(), bn.bufferLength, pos, bn.state, bufferRange(sourceNode.args));
-      const posOutlet = sourceNode.outlets.length - 1;
-      const formatted = pos.toFixed(4);
-      for (const edge of graph.getEdges()) {
-        if (edge.fromNodeId !== nodeId) continue;
-        if (edge.fromOutlet !== posOutlet) continue;
-        const targetNode = graph.nodes.get(edge.toNodeId);
-        if (!targetNode) continue;
-        const targetEl = panGroup.querySelector<HTMLElement>(
-          `[data-node-id="${edge.toNodeId}"]`,
-        );
-        if (targetNode.type === "float" || targetNode.type === "integer") {
-          const isFloat = targetNode.type === "float";
-          const stored  = isFloat ? formatted : String(Math.trunc(pos));
-          targetNode.args[0] = stored;
-          const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
-          if (odo) buildOdometerContent(odo, isFloat ? pos : Math.trunc(pos), isFloat, null);
-          if (edge.toInlet === 0) {
-            objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
-          }
-        } else if (targetNode.type === "message") {
-          targetNode.args[0] = formatted;
-          const contentEl = targetEl?.querySelector(".patch-object-message-content");
-          if (contentEl) contentEl.textContent = formatted;
-          objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
-        } else {
-          objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
-        }
-      }
-    }
 
     const levels = audioGraph.getMeterLevels();
     for (const [nodeId, info] of levels) {
@@ -740,11 +769,16 @@ async function startAudio(): Promise<void> {
   if (audioDeviceSel) audioDeviceSel.value = "default";
   if (audioInputSel)  audioInputSel.value  = "default";
   audioGraph.mountFftNodes(panGroup);
+  // Bridge the audio-control tick into every popup rAF so FFT reads and
+  // band-value propagation keep running at 60fps when the main window is
+  // backgrounded (macOS fullscreen puts the popup on its own Space).
+  vizGraph.setControlTickCallback(tickAudioControl);
   startMeterLoop();
   setDspUi(true);
 }
 
 async function stopAudio(): Promise<void> {
+  vizGraph.setControlTickCallback(null);
   stopMeterLoop();
   audioGraph?.destroy();
   audioGraph = null;
