@@ -37,6 +37,8 @@ import { mountLocalPlugins, pruneLocalPlugins, collectLocalPluginActions } from 
 import { UndoManager } from "./graph/UndoManager";
 import { AudioRuntime } from "./runtime/AudioRuntime";
 import { AudioGraph } from "./runtime/AudioGraph";
+import { BrowserAudioBackend } from "./runtime/BrowserAudioBackend";
+import { getAudioBackend } from "./platform/registry";
 import { VisualizerRuntime } from "./runtime/VisualizerRuntime";
 import { VisualizerGraph } from "./runtime/VisualizerGraph";
 import { DmxGraph } from "./runtime/DmxGraph";
@@ -701,8 +703,21 @@ function drawBufferWaveform(
 }
 
 async function startAudio(): Promise<void> {
-  await audioRuntime.start();
-  audioGraph = new AudioGraph(audioRuntime, graph, subPatchManager);
+  // Route through the platform-selected backend. On browser this calls into
+  // BrowserAudioBackend which constructs AudioRuntime+AudioGraph internally;
+  // on native it hits the NativeAudioBackend stub (no audio yet — see M3/g).
+  // The audioRuntime singleton remains in use for device enumeration and
+  // master-volume control below; those are Web-Audio-specific operations.
+  const audioBackend = getAudioBackend(graph, subPatchManager);
+  await audioBackend.start();
+  audioGraph = audioBackend instanceof BrowserAudioBackend ? audioBackend.audioGraph : null;
+  if (!audioGraph) {
+    // Native skeleton: no AudioGraph yet. Don't try to distribute it to
+    // controllers; let the audio button reflect "started" state and bail
+    // before the Web-Audio-specific wiring below.
+    setDspUi(true);
+    return;
+  }
   objectInteraction.setAudioGraph(audioGraph);
   canvas.setAudioGraph(audioGraph);
   subPatchManager.setAudioGraph(audioGraph);
@@ -746,7 +761,6 @@ async function startAudio(): Promise<void> {
 
 async function stopAudio(): Promise<void> {
   stopMeterLoop();
-  audioGraph?.destroy();
   audioGraph = null;
   objectInteraction.setAudioGraph(undefined);
   subPatchManager.setAudioGraph(undefined);
@@ -757,7 +771,10 @@ async function stopAudio(): Promise<void> {
   mixerPanelController.setAudioGraph(null);
   vizGraph.setBrowserNodeLookup(null);
   vizGraph.setYouTubeNodeLookup(null);
-  await audioRuntime.stop();
+  // backend.stop() handles audioGraph.destroy() + AudioContext.close() in
+  // the correct order. Controllers above are already nulled, so audioGraph
+  // teardown can't observe a half-disconnected world.
+  await getAudioBackend(graph, subPatchManager).stop();
   setDspUi(false);
 }
 

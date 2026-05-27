@@ -2,6 +2,7 @@ import { PatchEdge, type PatchEdgeData } from "./PatchEdge";
 import { audioPortDefaultWidth, canonicalizeType, fillCreationDefaults, getObjectDef } from "./objectDefs";
 import { PatchNode, type PatchNodeData } from "./PatchNode";
 import { parsePatch } from "../serializer/parse";
+import { migrate } from "../serializer/migrate";
 import { getBlobSchema, isBlobPlaceholder, serializePatch, serializePatchForDisplay } from "../serializer/serialize";
 import { findFreePlacement, objectIgnoresOverlap } from "../canvas/OverlapGuard";
 import { assignMissingNodeNames, isValidNodeName, nextNodeName, usedNodeNames, validateNodeName } from "./nodeNames";
@@ -182,7 +183,7 @@ export class PatchGraph {
    * are inserted with fresh ids. Edges are always rebuilt from the parsed set.
    */
   deserialize(text: string): void {
-    const parsed = parsePatch(text);
+    const parsed = migrate(parsePatch(text));
 
     const oldNodes = new Map(this.nodes);
     const claimedOldIds = new Set<string>();

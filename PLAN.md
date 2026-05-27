@@ -164,7 +164,7 @@ Before adding new objects or domains, the foundation must be solid. Priority ord
 
 ---
 
-## Shipped Object Suite (~45 objects)
+## Shipped Object Suite (73 objects)
 
 ### Control / Math
 
@@ -277,7 +277,7 @@ These replace the old Phase 7B–7D and 8C–8E pending items. Foundation work f
 | 1c  | **Canonical examples**      | Pick 1 simple + 1 complex object, refactor them to perfectly exemplify the spec                              |
 | 1d  | **Runtime validation**      | `validateObjectDef()` at boot — catches missing ports, wrong types, broken serializers before runtime errors |
 
-**Deliverable:** No new object types until the contract is stable. All ~45 existing objects conform to the validated spec.
+**Deliverable:** No new object types until the contract is stable. All 73 existing objects conform to the validated spec.
 
 ---
 
@@ -285,13 +285,16 @@ These replace the old Phase 7B–7D and 8C–8E pending items. Foundation work f
 
 **Goal:** The `.patchnet` text format is versioned, every object serializes deterministically, and old patches migrate forward.
 
-- [ ] Version header in `.patchnet` format (`#N patchnet v2`)
-- [ ] Format documentation (`docs/serialization-format.md`)
-- [ ] Object-level `serialize()` / `deserialize()` hooks in ObjectSpec
-- [ ] Migration path from v1 (current) to v2
-- [ ] Round-trip tests for every object
+| Sub | Task | Status |
+|-----|------|--------|
+| 2a  | **Format spec** — `docs/serialization-format.md` documenting the current (v1) contract: statement grammar, blob args, error catalog, compatibility surface | ✅ |
+| 2b  | **Version header** — parser accepts optional `#N patchnet vN;` (KNOWN_VERSIONS = {1, 2}), exposes `ParsedPatch.version`, rejects unknown / out-of-order. Serializer write-side deferred until a real v2-vs-v1 format change motivates it. | ✅ |
+| 2c  | **Per-object round-trip tests** — data-driven loop over `OBJECT_DEFS` (all 73 objects) seeded from a minimal `#X obj` line; asserts `serializePatch ∘ deserialize ∘ serializePatch ∘ deserialize` is byte-identity. All 73 pass on first run. | ✅ |
+| 2d  | **Migration helper** — `migrate(patch)` walks parsed patches up to `LATEST_VERSION` (currently 2). Step registry keyed by from-version; only entry today is v1→v2 identity-with-relabel. Wired into `PatchGraph.deserialize`. Adding a real migration is a one-function change in `STEPS`. | ✅ |
 
-**Depends on:** M1 (ObjectSpec must be stable first)
+**Design decision** (made 2026-05-20, see CHANGELOG): the PLAN.md draft listed "object-level `serialize()` / `deserialize()` hooks." That was dropped — it contradicted M1/1b's locked-in generic-positional contract. Per-object encoding stays data-driven via `BLOB_ARG_SCHEMA` (`src/serializer/serialize.ts:65-83`).
+
+**Depends on:** M1 (ObjectSpec stable — done).
 
 ---
 
@@ -299,15 +302,45 @@ These replace the old Phase 7B–7D and 8C–8E pending items. Foundation work f
 
 **Goal:** `AudioBackend` interface with two full implementations — browser (Web Audio API) and native (CPAL via Tauri IPC).
 
-- [ ] Finalize `AudioBackend` interface in `platform/audio.ts`
-- [ ] Refactor `AudioGraph` to talk to the interface, not Web Audio directly
-- [ ] `WebAudioBackend` — wraps current Web Audio API calls
-- [ ] `NativeAudioBackend` — CPAL via Tauri IPC commands (`audio_start`, `audio_stop`, `audio_sync_graph`, etc.)
-- [ ] Rust side: `cpal` + `cpal-jack` in `Cargo.toml`, IPC command handlers
-- [ ] Boot-time injection: `platform/audio.ts` selects backend based on `isNative`
-- [ ] Target: <3ms RTL on macOS CoreAudio
+| Sub | Task | Status |
+|-----|------|--------|
+| 3a  | **Spec doc** — `docs/audio-backend.md` formalizing the interface, capability matrix, lifecycle, platform-selection rule, and escape-hatch policy (controllers that need Web-Audio-specific access cast to `BrowserAudioBackend`) | ✅ |
+| 3b  | **`BrowserAudioBackend`** wraps `AudioRuntime` + `AudioGraph` behind the interface; exposes `audioGraph` and `audioRuntime` escape hatches | ✅ |
+| 3c  | **`NativeAudioBackend` skeleton** — non-throwing no-op stubs; `start()` flips `isStarted`, reports placeholder `48000` Hz / `0`ms latency. Lets the registry return *something* on native pre-CPAL | ✅ |
+| 3d  | **Registry** — `getAudioBackend(graph, subPatchManager)` in `src/platform/registry.ts`; lazy singleton; platform-selected via `isNative` | ✅ |
+| 3e  | **Tests** — registry singleton behavior, both backends' stub-state lifecycle, structural interface conformance, capability matrix. 19 cases | ✅ |
+| 3f  | **Main.ts wire-up** — `startAudio()` / `stopAudio()` route through `getAudioBackend(graph, subPatchManager)`. Browser path identical; native path early-returns after `setDspUi(true)` (no `AudioGraph` yet). Web-Audio-specific call sites (devices / volume / sampleRate) keep using the `AudioRuntime` singleton — escape-hatch migration is deferred-cleanup. | ✅ |
+| 3g  | **Native CPAL implementation** — Rust side: `cpal` + `cpal-jack`, IPC commands (`audio_start`/`audio_stop`/`audio_sync_graph`/`audio_meter_levels`), per-object sync. Target: <3ms RTL on macOS CoreAudio | [ ] deferred |
 
-**Depends on:** M1 (object port types influence audio routing contract)
+**Depends on:** M1 (object port types influence audio routing contract).
+**3f is bounded but invasive** (main.ts is 1500+ lines); separate session.
+**3g is a multi-hour Rust+IPC effort** — own milestone planning.
+
+---
+
+### M3.5 — Runtime Hardening (visualizer perf + core fragility)
+
+**Goal:** The live audio-reactive visualizer patch runs reliably under venue conditions (multichannel I/O + heavy real-time video) for 5+ continuous minutes with no dropped frames and no audio xruns. Pre-condition for M4 (Video Backend Abstraction) — there is no point abstracting a pipeline that drops frames at one layer of indirection.
+
+| Sub | Task | Status |
+|-----|------|--------|
+| 3.5a | **§2 baseline trace** — record 60s Performance trace under `adc~ 32` + `dac~ 32` + venue visualizer; saved as `baseline-stress.json`; observations logged in CHANGELOG | [ ] |
+| 3.5b | **Tier 1 fixes** (10–30 line edits, ~5 items): layer-sort cache (`PatchVizNode` / `VisualizerNode`), VFX dirty-flag (`VfxCrtNode` / `VfxBlurNode`), `LayerNode` source-unchanged skip, drop `new Date()` in `ShaderToyNode`. Trace-delta per item, revert if no movement. | [ ] |
+| 3.5c | **Tier 2 fixes** (2.1 per-node outlet-targets cache on `PatchGraph`, 2.2 reuse `getFftBandLevels` Map, 2.3 reuse FFT band buffers). Each with unit tests for cache invalidation. | [ ] |
+| 3.5d | **Tier 3 (optional)** — unify the 3 rAF loops behind a `FrameCoordinator`. Skip entirely if 3.5b+3.5c fix the venue symptom. | [ ] optional |
+| 3.5e | **Core fragility** (each item lands as its own concrete task here, NOT a separate milestone — these are real and operationally risky): | |
+| 3.5e₁ | Graph mutation during rAF — can `PatchGraph.removeNode` fire mid-tick and leave the meter loop iterating a stale snapshot with dangling refs? Audit, then either mutation queue or defensive snapshot. **Highest operational risk: an unreproducible mid-set crash.** | [ ] |
+| 3.5e₂ | Audio backend teardown race — `BrowserAudioBackend.stop()` ordering vs controllers nulling. Just shipped in M3/f; needs live-environment soak test. Look for worklet messages landing post-teardown. | [ ] |
+| 3.5e₃ | Serialization round-trip edges beyond M2/c — circular `peer` refs, self-referential subpatches. Add a fuzz test with random valid graphs. | [ ] |
+| 3.5e₄ | **Decouple audio analysis from rAF.** The 2026-05-25 focus-throttle fix re-hosts the meter loop on the first open popup's rAF when one exists (gated by CDP probe `tests/focus-throttle/`), which fixes the immediate "fullscreen popup freezes audio-reactive visuals" bug. But analysis rate is still downstream of a render loop's focus state — now "whichever popup happens to be visible" instead of "the main window." Adding a second output window, a recording surface, or anything else that competes for focus will re-expose the same bug shape against the new host. **Real fix:** drive `AnalyserNode` reads + outlet propagation off a non-rAF clock (AudioWorklet message tick, or a self-resetting `setTimeout` chain at the desired analysis rate) and have every render loop (main + every popup + future outputs) read the latest snapshot when they paint. The meter rAF tick becomes "consume cached snapshot," not "drive analysis." | [ ] |
+
+**Plan reference:** `/home/thejrummer/.claude/plans/what-do-we-need-silly-creek.md` (approved 2026-05-20).
+
+**Working discipline:** profile before fixing AND between fixes; measure trace-delta per change; revert if no movement; reverted attempts go in CHANGELOG as useful negative results.
+
+**Phase-close gate:** 60s stress trace shows zero xruns, <5% dropped frames, <50ms `audioContext.currentTime` drift; venue's actual `.patchnet` runs at stable 60fps for 5+ continuous minutes; all 3.5e items have a concrete in-progress or shipped sub-task above (not just flagged in conversation).
+
+**Depends on:** M3/f (already shipped — audio backend wire-up live in `main.ts`).
 
 ---
 
@@ -510,7 +543,7 @@ patchNet/
     IRenderContext.ts
     ImageStore.ts
   docs/
-    objects/              # ~9 of ~45 objects documented
+    objects/              # ~9 of 73 objects documented
   tests/
     actions.test.ts
     batch-change.test.ts
@@ -543,7 +576,7 @@ patchNet/
 
 ### Documentation
 
-- [ ] Object reference docs: only 9 of ~45 objects have pages in `docs/objects/`
+- [ ] Object reference docs: only 9 of 73 objects have pages in `docs/objects/`
 - [ ] Objects needing docs: `ezScale`, `sequencer`, `drunk`, `pack`/`unpack`/`prepend`/`append`, `trigger`, `mixer~`, `fft~`, `dmx`, `shaderToy*`, `cam*`, `frame*`, `layer*`, `vfx*`, `reaperVideo*`, `peer`/`netsend`/`netreceive`, `buffer~`, `vbuf*`, `phoneTilt`, `timer`, `count`, `oscillateNumbers`, `imageFX*`, `mediaVideo*`, `mediaImage*`, `browser~*`, `youtube~*`, `visualizer*`, `message`, `comment`, `int`, `float`, `f`, `+`, `-`, `*`, `/`, `s`, `r`
 
 ### Testing

@@ -152,7 +152,7 @@ Two optional executable hooks. Both are pure functions of the creation `args`.
 
 Fills missing positional slots with defaults so serialization is deterministic
 and positional. Set on objects with sparse/optional args (`sequencer`,
-`buffer~`). Example — `ensureBufferArgs`, `src/graph/objectDefs.ts:1996-2011`:
+`buffer~`). Example — `ensureBufferArgs`, `src/graph/objectDefs.ts:1998-2013`:
 
 ```ts
 export function ensureBufferArgs(args: string[]): string[] {
@@ -200,7 +200,7 @@ serialize/deserialize hooks.** An object round-trips purely through its `args`:
 ### Blob args
 
 Large/binary payloads (code, PCM) use `BLOB_ARG_SCHEMA`
-(`src/serializer/serialize.ts:116-165`), not plain tokens:
+(`src/serializer/serialize.ts:65-83`), not plain tokens:
 
 - `codebox` → `cb-src`; `js~` → `js-src` / `js-lib` / `js-vals`;
   `buffer~` → 13 positional slots incl. base64 PCM (`preEncoded` — passed
@@ -210,14 +210,16 @@ Large/binary payloads (code, PCM) use `BLOB_ARG_SCHEMA`
 - Empty optional blob slots that support the `-` convention (`js~` lib/vals,
   `youtube~*`) serialize as `-`.
 
-Deep format *versioning/migration* is **M2 scope**, not covered here. This
-documents only the current (v1) contract.
+For the full file-format spec (statement grammar, `#X` lines, blob encoding
+rules, error catalog, v1/v2 versioning), see `docs/serialization-format.md`.
+That doc is the authoritative reference; this section is a summary of the
+*object* side of the contract.
 
 ---
 
 ## 7. Validation rules
 
-`validateObjectDef(type, spec)` (`src/graph/objectDefs.ts:2183-2266`) returns an
+`validateObjectDef(type, spec)` (`src/graph/objectDefs.ts:2185-2268`) returns an
 error list. **Enforced (each is an error):**
 
 - `description` non-empty; `category` ∈ the 5 valid values.
@@ -255,7 +257,7 @@ button: {
 },
 ```
 
-### Maximal — `buffer~` (`src/graph/objectDefs.ts:900-957`)
+### Maximal — `buffer~` (`src/graph/objectDefs.ts:900-959`)
 
 Dynamic ports + sparse args + blob state. Exercises every optional mechanism:
 
@@ -265,8 +267,8 @@ Dynamic ports + sparse args + blob state. Exercises every optional mechanism:
 - `messages` use the **`inlet: -1`** sentinel for transport selectors
   (`record`, `play`, `stop`, `seek`, `range`, …) plus inlet-0 parameter setters.
 - `inlets: []` / `outlets: []` — **derived** by `deriveBufferPorts`
-  (`objectDefs.ts:2032-2057`): stereo ⇒ 3 in / 3 out, mono ⇒ 2 in / 2 out.
-- `ensureArgs: ensureBufferArgs` (`1996-2011`) backfills all 13 slots so the
+  (`objectDefs.ts:2034-2059`): stereo ⇒ 3 in / 3 out, mono ⇒ 2 in / 2 out.
+- `ensureArgs: ensureBufferArgs` (`1998-2013`) backfills all 13 slots so the
   positional blob layout is stable on disk.
 
 ```ts

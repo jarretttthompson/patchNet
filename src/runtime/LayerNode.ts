@@ -6,6 +6,10 @@ import type { ImageFXNode }    from "./ImageFXNode";
 export interface VideoFXSource {
   readonly canvas: HTMLCanvasElement;
   readonly isReady: boolean;
+  /** Incremented after process() does real work and the internal canvas
+   *  changed. Downstream code (chained VFX, future LayerNode caching) checks
+   *  this to detect input-source change. Tier 1.3. */
+  readonly outputVersion: number;
   process(): void;
 }
 
