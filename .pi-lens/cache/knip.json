@@ -1,0 +1,1295 @@
+{
+  "success": true,
+  "issues": [
+    {
+      "type": "file",
+      "name": "pi-theme/patchnet-extension.ts",
+      "file": "pi-theme/patchnet-extension.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/platform/audio.ts",
+      "file": "src/platform/audio.ts"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-check-update.js",
+      "file": ".pi/gsd/hooks/gsd-check-update.js"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-context-monitor.js",
+      "file": ".pi/gsd/hooks/gsd-context-monitor.js"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-prompt-guard.js",
+      "file": ".pi/gsd/hooks/gsd-prompt-guard.js"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-statusline.js",
+      "file": ".pi/gsd/hooks/gsd-statusline.js"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-workflow-guard.js",
+      "file": ".pi/gsd/hooks/gsd-workflow-guard.js"
+    },
+    {
+      "type": "dependency",
+      "name": "@tauri-apps/api",
+      "file": "package.json",
+      "line": 30
+    },
+    {
+      "type": "export",
+      "name": "isBrowser",
+      "file": "src/platform/index.ts",
+      "line": 40
+    },
+    {
+      "type": "export",
+      "name": "platformLabel",
+      "file": "src/platform/index.ts",
+      "line": 46
+    },
+    {
+      "type": "export",
+      "name": "Platform",
+      "file": "src/platform/index.ts",
+      "line": 17
+    },
+    {
+      "type": "export",
+      "name": "formatMaxLen",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 66
+    },
+    {
+      "type": "export",
+      "name": "waveKnobHtml",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 102
+    },
+    {
+      "type": "export",
+      "name": "waveKnobFraction",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 127
+    },
+    {
+      "type": "export",
+      "name": "lfoKnobHtml",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 168
+    },
+    {
+      "type": "export",
+      "name": "lfoKnobFraction",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 192
+    },
+    {
+      "type": "export",
+      "name": "ADSR_W",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 219
+    },
+    {
+      "type": "export",
+      "name": "ADSR_H",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 220
+    },
+    {
+      "type": "export",
+      "name": "ADSR_PAD_X",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 221
+    },
+    {
+      "type": "export",
+      "name": "ADSR_USABLE_W",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 224
+    },
+    {
+      "type": "export",
+      "name": "formatAdsrTime",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 227
+    },
+    {
+      "type": "export",
+      "name": "formatAdsrLevel",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 234
+    },
+    {
+      "type": "export",
+      "name": "formatTfSensitivity",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 241
+    },
+    {
+      "type": "export",
+      "name": "adsrEditorSvg",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 292
+    },
+    {
+      "type": "export",
+      "name": "renderUnavailableObject",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 1552
+    },
+    {
+      "type": "export",
+      "name": "isEditableTarget",
+      "file": "src/actions/index.ts",
+      "line": 2
+    },
+    {
+      "type": "export",
+      "name": "eventToChord",
+      "file": "src/actions/index.ts",
+      "line": 2
+    },
+    {
+      "type": "export",
+      "name": "chordFromEventForUi",
+      "file": "src/actions/index.ts",
+      "line": 2
+    },
+    {
+      "type": "export",
+      "name": "PatchAction",
+      "file": "src/actions/index.ts",
+      "line": 7
+    },
+    {
+      "type": "export",
+      "name": "UndoLike",
+      "file": "src/actions/index.ts",
+      "line": 7
+    },
+    {
+      "type": "export",
+      "name": "subscribeSnap",
+      "file": "src/canvas/snapState.ts",
+      "line": 22
+    },
+    {
+      "type": "export",
+      "name": "buildTypeAliases",
+      "file": "src/graph/objectDefs.ts",
+      "line": 1611
+    },
+    {
+      "type": "export",
+      "name": "deriveSequencerPorts",
+      "file": "src/graph/objectDefs.ts",
+      "line": 1672
+    },
+    {
+      "type": "export",
+      "name": "VBUF_CONTROL_INLET",
+      "file": "src/graph/objectDefs.ts",
+      "line": 2090
+    },
+    {
+      "type": "export",
+      "name": "REAPER_VIDEO_SIDE_INLET_START",
+      "file": "src/graph/objectDefs.ts",
+      "line": 2096
+    },
+    {
+      "type": "export",
+      "name": "extractExtraMediaInputs",
+      "file": "src/graph/objectDefs.ts",
+      "line": 2102
+    },
+    {
+      "type": "export",
+      "name": "validateObjectDef",
+      "file": "src/graph/objectDefs.ts",
+      "line": 2183
+    },
+    {
+      "type": "export",
+      "name": "PhoneTiltPanel",
+      "file": "src/canvas/PhoneTiltPanel.ts",
+      "line": 55
+    },
+    {
+      "type": "export",
+      "name": "getSession",
+      "file": "src/canvas/patchSessionRegistry.ts",
+      "line": 39
+    },
+    {
+      "type": "export",
+      "name": "PatchSessionEntry",
+      "file": "src/canvas/patchSessionRegistry.ts",
+      "line": 16
+    },
+    {
+      "type": "export",
+      "name": "PatchParseError",
+      "file": "src/serializer/parse.ts",
+      "line": 8
+    },
+    {
+      "type": "export",
+      "name": "ParsedPatch",
+      "file": "src/serializer/parse.ts",
+      "line": 18
+    },
+    {
+      "type": "export",
+      "name": "TerminalCommandError",
+      "file": "src/terminal/PatchTerminalEngine.ts",
+      "line": 135
+    },
+    {
+      "type": "export",
+      "name": "boxesOverlap",
+      "file": "src/canvas/OverlapGuard.ts",
+      "line": 34
+    },
+    {
+      "type": "export",
+      "name": "OverlapCheckResult",
+      "file": "src/canvas/OverlapGuard.ts",
+      "line": 47
+    },
+    {
+      "type": "export",
+      "name": "NODE_NAME_RE",
+      "file": "src/graph/nodeNames.ts",
+      "line": 3
+    },
+    {
+      "type": "export",
+      "name": "nodeNameBaseForType",
+      "file": "src/graph/nodeNames.ts",
+      "line": 15
+    },
+    {
+      "type": "export",
+      "name": "parseTimeToken",
+      "file": "src/runtime/youtube/parseUrl.ts",
+      "line": 75
+    },
+    {
+      "type": "export",
+      "name": "ParseResult",
+      "file": "src/runtime/youtube/parseUrl.ts",
+      "line": 17
+    },
+    {
+      "type": "export",
+      "name": "isOpfsBacked",
+      "file": "src/runtime/buffer/BufferStorage.ts",
+      "line": 579
+    },
+    {
+      "type": "export",
+      "name": "PeaksData",
+      "file": "src/runtime/buffer/BufferStorage.ts",
+      "line": 46
+    },
+    {
+      "type": "export",
+      "name": "StoredBuffer",
+      "file": "src/runtime/buffer/BufferStorage.ts",
+      "line": 53
+    },
+    {
+      "type": "export",
+      "name": "SHADERTOY_PRESET_NAMES",
+      "file": "src/runtime/ShaderToyNode.ts",
+      "line": 314
+    },
+    {
+      "type": "export",
+      "name": "isValid",
+      "file": "src/runtime/dmx/FixtureProfile.ts",
+      "line": 179
+    },
+    {
+      "type": "export",
+      "name": "ProfileValidationError",
+      "file": "src/runtime/dmx/FixtureProfile.ts",
+      "line": 49
+    },
+    {
+      "type": "export",
+      "name": "isEmitError",
+      "file": "src/runtime/eel2/translate.ts",
+      "line": 83
+    },
+    {
+      "type": "export",
+      "name": "Translator",
+      "file": "src/runtime/eel2/translate.ts",
+      "line": 106
+    },
+    {
+      "type": "export",
+      "name": "TokenizeError",
+      "file": "src/runtime/eel2/translate.ts",
+      "line": 731
+    },
+    {
+      "type": "export",
+      "name": "CONTROL_PROTOCOL_VERSION",
+      "file": "src/control/ControlMessage.ts",
+      "line": 12
+    },
+    {
+      "type": "export",
+      "name": "ControlMessage",
+      "file": "src/control/ControlMessage.ts",
+      "line": 116
+    },
+    {
+      "type": "export",
+      "name": "ControlEnvelope",
+      "file": "src/control/ControlMessage.ts",
+      "line": 122
+    },
+    {
+      "type": "export",
+      "name": "NAMED_CONSTANTS",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 41
+    },
+    {
+      "type": "export",
+      "name": "isDigit",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 47
+    },
+    {
+      "type": "export",
+      "name": "isIdentStart",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 54
+    },
+    {
+      "type": "export",
+      "name": "isIdentContinue",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 57
+    },
+    {
+      "type": "export",
+      "name": "JS_RESERVED",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 236
+    },
+    {
+      "type": "export",
+      "name": "TokenizeError",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 35
+    },
+    {
+      "type": "export",
+      "name": "broadcastPatchLibrary",
+      "file": "src/runtime/rvideo/library.ts",
+      "line": 47
+    },
+    {
+      "type": "export",
+      "name": "OpenedFile",
+      "file": "src/platform/fs.ts",
+      "line": 68
+    },
+    {
+      "type": "export",
+      "name": "PortPos",
+      "file": "src/canvas/CableRenderer.ts",
+      "line": 11
+    },
+    {
+      "type": "export",
+      "name": "LocalPluginContext",
+      "file": "src/graph/localPlugins.ts",
+      "line": 20
+    },
+    {
+      "type": "export",
+      "name": "LocalPlugin",
+      "file": "src/graph/localPlugins.ts",
+      "line": 25
+    },
+    {
+      "type": "export",
+      "name": "PatchAction",
+      "file": "src/graph/localPlugins.ts",
+      "line": 100
+    },
+    {
+      "type": "export",
+      "name": "ActionContext",
+      "file": "src/graph/localPlugins.ts",
+      "line": 100
+    },
+    {
+      "type": "export",
+      "name": "MeterInfo",
+      "file": "src/runtime/AudioGraph.ts",
+      "line": 31
+    },
+    {
+      "type": "export",
+      "name": "NetReceiveEmit",
+      "file": "src/runtime/peer/PeerRegistry.ts",
+      "line": 30
+    },
+    {
+      "type": "export",
+      "name": "PhoneSensorEmit",
+      "file": "src/runtime/phoneSensor/PhoneSensorRegistry.ts",
+      "line": 19
+    },
+    {
+      "type": "export",
+      "name": "ReferencePatch",
+      "file": "src/canvas/referencePatches.ts",
+      "line": 10
+    },
+    {
+      "type": "export",
+      "name": "ShareUrlResult",
+      "file": "src/share/shareUrl.ts",
+      "line": 7
+    },
+    {
+      "type": "export",
+      "name": "UserKeymapV1",
+      "file": "src/actions/ActionKeymap.ts",
+      "line": 147
+    },
+    {
+      "type": "export",
+      "name": "JsfxProgram",
+      "file": "src/runtime/jsfx/parser.ts",
+      "line": 37
+    },
+    {
+      "type": "export",
+      "name": "JsfxParseError",
+      "file": "src/runtime/jsfx/parser.ts",
+      "line": 50
+    },
+    {
+      "type": "export",
+      "name": "JsfxParseResult",
+      "file": "src/runtime/jsfx/parser.ts",
+      "line": 55
+    },
+    {
+      "type": "export",
+      "name": "JsfxTranslateError",
+      "file": "src/runtime/jsfx/translate.ts",
+      "line": 23
+    },
+    {
+      "type": "export",
+      "name": "JsfxTranslateResult",
+      "file": "src/runtime/jsfx/translate.ts",
+      "line": 24
+    },
+    {
+      "type": "export",
+      "name": "JsfxTranslateOptions",
+      "file": "src/runtime/jsfx/translate.ts",
+      "line": 38
+    },
+    {
+      "type": "export",
+      "name": "BlobSlot",
+      "file": "src/serializer/serialize.ts",
+      "line": 108
+    },
+    {
+      "type": "export",
+      "name": "TopicMessage",
+      "file": "src/runtime/peer/topicRouter.ts",
+      "line": 14
+    },
+    {
+      "type": "export",
+      "name": "DragSessionHandlers",
+      "file": "src/canvas/dragSession.ts",
+      "line": 26
+    },
+    {
+      "type": "export",
+      "name": "RVideoProgram",
+      "file": "src/runtime/rvideo/parser.ts",
+      "line": 36
+    },
+    {
+      "type": "export",
+      "name": "RVideoParseError",
+      "file": "src/runtime/rvideo/parser.ts",
+      "line": 41
+    },
+    {
+      "type": "export",
+      "name": "RVideoParseResult",
+      "file": "src/runtime/rvideo/parser.ts",
+      "line": 46
+    },
+    {
+      "type": "export",
+      "name": "CaptureMode",
+      "file": "src/runtime/YouTubeNode.ts",
+      "line": 16
+    },
+    {
+      "type": "export",
+      "name": "JsEffectStatusListener",
+      "file": "src/runtime/JsEffectNode.ts",
+      "line": 13
+    },
+    {
+      "type": "export",
+      "name": "BufferTransport",
+      "file": "src/runtime/BufferNode.ts",
+      "line": 10
+    },
+    {
+      "type": "export",
+      "name": "BufferMode",
+      "file": "src/runtime/BufferNode.ts",
+      "line": 11
+    },
+    {
+      "type": "export",
+      "name": "RVideoCompileResult",
+      "file": "src/runtime/ReaperVideoNode.ts",
+      "line": 32
+    },
+    {
+      "type": "export",
+      "name": "VideoBufferTransport",
+      "file": "src/runtime/VideoBufferNode.ts",
+      "line": 3
+    },
+    {
+      "type": "export",
+      "name": "StoredImage",
+      "file": "src/runtime/ImageStore.ts",
+      "line": 18
+    },
+    {
+      "type": "export",
+      "name": "DmxNodeOptions",
+      "file": "src/runtime/DmxNode.ts",
+      "line": 13
+    },
+    {
+      "type": "export",
+      "name": "DmxStateEvent",
+      "file": "src/runtime/DmxNode.ts",
+      "line": 18
+    },
+    {
+      "type": "export",
+      "name": "DmxListener",
+      "file": "src/runtime/DmxNode.ts",
+      "line": 30
+    },
+    {
+      "type": "export",
+      "name": "PeerRole",
+      "file": "src/runtime/peer/PeerSession.ts",
+      "line": 22
+    },
+    {
+      "type": "export",
+      "name": "StatusListener",
+      "file": "src/runtime/peer/PeerSession.ts",
+      "line": 34
+    },
+    {
+      "type": "export",
+      "name": "MessageListener",
+      "file": "src/runtime/peer/PeerSession.ts",
+      "line": 35
+    },
+    {
+      "type": "export",
+      "name": "EnttecProTransportOptions",
+      "file": "src/runtime/dmx/EnttecProTransport.ts",
+      "line": 84
+    },
+    {
+      "type": "export",
+      "name": "EvalrectCompileResult",
+      "file": "src/runtime/rvideo/evalrect.ts",
+      "line": 57
+    },
+    {
+      "type": "export",
+      "name": "TranslatorResolvers",
+      "file": "src/runtime/rvideo/evalrect.ts",
+      "line": 196
+    }
+  ],
+  "unusedExports": [
+    {
+      "type": "export",
+      "name": "isBrowser",
+      "file": "src/platform/index.ts",
+      "line": 40
+    },
+    {
+      "type": "export",
+      "name": "platformLabel",
+      "file": "src/platform/index.ts",
+      "line": 46
+    },
+    {
+      "type": "export",
+      "name": "Platform",
+      "file": "src/platform/index.ts",
+      "line": 17
+    },
+    {
+      "type": "export",
+      "name": "formatMaxLen",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 66
+    },
+    {
+      "type": "export",
+      "name": "waveKnobHtml",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 102
+    },
+    {
+      "type": "export",
+      "name": "waveKnobFraction",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 127
+    },
+    {
+      "type": "export",
+      "name": "lfoKnobHtml",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 168
+    },
+    {
+      "type": "export",
+      "name": "lfoKnobFraction",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 192
+    },
+    {
+      "type": "export",
+      "name": "ADSR_W",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 219
+    },
+    {
+      "type": "export",
+      "name": "ADSR_H",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 220
+    },
+    {
+      "type": "export",
+      "name": "ADSR_PAD_X",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 221
+    },
+    {
+      "type": "export",
+      "name": "ADSR_USABLE_W",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 224
+    },
+    {
+      "type": "export",
+      "name": "formatAdsrTime",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 227
+    },
+    {
+      "type": "export",
+      "name": "formatAdsrLevel",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 234
+    },
+    {
+      "type": "export",
+      "name": "formatTfSensitivity",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 241
+    },
+    {
+      "type": "export",
+      "name": "adsrEditorSvg",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 292
+    },
+    {
+      "type": "export",
+      "name": "renderUnavailableObject",
+      "file": "src/canvas/ObjectRenderer.ts",
+      "line": 1552
+    },
+    {
+      "type": "export",
+      "name": "isEditableTarget",
+      "file": "src/actions/index.ts",
+      "line": 2
+    },
+    {
+      "type": "export",
+      "name": "eventToChord",
+      "file": "src/actions/index.ts",
+      "line": 2
+    },
+    {
+      "type": "export",
+      "name": "chordFromEventForUi",
+      "file": "src/actions/index.ts",
+      "line": 2
+    },
+    {
+      "type": "export",
+      "name": "PatchAction",
+      "file": "src/actions/index.ts",
+      "line": 7
+    },
+    {
+      "type": "export",
+      "name": "UndoLike",
+      "file": "src/actions/index.ts",
+      "line": 7
+    },
+    {
+      "type": "export",
+      "name": "subscribeSnap",
+      "file": "src/canvas/snapState.ts",
+      "line": 22
+    },
+    {
+      "type": "export",
+      "name": "buildTypeAliases",
+      "file": "src/graph/objectDefs.ts",
+      "line": 1611
+    },
+    {
+      "type": "export",
+      "name": "deriveSequencerPorts",
+      "file": "src/graph/objectDefs.ts",
+      "line": 1672
+    },
+    {
+      "type": "export",
+      "name": "VBUF_CONTROL_INLET",
+      "file": "src/graph/objectDefs.ts",
+      "line": 2090
+    },
+    {
+      "type": "export",
+      "name": "REAPER_VIDEO_SIDE_INLET_START",
+      "file": "src/graph/objectDefs.ts",
+      "line": 2096
+    },
+    {
+      "type": "export",
+      "name": "extractExtraMediaInputs",
+      "file": "src/graph/objectDefs.ts",
+      "line": 2102
+    },
+    {
+      "type": "export",
+      "name": "validateObjectDef",
+      "file": "src/graph/objectDefs.ts",
+      "line": 2183
+    },
+    {
+      "type": "export",
+      "name": "PhoneTiltPanel",
+      "file": "src/canvas/PhoneTiltPanel.ts",
+      "line": 55
+    },
+    {
+      "type": "export",
+      "name": "getSession",
+      "file": "src/canvas/patchSessionRegistry.ts",
+      "line": 39
+    },
+    {
+      "type": "export",
+      "name": "PatchSessionEntry",
+      "file": "src/canvas/patchSessionRegistry.ts",
+      "line": 16
+    },
+    {
+      "type": "export",
+      "name": "PatchParseError",
+      "file": "src/serializer/parse.ts",
+      "line": 8
+    },
+    {
+      "type": "export",
+      "name": "ParsedPatch",
+      "file": "src/serializer/parse.ts",
+      "line": 18
+    },
+    {
+      "type": "export",
+      "name": "TerminalCommandError",
+      "file": "src/terminal/PatchTerminalEngine.ts",
+      "line": 135
+    },
+    {
+      "type": "export",
+      "name": "boxesOverlap",
+      "file": "src/canvas/OverlapGuard.ts",
+      "line": 34
+    },
+    {
+      "type": "export",
+      "name": "OverlapCheckResult",
+      "file": "src/canvas/OverlapGuard.ts",
+      "line": 47
+    },
+    {
+      "type": "export",
+      "name": "NODE_NAME_RE",
+      "file": "src/graph/nodeNames.ts",
+      "line": 3
+    },
+    {
+      "type": "export",
+      "name": "nodeNameBaseForType",
+      "file": "src/graph/nodeNames.ts",
+      "line": 15
+    },
+    {
+      "type": "export",
+      "name": "parseTimeToken",
+      "file": "src/runtime/youtube/parseUrl.ts",
+      "line": 75
+    },
+    {
+      "type": "export",
+      "name": "ParseResult",
+      "file": "src/runtime/youtube/parseUrl.ts",
+      "line": 17
+    },
+    {
+      "type": "export",
+      "name": "isOpfsBacked",
+      "file": "src/runtime/buffer/BufferStorage.ts",
+      "line": 579
+    },
+    {
+      "type": "export",
+      "name": "PeaksData",
+      "file": "src/runtime/buffer/BufferStorage.ts",
+      "line": 46
+    },
+    {
+      "type": "export",
+      "name": "StoredBuffer",
+      "file": "src/runtime/buffer/BufferStorage.ts",
+      "line": 53
+    },
+    {
+      "type": "export",
+      "name": "SHADERTOY_PRESET_NAMES",
+      "file": "src/runtime/ShaderToyNode.ts",
+      "line": 314
+    },
+    {
+      "type": "export",
+      "name": "isValid",
+      "file": "src/runtime/dmx/FixtureProfile.ts",
+      "line": 179
+    },
+    {
+      "type": "export",
+      "name": "ProfileValidationError",
+      "file": "src/runtime/dmx/FixtureProfile.ts",
+      "line": 49
+    },
+    {
+      "type": "export",
+      "name": "isEmitError",
+      "file": "src/runtime/eel2/translate.ts",
+      "line": 83
+    },
+    {
+      "type": "export",
+      "name": "Translator",
+      "file": "src/runtime/eel2/translate.ts",
+      "line": 106
+    },
+    {
+      "type": "export",
+      "name": "TokenizeError",
+      "file": "src/runtime/eel2/translate.ts",
+      "line": 731
+    },
+    {
+      "type": "export",
+      "name": "CONTROL_PROTOCOL_VERSION",
+      "file": "src/control/ControlMessage.ts",
+      "line": 12
+    },
+    {
+      "type": "export",
+      "name": "ControlMessage",
+      "file": "src/control/ControlMessage.ts",
+      "line": 116
+    },
+    {
+      "type": "export",
+      "name": "ControlEnvelope",
+      "file": "src/control/ControlMessage.ts",
+      "line": 122
+    },
+    {
+      "type": "export",
+      "name": "NAMED_CONSTANTS",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 41
+    },
+    {
+      "type": "export",
+      "name": "isDigit",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 47
+    },
+    {
+      "type": "export",
+      "name": "isIdentStart",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 54
+    },
+    {
+      "type": "export",
+      "name": "isIdentContinue",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 57
+    },
+    {
+      "type": "export",
+      "name": "JS_RESERVED",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 236
+    },
+    {
+      "type": "export",
+      "name": "TokenizeError",
+      "file": "src/runtime/eel2/tokenize.ts",
+      "line": 35
+    },
+    {
+      "type": "export",
+      "name": "broadcastPatchLibrary",
+      "file": "src/runtime/rvideo/library.ts",
+      "line": 47
+    },
+    {
+      "type": "export",
+      "name": "OpenedFile",
+      "file": "src/platform/fs.ts",
+      "line": 68
+    },
+    {
+      "type": "export",
+      "name": "PortPos",
+      "file": "src/canvas/CableRenderer.ts",
+      "line": 11
+    },
+    {
+      "type": "export",
+      "name": "LocalPluginContext",
+      "file": "src/graph/localPlugins.ts",
+      "line": 20
+    },
+    {
+      "type": "export",
+      "name": "LocalPlugin",
+      "file": "src/graph/localPlugins.ts",
+      "line": 25
+    },
+    {
+      "type": "export",
+      "name": "PatchAction",
+      "file": "src/graph/localPlugins.ts",
+      "line": 100
+    },
+    {
+      "type": "export",
+      "name": "ActionContext",
+      "file": "src/graph/localPlugins.ts",
+      "line": 100
+    },
+    {
+      "type": "export",
+      "name": "MeterInfo",
+      "file": "src/runtime/AudioGraph.ts",
+      "line": 31
+    },
+    {
+      "type": "export",
+      "name": "NetReceiveEmit",
+      "file": "src/runtime/peer/PeerRegistry.ts",
+      "line": 30
+    },
+    {
+      "type": "export",
+      "name": "PhoneSensorEmit",
+      "file": "src/runtime/phoneSensor/PhoneSensorRegistry.ts",
+      "line": 19
+    },
+    {
+      "type": "export",
+      "name": "ReferencePatch",
+      "file": "src/canvas/referencePatches.ts",
+      "line": 10
+    },
+    {
+      "type": "export",
+      "name": "ShareUrlResult",
+      "file": "src/share/shareUrl.ts",
+      "line": 7
+    },
+    {
+      "type": "export",
+      "name": "UserKeymapV1",
+      "file": "src/actions/ActionKeymap.ts",
+      "line": 147
+    },
+    {
+      "type": "export",
+      "name": "JsfxProgram",
+      "file": "src/runtime/jsfx/parser.ts",
+      "line": 37
+    },
+    {
+      "type": "export",
+      "name": "JsfxParseError",
+      "file": "src/runtime/jsfx/parser.ts",
+      "line": 50
+    },
+    {
+      "type": "export",
+      "name": "JsfxParseResult",
+      "file": "src/runtime/jsfx/parser.ts",
+      "line": 55
+    },
+    {
+      "type": "export",
+      "name": "JsfxTranslateError",
+      "file": "src/runtime/jsfx/translate.ts",
+      "line": 23
+    },
+    {
+      "type": "export",
+      "name": "JsfxTranslateResult",
+      "file": "src/runtime/jsfx/translate.ts",
+      "line": 24
+    },
+    {
+      "type": "export",
+      "name": "JsfxTranslateOptions",
+      "file": "src/runtime/jsfx/translate.ts",
+      "line": 38
+    },
+    {
+      "type": "export",
+      "name": "BlobSlot",
+      "file": "src/serializer/serialize.ts",
+      "line": 108
+    },
+    {
+      "type": "export",
+      "name": "TopicMessage",
+      "file": "src/runtime/peer/topicRouter.ts",
+      "line": 14
+    },
+    {
+      "type": "export",
+      "name": "DragSessionHandlers",
+      "file": "src/canvas/dragSession.ts",
+      "line": 26
+    },
+    {
+      "type": "export",
+      "name": "RVideoProgram",
+      "file": "src/runtime/rvideo/parser.ts",
+      "line": 36
+    },
+    {
+      "type": "export",
+      "name": "RVideoParseError",
+      "file": "src/runtime/rvideo/parser.ts",
+      "line": 41
+    },
+    {
+      "type": "export",
+      "name": "RVideoParseResult",
+      "file": "src/runtime/rvideo/parser.ts",
+      "line": 46
+    },
+    {
+      "type": "export",
+      "name": "CaptureMode",
+      "file": "src/runtime/YouTubeNode.ts",
+      "line": 16
+    },
+    {
+      "type": "export",
+      "name": "JsEffectStatusListener",
+      "file": "src/runtime/JsEffectNode.ts",
+      "line": 13
+    },
+    {
+      "type": "export",
+      "name": "BufferTransport",
+      "file": "src/runtime/BufferNode.ts",
+      "line": 10
+    },
+    {
+      "type": "export",
+      "name": "BufferMode",
+      "file": "src/runtime/BufferNode.ts",
+      "line": 11
+    },
+    {
+      "type": "export",
+      "name": "RVideoCompileResult",
+      "file": "src/runtime/ReaperVideoNode.ts",
+      "line": 32
+    },
+    {
+      "type": "export",
+      "name": "VideoBufferTransport",
+      "file": "src/runtime/VideoBufferNode.ts",
+      "line": 3
+    },
+    {
+      "type": "export",
+      "name": "StoredImage",
+      "file": "src/runtime/ImageStore.ts",
+      "line": 18
+    },
+    {
+      "type": "export",
+      "name": "DmxNodeOptions",
+      "file": "src/runtime/DmxNode.ts",
+      "line": 13
+    },
+    {
+      "type": "export",
+      "name": "DmxStateEvent",
+      "file": "src/runtime/DmxNode.ts",
+      "line": 18
+    },
+    {
+      "type": "export",
+      "name": "DmxListener",
+      "file": "src/runtime/DmxNode.ts",
+      "line": 30
+    },
+    {
+      "type": "export",
+      "name": "PeerRole",
+      "file": "src/runtime/peer/PeerSession.ts",
+      "line": 22
+    },
+    {
+      "type": "export",
+      "name": "StatusListener",
+      "file": "src/runtime/peer/PeerSession.ts",
+      "line": 34
+    },
+    {
+      "type": "export",
+      "name": "MessageListener",
+      "file": "src/runtime/peer/PeerSession.ts",
+      "line": 35
+    },
+    {
+      "type": "export",
+      "name": "EnttecProTransportOptions",
+      "file": "src/runtime/dmx/EnttecProTransport.ts",
+      "line": 84
+    },
+    {
+      "type": "export",
+      "name": "EvalrectCompileResult",
+      "file": "src/runtime/rvideo/evalrect.ts",
+      "line": 57
+    },
+    {
+      "type": "export",
+      "name": "TranslatorResolvers",
+      "file": "src/runtime/rvideo/evalrect.ts",
+      "line": 196
+    }
+  ],
+  "unusedFiles": [
+    {
+      "type": "file",
+      "name": "pi-theme/patchnet-extension.ts",
+      "file": "pi-theme/patchnet-extension.ts"
+    },
+    {
+      "type": "file",
+      "name": "src/platform/audio.ts",
+      "file": "src/platform/audio.ts"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-check-update.js",
+      "file": ".pi/gsd/hooks/gsd-check-update.js"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-context-monitor.js",
+      "file": ".pi/gsd/hooks/gsd-context-monitor.js"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-prompt-guard.js",
+      "file": ".pi/gsd/hooks/gsd-prompt-guard.js"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-statusline.js",
+      "file": ".pi/gsd/hooks/gsd-statusline.js"
+    },
+    {
+      "type": "file",
+      "name": ".pi/gsd/hooks/gsd-workflow-guard.js",
+      "file": ".pi/gsd/hooks/gsd-workflow-guard.js"
+    }
+  ],
+  "unusedDeps": [
+    {
+      "type": "dependency",
+      "name": "@tauri-apps/api",
+      "file": "package.json",
+      "line": 30
+    }
+  ],
+  "unlistedDeps": [],
+  "summary": "Found 108 issues"
+}

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://raw.githubusercontent.com/earendil-works/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+  "name": "patchnet",
+  "vars": {
+    "lime": "#00ff00",
+    "limeBright": "#66ff66",
+    "limeDim": "#00cc00",
+    "limeMuted": "#009900",
+    "limeDimDeep": "#006600",
+    "limeVeryDim": "#004400",
+    "limeTrace": "#003300",
+    "limeTraceDeep": "#002200",
+    "limeBg": "#001a00",
+    "limeBgDeep": "#000d00",
+    "black": "#000000"
+  },
+  "colors": {
+    "accent": "lime",
+    "border": "limeDim",
+    "borderAccent": "lime",
+    "borderMuted": "limeVeryDim",
+    "success": "lime",
+    "error": "lime",
+    "warning": "lime",
+    "muted": "limeMuted",
+    "dim": "limeDimDeep",
+    "text": "lime",
+    "thinkingText": "limeDim",
+
+    "selectedBg": "limeTrace",
+    "userMessageBg": "limeBgDeep",
+    "userMessageText": "lime",
+    "customMessageBg": "limeBgDeep",
+    "customMessageText": "lime",
+    "customMessageLabel": "lime",
+    "toolPendingBg": "limeBgDeep",
+    "toolSuccessBg": "limeTraceDeep",
+    "toolErrorBg": "limeTraceDeep",
+    "toolTitle": "lime",
+    "toolOutput": "limeDim",
+
+    "mdHeading": "limeBright",
+    "mdLink": "limeDim",
+    "mdLinkUrl": "limeMuted",
+    "mdCode": "lime",
+    "mdCodeBlock": "limeDim",
+    "mdCodeBlockBorder": "limeVeryDim",
+    "mdQuote": "limeMuted",
+    "mdQuoteBorder": "limeMuted",
+    "mdHr": "limeVeryDim",
+    "mdListBullet": "lime",
+
+    "toolDiffAdded": "lime",
+    "toolDiffRemoved": "limeDim",
+    "toolDiffContext": "limeMuted",
+
+    "syntaxComment": "limeMuted",
+    "syntaxKeyword": "limeBright",
+    "syntaxFunction": "lime",
+    "syntaxVariable": "lime",
+    "syntaxString": "limeDim",
+    "syntaxNumber": "limeBright",
+    "syntaxType": "limeBright",
+    "syntaxOperator": "limeDim",
+    "syntaxPunctuation": "limeMuted",
+
+    "thinkingOff": "limeTrace",
+    "thinkingMinimal": "limeVeryDim",
+    "thinkingLow": "limeDimDeep",
+    "thinkingMedium": "limeDim",
+    "thinkingHigh": "lime",
+    "thinkingXhigh": "limeBright",
+
+    "bashMode": "lime"
+  },
+  "export": {
+    "pageBg": "#000000",
+    "cardBg": "#000d00",
+    "infoBg": "#002200"
+  }
+}

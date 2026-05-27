@@ -2,6 +2,9 @@ import "./fonts.css";
 import "./tokens.css";
 import "./shell.css";
 
+import { isNative } from "./platform/index";
+import { saveTextFile, openTextFile } from "./platform/fs";
+
 import { initCrtOverlayScroll } from "./crtOverlaySync";
 import { PatchGraph } from "./graph/PatchGraph";
 import { renderObject, autoFitInlineArgsWidth, buildOdometerContent } from "./canvas/ObjectRenderer";
@@ -1376,6 +1379,14 @@ async function savePatchToFile(): Promise<void> {
   const base = sanitizeFilename(getPatchName()) || "patch";
   const fallbackName = `${base}-${stamp}.patchnet`;
 
+  // ── Native (Tauri): use native Save As dialog ──────────────────────
+  if (isNative) {
+    const savedPath = await saveTextFile(text, fallbackName);
+    if (savedPath) flashStatus("SAVED");
+    return;
+  }
+
+  // ── Browser: File System Access API with download fallback ───────────
   if (!fsaSupported()) {
     downloadAsFile(text, fallbackName);
     return;
@@ -1425,7 +1436,27 @@ const loadFileInput = document.getElementById("load-file-input") as HTMLInputEle
 
 saveBtn?.addEventListener("click", savePatchToFile);
 
-loadBtn?.addEventListener("click", () => {
+loadBtn?.addEventListener("click", async () => {
+  if (isNative) {
+    // Native: Tauri file picker — no <input> needed
+    const result = await openTextFile();
+    if (result) {
+      if (dspOn) await stopAudio();
+      try {
+        graph.deserialize(result.content);
+        textArea.classList.remove("text-panel--error");
+        // Set patch name from filename (strip extension)
+        const name = result.name.replace(/\.patchnet$/i, "");
+        if (patchNameInput && name) patchNameInput.textContent = name;
+        flashStatus("LOADED");
+      } catch {
+        textArea.classList.add("text-panel--error");
+        statusMode.textContent = "PARSE ERR";
+      }
+    }
+    return;
+  }
+  // Browser: hidden file input
   if (loadFileInput) {
     loadFileInput.value = "";
     loadFileInput.click();

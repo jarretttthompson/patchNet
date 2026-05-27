@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "files": {
+    "src/main.ts": {
+      "latest": {
+        "commit": "6a58141",
+        "timestamp": "2026-05-15T19:21:42.069Z",
+        "mi": 8,
+        "cognitive": 630,
+        "nesting": 7,
+        "lines": 1286,
+        "maxCyclomatic": 74,
+        "entropy": 7.85
+      },
+      "history": [
+        {
+          "commit": "6a58141",
+          "timestamp": "2026-05-15T19:21:42.069Z",
+          "mi": 8,
+          "cognitive": 630,
+          "nesting": 7,
+          "lines": 1286,
+          "maxCyclomatic": 74,
+          "entropy": 7.85
+        }
+      ],
+      "trend": "stable"
+    },
+    "src/serializer/serialize.ts": {
+      "latest": {
+        "commit": "6a58141",
+        "timestamp": "2026-05-15T21:52:46.136Z",
+        "mi": 30,
+        "cognitive": 115,
+        "nesting": 7,
+        "lines": 210,
+        "maxCyclomatic": 57,
+        "entropy": 6
+      },
+      "history": [
+        {
+          "commit": "6a58141",
+          "timestamp": "2026-05-15T21:52:46.136Z",
+          "mi": 30,
+          "cognitive": 115,
+          "nesting": 7,
+          "lines": 210,
+          "maxCyclomatic": 57,
+          "entropy": 6
+        }
+      ],
+      "trend": "stable"
+    },
+    "src/serializer/parse.ts": {
+      "latest": {
+        "commit": "6a58141",
+        "timestamp": "2026-05-15T21:52:46.156Z",
+        "mi": 16.7,
+        "cognitive": 378,
+        "nesting": 8,
+        "lines": 367,
+        "maxCyclomatic": 206,
+        "entropy": 6.86
+      },
+      "history": [
+        {
+          "commit": "6a58141",
+          "timestamp": "2026-05-15T21:52:46.156Z",
+          "mi": 16.7,
+          "cognitive": 378,
+          "nesting": 8,
+          "lines": 367,
+          "maxCyclomatic": 206,
+          "entropy": 6.86
+        }
+      ],
+      "trend": "stable"
+    },
+    "src/graph/PatchGraph.ts": {
+      "latest": {
+        "commit": "6a58141",
+        "timestamp": "2026-05-15T21:52:46.180Z",
+        "mi": 25.3,
+        "cognitive": 242,
+        "nesting": 6,
+        "lines": 414,
+        "maxCyclomatic": 23,
+        "entropy": 7.22
+      },
+      "history": [
+        {
+          "commit": "6a58141",
+          "timestamp": "2026-05-15T21:52:46.180Z",
+          "mi": 25.3,
+          "cognitive": 242,
+          "nesting": 6,
+          "lines": 414,
+          "maxCyclomatic": 23,
+          "entropy": 7.22
+        }
+      ],
+      "trend": "stable"
+    },
+    "src/graph/UndoManager.ts": {
+      "latest": {
+        "commit": "6a58141",
+        "timestamp": "2026-05-15T21:52:49.456Z",
+        "mi": 56.6,
+        "cognitive": 9,
+        "nesting": 3,
+        "lines": 43,
+        "maxCyclomatic": 6,
+        "entropy": 5.15
+      },
+      "history": [
+        {
+          "commit": "6a58141",
+          "timestamp": "2026-05-15T21:52:49.456Z",
+          "mi": 56.6,
+          "cognitive": 9,
+          "nesting": 3,
+          "lines": 43,
+          "maxCyclomatic": 6,
+          "entropy": 5.15
+        }
+      ],
+      "trend": "stable"
+    },
+    "src/terminal/PatchTerminalController.ts": {
+      "latest": {
+        "commit": "6a58141",
+        "timestamp": "2026-05-15T21:52:51.342Z",
+        "mi": 24.9,
+        "cognitive": 97,
+        "nesting": 5,
+        "lines": 225,
+        "maxCyclomatic": 46,
+        "entropy": 6.46
+      },
+      "history": [
+        {
+          "commit": "6a58141",
+          "timestamp": "2026-05-15T21:52:51.342Z",
+          "mi": 24.9,
+          "cognitive": 97,
+          "nesting": 5,
+          "lines": 225,
+          "maxCyclomatic": 46,
+          "entropy": 6.46
+        }
+      ],
+      "trend": "stable"
+    }
+  },
+  "capturedAt": "2026-05-15T21:52:56.343Z"
+}
