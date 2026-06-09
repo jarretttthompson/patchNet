@@ -48,6 +48,7 @@ After completing meaningful work:
 1. Append a `## [YYYY-MM-DD] COMPLETED | <task>` entry to `CHANGELOG.md` (Agent: Claude Code, Done, Changed files, Notes, Next needed)
 2. Update `patchNet-Vault/wiki/log.md` if a wiki-worthy decision was made
 3. Update or add wiki pages for new objects/concepts/sources
+4. **Offer to commit + push** when it's a natural checkpoint: task done with typecheck/tests green, session wrapping up, or before starting risky work. Also offer if `git status` shows uncommitted work from a previous session. Don't offer mid-debug or with a broken build. Session-sized commits > week-sized catch-up blobs.
 
 ## Vault Operations
 
