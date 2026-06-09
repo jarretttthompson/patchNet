@@ -84,11 +84,79 @@ export class RVideoHost {
   private readonly scratch: HTMLCanvasElement;
   private readonly scratchCtx: CanvasRenderingContext2D;
 
+  // ── Offscreen image buffers (REAPER's `gfx_img_resize` slots) ───────────
+  // REAPER scripts allocate persistent offscreen buffers and use them as both
+  // sources (gfx_blit src=bufId) and destinations (gfx_set ..., dest=bufId).
+  // The same integer index space addresses both inputs and buffers in REAPER;
+  // we keep them separate by starting buffer IDs at 1000 (input indices are
+  // small, never collide). Buffers persist across frames (the feedback
+  // pattern depends on it) and are torn down on dispose() / clearBuffers().
+  private readonly buffers = new Map<number, { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }>();
+  private nextBufferId = 1000;
+  /** Current draw destination: -1 = output canvas (this.ctx); >=1000 = a
+   *  buffer in `this.buffers`. Reset to -1 each beginFrame so a script that
+   *  forgot a `gfx_set(...,-1)` still emits to the output canvas on its next
+   *  pass (matches the way gfx_a/gfx_r/gfx_g/gfx_b are reset). */
+  private currentDestId = -1;
+
+  /** REAPER's `gfx_dest` special variable — the current render target. -1 =
+   *  output framebuffer; a buffer id (≥1000, from gfx_img_resize) redirects
+   *  all subsequent drawing into that offscreen image. Scripts commonly set
+   *  this directly (`gfx_dest = img`) rather than via gfx_set's 6th arg, so we
+   *  expose it as a read/write property the translator can bind to. */
+  get gfx_dest(): number { return this.currentDestId; }
+  set gfx_dest(v: number) { this.currentDestId = v | 0; }
+
   constructor() {
     this.scratch = document.createElement("canvas");
     const ctx = this.scratch.getContext("2d");
     if (!ctx) throw new Error("[RVideoHost] scratch 2D context unavailable");
     this.scratchCtx = ctx;
+  }
+
+  // ── Draw-destination routing ────────────────────────────────────────────
+
+  /** The 2D context that gfx_* draw calls should currently write to. Honors
+   *  the `gfx_set(...,dest)` redirect: when `currentDestId` is a buffer ID,
+   *  draws land in that offscreen canvas; otherwise the output canvas. */
+  private getDrawCtx(): CanvasRenderingContext2D | null {
+    if (this.currentDestId < 0) return this.ctx;
+    const buf = this.buffers.get(this.currentDestId);
+    return buf ? buf.ctx : null;
+  }
+
+  /** Width/height of the *current draw destination*. Most clipping math in
+   *  the per-pixel ops (gfx_evalrect, gfx_procrect, gfx_setpixel, …) needs
+   *  these — using `this.outWidth/outHeight` would clip buffer writes to the
+   *  output-canvas bounds, which is wrong when a buffer is larger or smaller. */
+  private getDrawDims(): { w: number; h: number } {
+    if (this.currentDestId < 0) return { w: this.outWidth, h: this.outHeight };
+    const buf = this.buffers.get(this.currentDestId);
+    if (!buf) return { w: 0, h: 0 };
+    return { w: buf.canvas.width, h: buf.canvas.height };
+  }
+
+  /** Resolve a source index to a drawable: low integers → upstream input
+   *  sources, >=1000 → offscreen buffers. Returns null when neither exists. */
+  private resolveSource(idx: number): CanvasImageSource | null {
+    const i = idx | 0;
+    // -1 (and other negatives) = the output framebuffer itself. REAPER scripts
+    // blit from it to feed the current rendered frame into an offscreen buffer
+    // (e.g. the pixelate idiom: gfx_blit(src) → gfx_blit(-1,…) into a small fs).
+    if (i < 0) return this.ctx?.canvas ?? null;
+    if (i >= 1000) return this.buffers.get(i)?.canvas ?? null;
+    return this.sources[i] ?? null;
+  }
+
+  private resolveSourceDims(idx: number): { w: number; h: number } {
+    const i = idx | 0;
+    if (i < 0) return { w: this.outWidth, h: this.outHeight };
+    if (i >= 1000) {
+      const buf = this.buffers.get(i);
+      return buf ? { w: buf.canvas.width, h: buf.canvas.height } : { w: 0, h: 0 };
+    }
+    const src = this.sources[i];
+    return src ? { w: sourceWidth(src), h: sourceHeight(src) } : { w: 0, h: 0 };
   }
 
   // ── Frame lifecycle ─────────────────────────────────────────────────────
@@ -101,6 +169,11 @@ export class RVideoHost {
     this.gfx_mode = 0;
     this.gfx_a = 1; this.gfx_r = 1; this.gfx_g = 1; this.gfx_b = 1;
     this.gfx_x = 0; this.gfx_y = 0;
+    // Force destination back to the output canvas at the top of every frame.
+    // Scripts that switch to a buffer mid-frame and forget to switch back
+    // would otherwise leak that state into the next frame and the output
+    // canvas would stay empty.
+    this.currentDestId = -1;
     this.currentFont = 0;
     this.gfx_texth = this.fontSlots[0].size;
     // Reset composite op + smoothing at frame start so prior-frame state
@@ -140,7 +213,7 @@ export class RVideoHost {
    *  transparent black) — the RGB-decompose reference snippet uses it
    *  exactly that way before compositing. */
   gfx_fillrect(x: number, y: number, w: number, h: number): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx) return;
     const prev = ctx.globalCompositeOperation;
     ctx.globalCompositeOperation = "source-over";
@@ -151,7 +224,7 @@ export class RVideoHost {
   /** gfx_rect(x, y, w, h [, filled=1]) — solid rectangle using the current
    *  gfx_a/r/g/b color. Honors additive bit in gfx_mode. */
   gfx_rect(x: number, y: number, w: number, h: number, filled: number = 1): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx) return;
     ctx.globalCompositeOperation = additiveFromMode(this.gfx_mode) ? "lighter" : "source-over";
     ctx.globalAlpha = clamp01(this.gfx_a);
@@ -170,7 +243,7 @@ export class RVideoHost {
 
   /** gfx_line(x1, y1, x2, y2 [, antialias=1]) — 1px line. */
   gfx_line(x1: number, y1: number, x2: number, y2: number, antialias: number = 1): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx) return;
     ctx.globalCompositeOperation = additiveFromMode(this.gfx_mode) ? "lighter" : "source-over";
     ctx.globalAlpha = clamp01(this.gfx_a);
@@ -189,7 +262,7 @@ export class RVideoHost {
 
   /** gfx_circle(x, y, r [, fill=0, antialias=1]) — circle at center. */
   gfx_circle(x: number, y: number, r: number, fill: number = 0, antialias: number = 1): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx || r <= 0) return;
     ctx.globalCompositeOperation = additiveFromMode(this.gfx_mode) ? "lighter" : "source-over";
     ctx.globalAlpha = clamp01(this.gfx_a);
@@ -224,7 +297,7 @@ export class RVideoHost {
     drdx: number = 0, dgdx: number = 0, dbdx: number = 0, dadx: number = 0,
     drdy: number = 0, dgdy: number = 0, dbdy: number = 0, dady: number = 0,
   ): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx || w <= 0 || h <= 0) return;
 
     const hasDx = drdx !== 0 || dgdx !== 0 || dbdx !== 0 || dadx !== 0;
@@ -287,7 +360,7 @@ export class RVideoHost {
    *  the optional right/bottom bounding box; we honor the common center bits
    *  when a bounding box is supplied. */
   gfx_drawstr(str: string, _flags: number = 0, right?: number, bottom?: number): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx) return;
     this.applyFontToCtx();
     ctx.globalCompositeOperation = additiveFromMode(this.gfx_mode) ? "lighter" : "source-over";
@@ -321,7 +394,10 @@ export class RVideoHost {
   /** gfx_measurestr(str, wOut, hOut) — pattern mirrors input_info (out-params
    *  written via host + state keys). Translator intercepts the call. */
   gfx_measurestr(state: Record<string, number>, str: string, wKey: string, hKey: string): number {
-    const ctx = this.ctx;
+    // Use the output context for font metric application — measuring doesn't
+    // mutate pixels, so destination redirection is irrelevant here. Falls
+    // back to the draw ctx if the output isn't bound yet.
+    const ctx = this.ctx ?? this.getDrawCtx();
     if (!ctx) {
       state[wKey] = 0;
       state[hKey] = 0;
@@ -335,7 +411,7 @@ export class RVideoHost {
   }
 
   private applyFontToCtx(): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx) return;
     const slot = this.fontSlots[this.currentFont];
     const bold = slot.flags & 1 ? "bold " : "";
@@ -348,11 +424,12 @@ export class RVideoHost {
   /** gfx_setpixel(r, g, b) — writes a single pixel at (gfx_x, gfx_y) using
    *  the current alpha (gfx_a). */
   gfx_setpixel(r: number, g: number, b: number): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx) return;
     const x = Math.floor(this.gfx_x);
     const y = Math.floor(this.gfx_y);
-    if (x < 0 || y < 0 || x >= this.outWidth || y >= this.outHeight) return;
+    const { w, h } = this.getDrawDims();
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = clamp01(this.gfx_a);
     ctx.fillStyle = rgbCss(r, g, b);
@@ -364,14 +441,15 @@ export class RVideoHost {
    *  writes channels into the named state vars. Translator intercepts the
    *  call so it can pass bare ident names. */
   gfx_getpixel(state: Record<string, number>, rKey: string, gKey: string, bKey: string): number {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx) {
       state[rKey] = 0; state[gKey] = 0; state[bKey] = 0;
       return 0;
     }
     const x = Math.floor(this.gfx_x);
     const y = Math.floor(this.gfx_y);
-    if (x < 0 || y < 0 || x >= this.outWidth || y >= this.outHeight) {
+    const { w: dw, h: dh } = this.getDrawDims();
+    if (x < 0 || y < 0 || x >= dw || y >= dh) {
       state[rKey] = 0; state[gKey] = 0; state[bKey] = 0;
       return 0;
     }
@@ -404,13 +482,43 @@ export class RVideoHost {
     srcX?: number, srcY?: number, srcW?: number, srcH?: number,
     rot?: number, rotXC?: number, rotYC?: number,
   ): void {
-    const ctx = this.ctx;
-    if (!ctx) return;
-    const source = this.sources[src | 0];
-    if (!source) return;
+    this.blitCore(src, destX, destY, destW, destH, srcX, srcY, srcW, srcH, rot, rotXC, rotYC);
+  }
 
-    const naturalW = sourceWidth(source);
-    const naturalH = sourceHeight(source);
+  /** REAPER's gfx_rotoblit — same positional layout as gfx_blit's long form
+   *  but with rotation as the *second* arg instead of trailing the rect.
+   *  Signature: gfx_rotoblit(src, angle, dx, dy, dw, dh, sx, sy, sw, sh
+   *  [, useSrcAlpha=0]). Rotation pivots around the destination rect's
+   *  center; that matches REAPER's default behavior. */
+  gfx_rotoblit(
+    src: number,
+    angle: number,
+    destX?: number, destY?: number, destW?: number, destH?: number,
+    srcX?: number, srcY?: number, srcW?: number, srcH?: number,
+    _useSrcAlpha?: number,
+  ): void {
+    this.blitCore(src, destX, destY, destW, destH, srcX, srcY, srcW, srcH, angle, undefined, undefined);
+  }
+
+  /** Shared core for gfx_blit and gfx_rotoblit: resolves source (input or
+   *  buffer), routes draw through `getDrawCtx()`, applies the current
+   *  alpha/mode, and handles channel-mask isolation through the scratch
+   *  canvas when gfx_mode requests it. */
+  private blitCore(
+    src: number,
+    destX: number | undefined, destY: number | undefined,
+    destW: number | undefined, destH: number | undefined,
+    srcX: number | undefined, srcY: number | undefined,
+    srcW: number | undefined, srcH: number | undefined,
+    rot: number | undefined, rotXC: number | undefined, rotYC: number | undefined,
+  ): void {
+    const ctx = this.getDrawCtx();
+    if (!ctx) return;
+    // Source can be either an upstream input (low int) or an offscreen
+    // buffer the script allocated via gfx_img_resize (idx >= 1000).
+    const source = this.resolveSource(src);
+    if (!source) return;
+    const { w: naturalW, h: naturalH } = this.resolveSourceDims(src);
     if (naturalW === 0 || naturalH === 0) return;
 
     const dx = destX ?? 0;
@@ -447,8 +555,8 @@ export class RVideoHost {
       drawWith(ctx, source);
     } else {
       // Isolate named channel via scratch: draw source → multiply by tint →
-      // blit to output. globalCompositeOperation="lighter" handles additive
-      // summing across subsequent blits.
+      // blit to destination. globalCompositeOperation="lighter" handles
+      // additive summing across subsequent blits.
       this.ensureScratch(naturalW, naturalH);
       const scratchCtx = this.scratchCtx;
       scratchCtx.globalCompositeOperation = "source-over";
@@ -496,13 +604,14 @@ export class RVideoHost {
     bodyStr: string,
     flag: number = 0,
   ): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx) return;
     if (typeof bodyStr !== "string" || bodyStr.length === 0) return;
 
-    // Clip rectangle to the output canvas — getImageData rejects OOB reads.
-    const outW = this.outWidth;
-    const outH = this.outHeight;
+    // Clip rectangle to the *current draw destination's* bounds — buffers
+    // can be sized independently of the output canvas, and getImageData
+    // rejects OOB reads either way.
+    const { w: outW, h: outH } = this.getDrawDims();
     const x0 = Math.max(0, Math.floor(x));
     const y0 = Math.max(0, Math.floor(y));
     const x1 = Math.min(outW, Math.floor(x + w));
@@ -568,11 +677,10 @@ export class RVideoHost {
     memOffset: number,
     flags: number = 0,
   ): void {
-    const ctx = this.ctx;
+    const ctx = this.getDrawCtx();
     if (!ctx) return;
 
-    const outW = this.outWidth;
-    const outH = this.outHeight;
+    const { w: outW, h: outH } = this.getDrawDims();
     const x0 = Math.max(0, Math.floor(x));
     const y0 = Math.max(0, Math.floor(y));
     const x1 = Math.min(outW, Math.floor(x + w));
@@ -689,6 +797,125 @@ export class RVideoHost {
   private ensureScratch(w: number, h: number): void {
     if (this.scratch.width  !== w) this.scratch.width  = w;
     if (this.scratch.height !== h) this.scratch.height = h;
+  }
+
+  // ── Offscreen image buffers ─────────────────────────────────────────────
+
+  /** REAPER's gfx_img_resize(img, w, h [, mode]).
+   *
+   *  Semantics:
+   *  - `img <= 0` (typical for an uninitialized EEL var): allocate a fresh
+   *    buffer and return its new integer ID. Scripts re-assign the result
+   *    each frame: `img = gfx_img_resize(img, w, h, -1)`.
+   *  - `img >= 1000` and already allocated: resize in place if dimensions
+   *    changed; preserve contents at the smaller dimension. Returns the
+   *    same ID so re-assignment is a no-op.
+   *  - `w <= 0 || h <= 0`: free the buffer (REAPER convention) and return 0.
+   *  - `mode` arg is honored loosely — non-negative requests a clear after
+   *    (re)allocation; -1 preserves existing pixels. The user's blitter
+   *    feedback preset depends on the preserve semantics (img2 holds last
+   *    frame's rotated copy).
+   *
+   *  Buffer IDs start at 1000 so they never collide with input-source
+   *  indices (which are small, dense, 0-based).
+   */
+  gfx_img_resize(img: number, w: number, h: number, mode: number = -1): number {
+    const id = img | 0;
+    const wi = Math.max(0, w | 0);
+    const hi = Math.max(0, h | 0);
+
+    // Free path: empty dims tear down the buffer entirely.
+    if (wi === 0 || hi === 0) {
+      if (id >= 1000) this.buffers.delete(id);
+      return 0;
+    }
+
+    // Resize-in-place path: existing buffer kept if size matches; resized
+    // (via canvas dim assignment, which clears) only when needed. We restore
+    // pixels through scratch to preserve contents across the resize when the
+    // user explicitly requested preserve semantics (mode === -1).
+    if (id >= 1000) {
+      const existing = this.buffers.get(id);
+      if (existing) {
+        if (existing.canvas.width !== wi || existing.canvas.height !== hi) {
+          if (mode === -1) {
+            // Preserve: stash current contents on the scratch canvas, resize,
+            // then blit the old image back at the top-left.
+            const oldW = existing.canvas.width;
+            const oldH = existing.canvas.height;
+            this.ensureScratch(oldW, oldH);
+            this.scratchCtx.globalCompositeOperation = "source-over";
+            this.scratchCtx.globalAlpha = 1;
+            this.scratchCtx.clearRect(0, 0, oldW, oldH);
+            this.scratchCtx.drawImage(existing.canvas, 0, 0);
+            existing.canvas.width  = wi;
+            existing.canvas.height = hi;
+            existing.ctx.globalCompositeOperation = "source-over";
+            existing.ctx.globalAlpha = 1;
+            existing.ctx.drawImage(this.scratch, 0, 0);
+          } else {
+            // Clear semantics: just assign new dims (clears as a side effect).
+            existing.canvas.width  = wi;
+            existing.canvas.height = hi;
+          }
+        } else if (mode !== -1) {
+          // Same size + clear requested.
+          existing.ctx.clearRect(0, 0, wi, hi);
+        }
+        return id;
+      }
+      // Lost buffer (e.g. script was recompiled and clearBuffers ran) — fall
+      // through to fresh allocation but keep the requested ID so the script's
+      // stored variable still points at it.
+      const fresh = this.allocBufferAt(id, wi, hi);
+      return fresh;
+    }
+
+    // New-allocation path: pick the next free ID.
+    const newId = this.nextBufferId++;
+    return this.allocBufferAt(newId, wi, hi);
+  }
+
+  private allocBufferAt(id: number, w: number, h: number): number {
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      // Highly unlikely in any modern browser; fail silently rather than
+      // crash the per-frame eval loop. The caller will see no draw effects.
+      return 0;
+    }
+    this.buffers.set(id, { canvas, ctx });
+    return id;
+  }
+
+  /** REAPER's gfx_set(r [, g, b, a, mode, dest]) — function form. Unlike the
+   *  property-assignment form (`gfx_r = 0.5`), this writes multiple slots in
+   *  one call and accepts a 6th-arg destination redirect. Following REAPER
+   *  conventions:
+   *  - 1-arg form sets r and propagates to g/b (grayscale shortcut).
+   *  - Missing alpha/mode/dest leave the prior value intact.
+   *  - `dest = -1` returns to the output canvas; non-negative selects a
+   *    buffer ID. Unknown buffer IDs are tolerated (next draw will no-op
+   *    via getDrawCtx returning null) rather than throwing.
+   */
+  gfx_set(r: number, g?: number, b?: number, a?: number, mode?: number, dest?: number): void {
+    this.gfx_r = r;
+    this.gfx_g = g ?? r;
+    this.gfx_b = b ?? r;
+    if (a !== undefined) this.gfx_a = a;
+    if (mode !== undefined) this.gfx_mode = mode | 0;
+    if (dest !== undefined) this.currentDestId = dest | 0;
+  }
+
+  /** Free every offscreen buffer. Called by ReaperVideoNode when the user's
+   *  script source changes (so a recompile doesn't leave dead buffers
+   *  pinned) and on node disposal. Cheap when there are no buffers. */
+  clearBuffers(): void {
+    this.buffers.clear();
+    this.nextBufferId = 1000;
+    this.currentDestId = -1;
   }
 }
 

@@ -1832,7 +1832,8 @@ html {
 
 .pn-ezscale__auto-btn,
 .pn-ezscale__invert-btn,
-.pn-ezscale__collapse-btn {
+.pn-ezscale__collapse-btn,
+.pn-ezscale__smooth-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1856,8 +1857,14 @@ html {
   padding: 1px 4px;
 }
 
+/* Smoothing cycle button — same chrome family as [auto], lit when active. */
+.pn-ezscale__smooth-btn {
+  min-width: 32px;
+}
+
 .pn-ezscale__auto-btn[aria-pressed="true"],
-.pn-ezscale__invert-btn[aria-pressed="true"] {
+.pn-ezscale__invert-btn[aria-pressed="true"],
+.pn-ezscale__smooth-btn[aria-pressed="true"] {
   color: var(--pn-bg);
   background: var(--pn-accent);
   border-color: var(--pn-accent);
@@ -1866,14 +1873,21 @@ html {
 
 .pn-ezscale__auto-btn:hover,
 .pn-ezscale__invert-btn:hover,
-.pn-ezscale__collapse-btn:hover {
+.pn-ezscale__collapse-btn:hover,
+.pn-ezscale__smooth-btn:hover {
   color: var(--pn-text);
 }
 
 .pn-ezscale__auto-btn[aria-pressed="true"]:hover,
-.pn-ezscale__invert-btn[aria-pressed="true"]:hover {
+.pn-ezscale__invert-btn[aria-pressed="true"]:hover,
+.pn-ezscale__smooth-btn[aria-pressed="true"]:hover {
   color: var(--pn-bg);
 }
+
+/* Dimmed cell — used for the ms field when smoothing is off, signaling the
+   value has no effect until a smoothing curve is selected. */
+.pn-ezscale__cell--dim { opacity: 0.45; }
+.pn-ezscale__cell--dim:focus-within { opacity: 1; }
 
 .pn-ezscale__fields {
   display: grid;
@@ -2164,6 +2178,25 @@ html {
       0 0 18px rgba(0, 255, 0, 0.45),
       0 0 2px rgba(0, 255, 0, 0.55);
   }
+}
+
+/* Runtime error indication — a node flagged via OIC.markNodeError() pulses with
+ * an alarm glow. Monochrome by design (uses --pn-warning); the fast, breathing
+ * cadence is what reads as "error" rather than a non-palette color. */
+@keyframes pn-object-error-pulse {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--pn-warning) 70%, transparent),
+      0 0 6px 1px color-mix(in srgb, var(--pn-warning) 22%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px var(--pn-warning),
+      0 0 18px 4px color-mix(in srgb, var(--pn-warning) 62%, transparent);
+  }
+}
+.patch-object--error {
+  animation: pn-object-error-pulse 0.85s ease-in-out infinite;
 }
 
 .pn-object-entry--error {
@@ -3007,6 +3040,333 @@ html {
   gap: 4px;
   background: var(--pn-surface-raised);
   border-radius: 3px 3px 14px 3px;
+}
+
+/* ── env~ envelope follower ──────────────────────────────────────────── */
+.pn-env-device {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px;
+}
+.pn-env-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.pn-env-top-label {
+  font-family: var(--pn-font-mono);
+  font-size: 7px;
+  letter-spacing: 0.18em;
+  color: var(--pn-border-accent-soft);
+}
+.pn-env-val {
+  font-family: var(--pn-font-mono);
+  font-size: 9px;
+  color: var(--pn-accent);
+}
+.pn-env-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--pn-border-subtle);
+}
+.pn-env-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--pn-accent);
+  box-shadow: 0 0 6px var(--pn-accent-glow);
+}
+
+/* ── beat~ tracker ───────────────────────────────────────────────────── */
+.pn-beat-device {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px;
+}
+.pn-beat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.pn-beat-top-label {
+  font-family: var(--pn-font-mono);
+  font-size: 7px;
+  letter-spacing: 0.18em;
+  color: var(--pn-border-accent-soft);
+}
+.pn-beat-bpm {
+  font-family: var(--pn-font-mono);
+  font-size: 12px;
+  color: var(--pn-accent);
+}
+.pn-beat-unit {
+  font-family: var(--pn-font-mono);
+  font-size: 6px;
+  color: var(--pn-border-accent-soft);
+}
+.pn-beat-phase {
+  width: 100%;
+  height: 5px;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--pn-border-subtle);
+}
+.pn-beat-phase-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--pn-accent);
+  box-shadow: 0 0 6px var(--pn-accent-glow);
+}
+.pn-beat-div-btn {
+  font-family: var(--pn-font-mono);
+  font-size: 8px;
+  line-height: 1;
+  padding: 2px 5px;
+  color: var(--pn-accent);
+  background: transparent;
+  border: 1px solid var(--pn-border-subtle);
+  border-radius: var(--pn-object-radius);
+  cursor: var(--pn-cursor-pointer) !important;
+  user-select: none;
+  outline: none;
+}
+.pn-beat-div-btn:hover {
+  border-color: var(--pn-accent);
+  box-shadow: 0 0 6px var(--pn-accent-glow);
+}
+.pn-beat-conf-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+}
+.pn-beat-conf-label {
+  font-family: var(--pn-font-mono);
+  font-size: 6px;
+  letter-spacing: 0.1em;
+  color: var(--pn-border-accent-soft);
+}
+.pn-beat-conf {
+  flex: 1;
+  height: 3px;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--pn-border-subtle);
+}
+.pn-beat-conf-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--pn-border-accent-soft);
+  transition: width 0.15s linear;
+}
+/* When the tempo is uncertain, grey the BPM so it's visually obvious. */
+.pn-beat-uncertain .pn-beat-bpm { color: var(--pn-muted); }
+.pn-beat-uncertain .pn-beat-phase-fill { opacity: 0.4; }
+
+/* ── chroma~ analyzer ────────────────────────────────────────────────── */
+.pn-chroma-device {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 7px 5px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px 3px 14px 3px;
+}
+.pn-chroma-top-label {
+  font-family: var(--pn-font-mono);
+  font-size: 5.5px;
+  letter-spacing: 0.18em;
+  color: var(--pn-border-accent-soft);
+  align-self: flex-start;
+  padding-left: 1px;
+}
+.pn-chroma-screen-bezel {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  padding: 4px;
+  box-shadow: inset 0 1px 4px rgba(0,0,0,0.8), inset 0 0 0 1px var(--pn-border-subtle);
+}
+.pn-chroma-screen {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: var(--pn-bg-deep);
+  border-radius: 1px;
+  overflow: hidden;
+  box-shadow: inset 0 0 10px var(--pn-surface-glow);
+}
+.pn-chroma-mount { position: absolute; inset: 0; }
+.pn-chroma-mount canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+}
+.pn-chroma-notes {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  width: 100%;
+}
+.pn-chroma-notes span {
+  font-family: var(--pn-font-mono);
+  font-size: 5px;
+  color: var(--pn-border-accent-soft);
+  text-align: center;
+}
+
+/* ── pitch~ detector ─────────────────────────────────────────────────── */
+.pn-pitch-device {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 8px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px;
+}
+.pn-pitch-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.pn-pitch-top-label {
+  font-family: var(--pn-font-mono);
+  font-size: 7px;
+  letter-spacing: 0.18em;
+  color: var(--pn-border-accent-soft);
+}
+.pn-pitch-note {
+  font-family: var(--pn-font-mono);
+  font-size: 8px;
+  color: var(--pn-border-accent-soft);
+}
+.pn-pitch-freq {
+  font-family: var(--pn-font-mono);
+  font-size: 13px;
+  color: var(--pn-accent);
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+.pn-pitch-conf {
+  width: 100%;
+  height: 4px;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--pn-border-subtle);
+}
+.pn-pitch-conf-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--pn-accent);
+  box-shadow: 0 0 6px var(--pn-accent-glow);
+}
+
+/* ── spectral~ analyzer (mirrors the fft~ device aesthetic) ──────────── */
+.pn-spectral-device {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 7px 5px;
+  gap: 4px;
+  background: var(--pn-surface-raised);
+  border-radius: 3px 3px 14px 3px;
+}
+.pn-spectral-top-label {
+  font-family: var(--pn-font-mono);
+  font-size: 5.5px;
+  letter-spacing: 0.18em;
+  color: var(--pn-border-accent-soft);
+  align-self: flex-start;
+  padding-left: 1px;
+}
+.pn-spectral-screen-bezel {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  background: var(--pn-bg-deep);
+  border-radius: 2px;
+  padding: 4px;
+  box-shadow:
+    inset 0 1px 4px rgba(0,0,0,0.8),
+    inset 0 0 0 1px var(--pn-border-subtle);
+}
+.pn-spectral-screen {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: var(--pn-bg-deep);
+  border-radius: 1px;
+  overflow: hidden;
+  box-shadow: inset 0 0 10px var(--pn-surface-glow);
+}
+.pn-spectral-mount { position: absolute; inset: 0; }
+.pn-spectral-mount canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+}
+.pn-spectral-readouts {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 1px;
+}
+.pn-spectral-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  background: var(--pn-surface);
+  border: 1px solid var(--pn-border-subtle);
+  border-radius: 2px;
+  padding: 1px 4px;
+}
+.pn-spectral-label {
+  font-family: var(--pn-font-mono);
+  font-size: 6px;
+  letter-spacing: 0.05em;
+  color: var(--pn-border-accent-soft);
+}
+.pn-spectral-val {
+  font-family: var(--pn-font-mono);
+  font-size: 7px;
+  color: var(--pn-accent);
 }
 
 .pn-fft-top-label {
@@ -5014,12 +5374,46 @@ html {
   background: var(--pn-surface);
 }
 
-.pn-rvideo-knobs {
+/* Scroll wrapper holding the param knobs + the wet/dry row as one unit, so
+   the header stays pinned while the rows scroll together. The wet row sits
+   immediately after the knob rows at grid slot = paramCount. */
+.pn-rvideo-knob-scroll {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
+}
+
+.pn-rvideo-knobs {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Host-level wet/dry row — rendered directly below the user @param knobs.
+   The separator is a border-top *on the row* (box-sizing: border-box keeps
+   the row exactly ROW_H tall) so it adds no grid height — the side-inlet nub
+   formula (HEADER_H + slot*ROW_H + ROW_H/2) lands on this row's center.
+   flex: 0 0 auto so the scroll wrapper never squeezes it. */
+.pn-rvideo-knob-row--wet {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--pn-border-subtle);
+}
+.pn-rvideo-knob-row--wet .pn-rvideo-knob-label {
+  color: var(--pn-muted);
+  font-style: italic;
+}
+/* "wet" end-marker, mirrors the dimmed italic "dry" label and hugs the high
+   end of the fader so the mix direction reads at a glance. */
+.pn-rvideo-wet-end {
+  flex: 0 0 auto;
+  font-family: var(--pn-font-mono);
+  font-size: 9px;
+  font-style: italic;
+  color: var(--pn-muted);
+  user-select: none;
+  white-space: nowrap;
 }
 
 .pn-rvideo-code-col {

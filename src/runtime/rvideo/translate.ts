@@ -61,6 +61,9 @@ const HOST_IDENTS = new Set([
   "gfx_a", "gfx_r", "gfx_g", "gfx_b",
   "gfx_x", "gfx_y", "gfx_texth",
   "colorspace",
+  // Render target. `gfx_dest = <imgId>` redirects drawing into an offscreen
+  // buffer; `gfx_dest = -1` returns to the output framebuffer. Read/write.
+  "gfx_dest",
 ]);
 
 /** Standard-form gfx_* host calls — args go through unchanged. Output-param
@@ -76,10 +79,17 @@ const HOST_CALLS = new Set([
   "gfx_blit2",
   "gfx_deltablit",
   "gfx_transformblit",
+  "gfx_rotoblit",
   "gfx_blurto",
   "gfx_setfont",
   "gfx_drawstr",
   "gfx_setpixel",
+  // Offscreen-buffer ops: gfx_img_resize allocates/resizes a persistent
+  // offscreen canvas and returns its integer ID; the function-form gfx_set
+  // is the multi-arg variant that also accepts a destination redirect (the
+  // 6th arg). Both pass straight through to the host.
+  "gfx_img_resize",
+  "gfx_set",
 ]);
 
 function resolveIdent(name: string): ResolvedIdent | null {

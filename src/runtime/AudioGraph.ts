@@ -6,6 +6,11 @@ import { BrowserNode } from "./BrowserNode";
 import { YouTubeNode } from "./YouTubeNode";
 import { parseYouTubeUrl } from "./youtube/parseUrl";
 import { FftAnalyzerNode } from "./FftAnalyzerNode";
+import { SpectralAnalyzerNode } from "./SpectralAnalyzerNode";
+import { EnvFollowerNode } from "./EnvFollowerNode";
+import { PitchDetectorNode, freqToNoteName } from "./PitchDetectorNode";
+import { ChromaAnalyzerNode } from "./ChromaAnalyzerNode";
+import { BeatTrackerNode } from "./BeatTrackerNode";
 import { JsEffectNode } from "./JsEffectNode";
 import { MixerNode } from "./MixerNode";
 import { WaveNode } from "./WaveNode";
@@ -45,6 +50,11 @@ export class AudioGraph {
   private browserNodes      = new Map<string, BrowserNode>();
   private youtubeNodes      = new Map<string, YouTubeNode>();
   private fftNodes          = new Map<string, FftAnalyzerNode>();
+  private spectralNodes     = new Map<string, SpectralAnalyzerNode>();
+  private envNodes          = new Map<string, EnvFollowerNode>();
+  private pitchNodes        = new Map<string, PitchDetectorNode>();
+  private chromaNodes       = new Map<string, ChromaAnalyzerNode>();
+  private beatNodes         = new Map<string, BeatTrackerNode>();
   private jsEffectNodes     = new Map<string, JsEffectNode>();
   private mixerNodes        = new Map<string, MixerNode>();
   private waveNodes         = new Map<string, WaveNode>();
@@ -67,6 +77,33 @@ export class AudioGraph {
   private bufferStateListeners = new Map<string, () => void>();
   private bufferStateChangeCallback: ((nodeId: string) => void) | null = null;
   private clickTriggerTimes = new Map<string, number>();
+
+  // selector → resolved element cache for the per-tick mount/update display
+  // scans. render() rebuilds the patch DOM on each "change", so a cached
+  // element that fails isConnected was replaced and is re-queried. Collapses
+  // the per-node full-DOM querySelector scans (one per analysis node, ~125 Hz)
+  // into Map hits while the patch runs unchanged.
+  private readonly elCache = new Map<string, HTMLElement>();
+
+  // Persistent scratch Maps reused by the per-tick analysis getters so the
+  // control tick doesn't allocate (and later GC) a fresh Map every ~8ms. Each
+  // is cleared + refilled on access and consumed synchronously by the caller.
+  private readonly fftBandScratch    = new Map<string, readonly number[]>();
+  private readonly spectralScratch   = new Map<string, readonly number[]>();
+  private readonly envScratch        = new Map<string, readonly number[]>();
+  private readonly pitchScratch      = new Map<string, readonly number[]>();
+  private readonly chromaScratch     = new Map<string, readonly number[]>();
+  private readonly beatScratch       = new Map<string, readonly number[]>();
+  private readonly bufferPosScratch  = new Map<string, number>();
+
+  private cachedEl<T extends HTMLElement = HTMLElement>(panGroup: HTMLElement, selector: string): T | null {
+    const cached = this.elCache.get(selector);
+    if (cached && cached.isConnected) return cached as T;
+    const el = panGroup.querySelector<T>(selector);
+    if (el) this.elCache.set(selector, el);
+    else this.elCache.delete(selector);
+    return el;
+  }
 
   private unsubscribe: () => void;
 
@@ -137,6 +174,9 @@ export class AudioGraph {
       const bands = this.fftNodes.get(id)!.bandLevels;
       out.set(id, { level: Math.max(...bands) });
     }
+    for (const [id, sp] of this.spectralNodes) {
+      out.set(id, { level: sp.values()[0] ?? 0 });
+    }
     return out;
   }
 
@@ -181,7 +221,7 @@ export class AudioGraph {
   /** Re-parent each fft~ canvas into its mount slot after canvas render. */
   mountFftNodes(panGroup: HTMLElement): void {
     for (const [id, fft] of this.fftNodes) {
-      const mount = panGroup.querySelector<HTMLElement>(`[data-fft-node-id="${id}"]`);
+      const mount = this.cachedEl(panGroup, `[data-fft-node-id="${id}"]`);
       if (mount && !mount.contains(fft.canvas)) {
         mount.innerHTML = "";
         mount.appendChild(fft.canvas);
@@ -191,7 +231,8 @@ export class AudioGraph {
 
   /** Current band levels per fft~ node — used by main.ts to push outlet values. */
   getFftBandLevels(): Map<string, readonly number[]> {
-    const out = new Map<string, readonly number[]>();
+    const out = this.fftBandScratch;
+    out.clear();
     for (const [id, fft] of this.fftNodes) out.set(id, fft.bandLevels);
     return out;
   }
@@ -200,7 +241,7 @@ export class AudioGraph {
   updateFftDisplay(panGroup: HTMLElement): void {
     for (const [id, fft] of this.fftNodes) {
       fft.draw();
-      const el = panGroup.querySelector<HTMLElement>(`[data-node-id="${id}"]`);
+      const el = this.cachedEl(panGroup, `[data-node-id="${id}"]`);
       if (!el) continue;
       const vals = el.querySelectorAll<HTMLElement>(".pn-fft-band-val");
       const bands = fft.bandLevels;
@@ -208,6 +249,149 @@ export class AudioGraph {
         span.textContent = bands[i] !== undefined ? bands[i].toFixed(2) : "0.00";
       });
     }
+  }
+
+  /** Re-parent each spectral~ scope canvas into its mount slot after render. */
+  mountSpectralNodes(panGroup: HTMLElement): void {
+    for (const [id, sp] of this.spectralNodes) {
+      const mount = this.cachedEl(panGroup, `[data-spectral-node-id="${id}"]`);
+      if (mount && !mount.contains(sp.canvas)) {
+        mount.innerHTML = "";
+        mount.appendChild(sp.canvas);
+      }
+    }
+  }
+
+  /** Per-node descriptor values — used by main.ts to push outlet values. */
+  getSpectralValues(): Map<string, readonly number[]> {
+    const out = this.spectralScratch;
+    out.clear();
+    for (const [id, sp] of this.spectralNodes) out.set(id, sp.values());
+    return out;
+  }
+
+  /** Update (recompute + redraw) every spectral~ node and refresh its readouts. */
+  updateSpectralDisplay(panGroup: HTMLElement): void {
+    for (const [id, sp] of this.spectralNodes) {
+      sp.update();
+      const el = this.cachedEl(panGroup, `[data-node-id="${id}"]`);
+      if (!el) continue;
+      const vals = el.querySelectorAll<HTMLElement>(".pn-spectral-val");
+      const values = sp.values();
+      vals.forEach((span) => {
+        const idx = parseInt(span.dataset.spectralIdx ?? "", 10);
+        const v = values[idx];
+        span.textContent = v !== undefined ? v.toFixed(2) : "—";
+      });
+    }
+  }
+
+  /** Per-node envelope values (outlet 0) — used by main.ts to push outlets. */
+  getEnvValues(): Map<string, readonly number[]> {
+    const out = this.envScratch;
+    out.clear();
+    for (const [id, ev] of this.envNodes) out.set(id, [ev.value]);
+    return out;
+  }
+
+  /** Recompute every env~ follower and refresh its body readout/meter bar. */
+  updateEnvDisplay(panGroup: HTMLElement): void {
+    for (const [id, ev] of this.envNodes) {
+      ev.update();
+      const el = this.cachedEl(panGroup, `[data-node-id="${id}"]`);
+      if (!el) continue;
+      const v = ev.value;
+      const val = el.querySelector<HTMLElement>(".pn-env-val");
+      if (val) val.textContent = v.toFixed(2);
+      const fill = el.querySelector<HTMLElement>(".pn-env-bar-fill");
+      if (fill) fill.style.width = `${Math.min(100, v * 100)}%`;
+    }
+  }
+
+  /** Per-node pitch values [frequencyHz, confidence] — used for outlet push. */
+  getPitchValues(): Map<string, readonly number[]> {
+    const out = this.pitchScratch;
+    out.clear();
+    for (const [id, pt] of this.pitchNodes) out.set(id, pt.values());
+    return out;
+  }
+
+  /** Recompute every pitch~ detector and refresh its Hz / note / conf readout. */
+  updatePitchDisplay(panGroup: HTMLElement): void {
+    for (const [id, pt] of this.pitchNodes) {
+      pt.update();
+      const el = this.cachedEl(panGroup, `[data-node-id="${id}"]`);
+      if (!el) continue;
+      const voiced = pt.confidence > 0.5;
+      const freqEl = el.querySelector<HTMLElement>(".pn-pitch-freq");
+      if (freqEl) freqEl.textContent = voiced ? `${Math.round(pt.frequency)}Hz` : "—";
+      const noteEl = el.querySelector<HTMLElement>(".pn-pitch-note");
+      if (noteEl) noteEl.textContent = voiced ? freqToNoteName(pt.frequency) : "";
+      const fill = el.querySelector<HTMLElement>(".pn-pitch-conf-fill");
+      if (fill) fill.style.width = `${Math.min(100, pt.confidence * 100)}%`;
+    }
+  }
+
+  /** Re-parent each chroma~ chromagram canvas into its mount slot. */
+  mountChromaNodes(panGroup: HTMLElement): void {
+    for (const [id, ch] of this.chromaNodes) {
+      const mount = this.cachedEl(panGroup, `[data-chroma-node-id="${id}"]`);
+      if (mount && !mount.contains(ch.canvas)) {
+        mount.innerHTML = "";
+        mount.appendChild(ch.canvas);
+      }
+    }
+  }
+
+  /** Per-node chroma vector + dominant index — used for outlet push. */
+  getChromaValues(): Map<string, readonly number[]> {
+    const out = this.chromaScratch;
+    out.clear();
+    for (const [id, ch] of this.chromaNodes) out.set(id, ch.values());
+    return out;
+  }
+
+  /** Recompute + redraw every chroma~ chromagram. */
+  updateChromaDisplay(): void {
+    for (const ch of this.chromaNodes.values()) ch.update();
+  }
+
+  /** Per-node [bpm, phase] — used for outlet push (outlets 0 and 1). */
+  getBeatValues(): Map<string, readonly number[]> {
+    const out = this.beatScratch;
+    out.clear();
+    for (const [id, bt] of this.beatNodes) out.set(id, bt.values());
+    return out;
+  }
+
+  /** Recompute every beat~ tracker and refresh its BPM / phase-bar readout. */
+  updateBeatDisplay(panGroup: HTMLElement): void {
+    for (const [id, bt] of this.beatNodes) {
+      bt.update();
+      const el = this.cachedEl(panGroup, `[data-node-id="${id}"]`);
+      if (!el) continue;
+      const bpmEl = el.querySelector<HTMLElement>(".pn-beat-bpm");
+      if (bpmEl) bpmEl.textContent = bt.bpm > 0 ? `${Math.round(bt.bpm)}` : "—";
+      const fill = el.querySelector<HTMLElement>(".pn-beat-phase-fill");
+      if (fill) fill.style.width = `${Math.min(100, bt.phase * 100)}%`;
+      // Confidence bar + "uncertain" dimming so the user can see when the
+      // tracker isn't sure of the tempo.
+      const conf = bt.confidence;
+      const confFill = el.querySelector<HTMLElement>(".pn-beat-conf-fill");
+      if (confFill) confFill.style.width = `${Math.min(100, conf * 100)}%`;
+      const device = el.querySelector<HTMLElement>(".pn-beat-device");
+      if (device) device.classList.toggle("pn-beat-uncertain", conf < 0.25);
+    }
+  }
+
+  /** Node ids whose beat fired this tick (consumes the flag). main.ts fires a
+   *  bang on each one's outlet 2. */
+  consumeBeatTriggers(): string[] {
+    const fired: string[] = [];
+    for (const [id, bt] of this.beatNodes) {
+      if (bt.consumeBeat()) fired.push(id);
+    }
+    return fired;
   }
 
   /** Runtime node for a js~ patch node, once the worklet module has loaded.
@@ -253,7 +437,8 @@ export class AudioGraph {
   updateTransientFollowerDisplay(panGroup: HTMLElement): void {
     if (this.transientFollowerNodes.size === 0) return;
     for (const [id, tf] of this.transientFollowerNodes) {
-      const liveCanvas = panGroup.querySelector<HTMLCanvasElement>(
+      const liveCanvas = this.cachedEl<HTMLCanvasElement>(
+        panGroup,
         `canvas.pn-tf-scope-live[data-tf-node-id="${id}"]`,
       );
       if (liveCanvas) tf.drawLiveScope(liveCanvas);
@@ -265,9 +450,9 @@ export class AudioGraph {
   updateLfoDisplay(panGroup: HTMLElement): void {
     if (this.lfoNodes.size === 0) return;
     for (const [id, ln] of this.lfoNodes) {
-      const canvas = panGroup.querySelector<HTMLCanvasElement>(`canvas.pn-lfo-scope[data-lfo-node-id="${id}"]`);
+      const canvas = this.cachedEl<HTMLCanvasElement>(panGroup, `canvas.pn-lfo-scope[data-lfo-node-id="${id}"]`);
       if (canvas) ln.drawScope(canvas);
-      const liveCanvas = panGroup.querySelector<HTMLCanvasElement>(`canvas.pn-lfo-scope-live[data-lfo-node-id="${id}"]`);
+      const liveCanvas = this.cachedEl<HTMLCanvasElement>(panGroup, `canvas.pn-lfo-scope-live[data-lfo-node-id="${id}"]`);
       if (liveCanvas) ln.drawLiveScope(liveCanvas);
     }
   }
@@ -319,9 +504,9 @@ export class AudioGraph {
     if (this.waveNodes.size === 0) return;
     for (const [id, wn] of this.waveNodes) {
       wn.tickMorph();
-      const canvas = panGroup.querySelector<HTMLCanvasElement>(`canvas.pn-wave-scope[data-wave-node-id="${id}"]`);
+      const canvas = this.cachedEl<HTMLCanvasElement>(panGroup, `canvas.pn-wave-scope[data-wave-node-id="${id}"]`);
       if (canvas) wn.drawScope(canvas);
-      const liveCanvas = panGroup.querySelector<HTMLCanvasElement>(`canvas.pn-wave-scope-live[data-wave-node-id="${id}"]`);
+      const liveCanvas = this.cachedEl<HTMLCanvasElement>(panGroup, `canvas.pn-wave-scope-live[data-wave-node-id="${id}"]`);
       if (liveCanvas) wn.drawLiveScope(liveCanvas);
     }
   }
@@ -330,7 +515,8 @@ export class AudioGraph {
   updateNoiseDisplay(panGroup: HTMLElement): void {
     if (this.noiseNodes.size === 0) return;
     for (const [id, nn] of this.noiseNodes) {
-      const liveCanvas = panGroup.querySelector<HTMLCanvasElement>(
+      const liveCanvas = this.cachedEl<HTMLCanvasElement>(
+        panGroup,
         `canvas.pn-noise-scope-live[data-noise-node-id="${id}"]`,
       );
       if (liveCanvas) nn.drawLiveScope(liveCanvas);
@@ -350,7 +536,8 @@ export class AudioGraph {
   /** Snapshot of normalized positions per buffer~ node — read by the rAF
    *  tick to push values out the position outlet. */
   getBufferPositions(): Map<string, number> {
-    const out = new Map<string, number>();
+    const out = this.bufferPosScratch;
+    out.clear();
     for (const [id, bn] of this.bufferNodes) out.set(id, bn.position);
     return out;
   }
@@ -388,6 +575,16 @@ export class AudioGraph {
     this.youtubeNodes.clear();
     for (const fft of this.fftNodes.values()) fft.destroy();
     this.fftNodes.clear();
+    for (const sp of this.spectralNodes.values()) sp.destroy();
+    this.spectralNodes.clear();
+    for (const ev of this.envNodes.values()) ev.destroy();
+    this.envNodes.clear();
+    for (const pt of this.pitchNodes.values()) pt.destroy();
+    this.pitchNodes.clear();
+    for (const ch of this.chromaNodes.values()) ch.destroy();
+    this.chromaNodes.clear();
+    for (const bt of this.beatNodes.values()) bt.destroy();
+    this.beatNodes.clear();
     for (const js of this.jsEffectNodes.values()) js.destroy();
     this.jsEffectNodes.clear();
     this.jsEffectPending.clear();
@@ -476,6 +673,21 @@ export class AudioGraph {
     }
     for (const id of this.fftNodes.keys()) {
       if (!activeNodeIds.has(id)) { this.fftNodes.get(id)?.destroy(); this.fftNodes.delete(id); }
+    }
+    for (const id of this.spectralNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.spectralNodes.get(id)?.destroy(); this.spectralNodes.delete(id); }
+    }
+    for (const id of this.envNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.envNodes.get(id)?.destroy(); this.envNodes.delete(id); }
+    }
+    for (const id of this.pitchNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.pitchNodes.get(id)?.destroy(); this.pitchNodes.delete(id); }
+    }
+    for (const id of this.chromaNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.chromaNodes.get(id)?.destroy(); this.chromaNodes.delete(id); }
+    }
+    for (const id of this.beatNodes.keys()) {
+      if (!activeNodeIds.has(id)) { this.beatNodes.get(id)?.destroy(); this.beatNodes.delete(id); }
     }
     for (const id of this.jsEffectNodes.keys()) {
       if (!activeNodeIds.has(id)) { this.jsEffectNodes.get(id)?.destroy(); this.jsEffectNodes.delete(id); }
@@ -601,6 +813,43 @@ export class AudioGraph {
           } else if (existing.bandCount !== bands) {
             existing.setBandCount(bands);
           }
+        }
+        if (node.type === "spectral~") {
+          if (!this.spectralNodes.has(node.id)) {
+            this.spectralNodes.set(node.id, new SpectralAnalyzerNode(this.runtime));
+          }
+        }
+        if (node.type === "env~") {
+          let env = this.envNodes.get(node.id);
+          if (!env) {
+            env = new EnvFollowerNode(this.runtime);
+            this.envNodes.set(node.id, env);
+          }
+          const attack = parseFloat(node.args[0] ?? "10");
+          const release = parseFloat(node.args[1] ?? "200");
+          env.setAttack(isNaN(attack) ? 10 : attack);
+          env.setRelease(isNaN(release) ? 200 : release);
+        }
+        if (node.type === "pitch~") {
+          if (!this.pitchNodes.has(node.id)) {
+            this.pitchNodes.set(node.id, new PitchDetectorNode(this.runtime));
+          }
+        }
+        if (node.type === "chroma~") {
+          if (!this.chromaNodes.has(node.id)) {
+            this.chromaNodes.set(node.id, new ChromaAnalyzerNode(this.runtime));
+          }
+        }
+        if (node.type === "beat~") {
+          let bt = this.beatNodes.get(node.id);
+          if (!bt) {
+            bt = new BeatTrackerNode(this.runtime);
+            this.beatNodes.set(node.id, bt);
+          }
+          const tightness = parseFloat(node.args[0] ?? "1");
+          bt.setTightness(isNaN(tightness) ? 1 : tightness);
+          const division = parseInt(node.args[1] ?? "2", 10);
+          bt.setDivision(isNaN(division) ? 2 : division);
         }
         if (node.type === "mixer~") {
           const channels = mixerChannelCount(node.args);
@@ -1091,6 +1340,16 @@ export class AudioGraph {
         destInput = this.dacNodes.get(edge.toNodeId)?.inputNode ?? null;
       } else if (toNode.type === "fft~") {
         destInput = this.fftNodes.get(edge.toNodeId)?.inputNode ?? null;
+      } else if (toNode.type === "spectral~") {
+        destInput = this.spectralNodes.get(edge.toNodeId)?.inputNode ?? null;
+      } else if (toNode.type === "env~") {
+        destInput = this.envNodes.get(edge.toNodeId)?.inputNode ?? null;
+      } else if (toNode.type === "pitch~") {
+        destInput = this.pitchNodes.get(edge.toNodeId)?.inputNode ?? null;
+      } else if (toNode.type === "chroma~") {
+        destInput = this.chromaNodes.get(edge.toNodeId)?.inputNode ?? null;
+      } else if (toNode.type === "beat~") {
+        destInput = this.beatNodes.get(edge.toNodeId)?.inputNode ?? null;
       } else if (toNode.type === "js~") {
         destInput = this.jsEffectNodes.get(edge.toNodeId)?.input ?? null;
       }

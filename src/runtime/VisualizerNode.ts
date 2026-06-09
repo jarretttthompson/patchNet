@@ -61,6 +61,24 @@ export class VisualizerNode implements IRenderContext, IRenderer {
    */
   private _preFullscreen: { x: number; y: number; w: number; h: number } | null = null;
 
+  // ── Performance HUD (Phase 0 instrumentation) ────────────────────────
+  // Off by default — purely additive overlay, no effect on composited output.
+  // Toggle with the `d` key inside the popup. Rolling frame-time stats let us
+  // tell at a glance whether the render loop is keeping its 16.7ms budget and
+  // give a measurement baseline before the WebGL render-core work.
+  private _hudEnabled = false;
+  private readonly _frameTimes = new Float64Array(120);
+  private _frameHead = 0;
+  private _frameCount = 0;
+  private _lastFrameTs = 0;
+  // Per-frame time attribution (DEV) — localizes where a slow frame is spent:
+  // control-tick (analysis fan-out) vs layer compositing vs the slowest layer.
+  private _ctrlMs = 0;
+  private _ctrlMaxMs = 0;
+  private _compMs = 0;
+  private _compMaxMs = 0;
+  private _slowLayerMs = 0;
+  private _slowLayerLabel = "";
 
   constructor(
     public readonly name: string,
@@ -216,6 +234,11 @@ export class VisualizerNode implements IRenderContext, IRenderer {
     this.canvas.addEventListener("dblclick", toggleFullscreen);
     this.popup.addEventListener("keydown", (e) => {
       if (e.key === "f" || e.key === "F") toggleFullscreen();
+      else if (e.key === "d" || e.key === "D") {
+        this._hudEnabled = !this._hudEnabled;
+        // Reset spike maxes on each enable so a fresh inspection starts clean.
+        if (this._hudEnabled) { this._ctrlMaxMs = 0; this._compMaxMs = 0; }
+      }
       else if (e.key === "Escape" && this.popup!.document.fullscreenElement) {
         this.popup!.document.exitFullscreen().catch(() => {});
       }
@@ -421,15 +444,94 @@ export class VisualizerNode implements IRenderContext, IRenderer {
   }
 
   private drawFrame(): void {
+    const now = this.popup?.performance.now() ?? performance.now();
+    if (this._lastFrameTs !== 0) {
+      this._frameTimes[this._frameHead] = now - this._lastFrameTs;
+      this._frameHead = (this._frameHead + 1) % this._frameTimes.length;
+      if (this._frameCount < this._frameTimes.length) this._frameCount++;
+    }
+    this._lastFrameTs = now;
+
+    const DEV = import.meta.env.DEV;
+    const clock = this.popup?.performance ?? performance;
+    const tCtrl0 = DEV ? clock.now() : 0;
     this.onControlTick?.();
     const ctx = this.ctx;
     if (!ctx) return;
+    if (DEV) {
+      this._ctrlMs = clock.now() - tCtrl0;
+      if (this._ctrlMs > this._ctrlMaxMs) this._ctrlMaxMs = this._ctrlMs;
+    }
     ctx.clearRect(0, 0, this.width, this.height);
     // Sort: lower priority number = drawn first (background), higher = drawn last (foreground/on top)
     const sorted = [...this.layers].sort((a, b) => a.priority - b.priority);
+    const tComp0 = DEV ? clock.now() : 0;
+    let slowMs = 0, slowLabel = "";
     for (const layer of sorted) {
-      layer.draw(ctx, this.width, this.height);
+      if (DEV) {
+        const tL = clock.now();
+        layer.draw(ctx, this.width, this.height);
+        const ld = clock.now() - tL;
+        if (ld > slowMs) { slowMs = ld; slowLabel = layer.debugKind; }
+      } else {
+        layer.draw(ctx, this.width, this.height);
+      }
     }
+    if (DEV) {
+      this._compMs = clock.now() - tComp0;
+      if (this._compMs > this._compMaxMs) this._compMaxMs = this._compMs;
+      this._slowLayerMs = slowMs;
+      this._slowLayerLabel = slowLabel;
+    }
+
+    if (this._hudEnabled) this.drawHud(ctx);
+  }
+
+  /** Translucent perf overlay: rolling FPS / frame-time + layer count.
+   *  Drawn last so it sits on top; gated by `_hudEnabled` (the `d` key). */
+  private drawHud(ctx: CanvasRenderingContext2D): void {
+    const n = this._frameCount;
+    if (n === 0) return;
+    let sum = 0, min = Infinity, max = 0;
+    for (let i = 0; i < n; i++) {
+      const t = this._frameTimes[i];
+      sum += t;
+      if (t < min) min = t;
+      if (t > max) max = t;
+    }
+    const avg = sum / n;
+    const fps = avg > 0 ? 1000 / avg : 0;
+    const lines = [
+      `${fps.toFixed(1)} fps`,
+      `avg ${avg.toFixed(2)} ms`,
+      `min ${min.toFixed(2)}  max ${max.toFixed(2)}`,
+      `layers ${this.layers.length}  ${this.width}x${this.height}`,
+    ];
+    if (import.meta.env.DEV) {
+      lines.push(
+        `ctrl ${this._ctrlMs.toFixed(1)} / max ${this._ctrlMaxMs.toFixed(0)} ms`,
+        `comp ${this._compMs.toFixed(1)} / max ${this._compMaxMs.toFixed(0)} ms`,
+        `slow layer ${this._slowLayerLabel || "-"} ${this._slowLayerMs.toFixed(0)} ms`,
+      );
+    }
+
+    ctx.save();
+    ctx.font = "11px ui-monospace, Menlo, monospace";
+    ctx.textBaseline = "top";
+    const padX = 6, padY = 5, lh = 13;
+    let boxW = 0;
+    for (const l of lines) boxW = Math.max(boxW, ctx.measureText(l).width);
+    boxW += padX * 2;
+    const boxH = lines.length * lh + padY * 2;
+
+    ctx.fillStyle = "rgba(0, 0, 0, 0.62)";
+    ctx.fillRect(6, 6, boxW, boxH);
+    // Budget tint: green under 16.7ms, amber up to 33ms, red beyond.
+    ctx.fillStyle = avg <= 16.8 ? "#7CFFB0" : avg <= 33.4 ? "#FFD479" : "#FF6E6E";
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], 6 + padX, 6 + padY + i * lh);
+    }
+    ctx.restore();
   }
 
   // ── Position polling ─────────────────────────────────────────────

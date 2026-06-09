@@ -29,7 +29,7 @@ export interface SceneWire {
   t: "SceneWire";
   layerId: string;
   source:
-    | { kind: "mediaVideo*" | "mediaImage*" | "imageFX*" | "vfxCRT*" | "vfxBlur*"; id: string }
+    | { kind: "mediaVideo*" | "mediaImage*" | "imageFX*" | "vfxCRT*" | "vfxBlur*" | "glBlur*"; id: string }
     | null;
 }
 

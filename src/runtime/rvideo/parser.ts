@@ -56,27 +56,48 @@ const PARAM_LINE_RE = /^\/\/\s*@param\s*(.+)$/;
 // Breaks the rest of a @param line into tokens, picking out the quoted label
 // and accumulating the remaining space-separated tokens.
 function splitParamTokens(rest: string): { name: string; label: string; nums: string[] } | null {
-  // Optional leading "N:" index
-  // `name` allowed chars: ident chars + dots (namespace syntax)
-  const prefixMatch = /^(?:(\d+)\s*:\s*)?([A-Za-z_][A-Za-z0-9_.]*)\s*(.*)$/.exec(rest);
-  if (!prefixMatch) return null;
+  let tail = rest.trim();
 
-  const idxStr = prefixMatch[1];   // may be undefined
-  const name   = prefixMatch[2];
-  const tail   = prefixMatch[3];
+  // Leading slider index, with or without a trailing colon. REAPER accepts
+  // both `1:name …` and the looser `1 'label' …` (index only, no name).
+  let idxStr: string | undefined;
+  const idxMatch = /^(\d+)\s*:?\s*/.exec(tail);
+  if (idxMatch) {
+    idxStr = idxMatch[1];
+    tail = tail.slice(idxMatch[0].length);
+  }
 
-  // Quoted label comes next — REAPER accepts both "double" and 'single' quotes
-  // (stock video presets use both styles). Match either, but the quote style
-  // must be consistent on both ends of the label.
-  const labelMatch = /^(?:"([^"]*)"|'([^']*)')\s*(.*)$/.exec(tail);
-  if (!labelMatch) return null;
-  const label = labelMatch[1] ?? labelMatch[2] ?? "";
-  const numsPart = labelMatch[3].trim();
+  // Optional parameter name (identifier, dots allowed for namespaces). May be
+  // absent in the index-only form — in which case the param is referenced in
+  // code positionally as `param<N>`, so we synthesize that name below.
+  let name: string | undefined;
+  const nameMatch = /^([A-Za-z_][A-Za-z0-9_.]*)\s*/.exec(tail);
+  if (nameMatch) {
+    name = nameMatch[1];
+    tail = tail.slice(nameMatch[0].length);
+  }
 
+  // A param must carry at least an index or a name.
+  if (idxStr === undefined && name === undefined) return null;
+
+  // Quoted label — REAPER accepts both "double" and 'single' quotes (stock
+  // presets use both). Optional: some presets omit the label entirely.
+  let label = "";
+  const labelMatch = /^(?:"([^"]*)"|'([^']*)')\s*/.exec(tail);
+  if (labelMatch) {
+    label = labelMatch[1] ?? labelMatch[2] ?? "";
+    tail = tail.slice(labelMatch[0].length);
+  }
+
+  const numsPart = tail.trim();
   const nums = numsPart.length === 0 ? [] : numsPart.split(/\s+/);
 
+  // Index-only form → name the param `param<N>` (the positional name REAPER
+  // exposes to the body).
+  const finalName = name !== undefined ? name : `param${idxStr}`;
+
   return {
-    name: idxStr !== undefined ? `@${idxStr}:${name}` : name,
+    name: idxStr !== undefined ? `@${idxStr}:${finalName}` : finalName,
     label,
     nums,
   };
@@ -139,31 +160,38 @@ export function parseRVideo(source: string): RVideoParseResult {
       }
 
       const nums = parts.nums.map(s => parseFloat(s));
-      if (nums.length < 3 || nums.some(v => !Number.isFinite(v))) {
+      if (nums.length === 0 || nums.some(v => !Number.isFinite(v))) {
         return {
           ok: false,
           error: {
             line: lineNo,
-            message: `@param "${name}" needs at least default, min, max (got ${nums.length} numbers)`,
+            message: `@param "${name}" needs at least a default value`,
           },
         };
       }
 
       // Layouts (REAPER accepts multiple):
+      //   default                              (1; min/max default to 0..1)
       //   default min max                      (3)
       //   default min max step                 (4)
       //   default min max mid step             (5)
       //   default min max mid step shape?      (6; shape ignored)
+      // The default-only form is common in stock presets that work in the
+      // normalized 0..1 domain (e.g. the pixelate preset).
       const defaultValue = nums[0];
-      const min          = nums[1];
-      const max          = nums[2];
+      let min = 0;
+      let max = 1;
       let mid = 0;
       let step: number | undefined;
-      if (nums.length === 4) {
-        step = nums[3];
-      } else if (nums.length >= 5) {
-        mid  = nums[3];
-        step = nums[4];
+      if (nums.length >= 3) {
+        min = nums[1];
+        max = nums[2];
+        if (nums.length === 4) {
+          step = nums[3];
+        } else if (nums.length >= 5) {
+          mid  = nums[3];
+          step = nums[4];
+        }
       }
 
       if (min >= max) {

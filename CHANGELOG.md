@@ -23,6 +23,27 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-05-30] COMPLETED | ezScale: add inlet for pre-scale multiplier
+**Agent:** Claude Code
+**Phase:** Object suite — ezScale
+
+**Done:**
+- Added a 10th inlet (index 9, cold, "pre-scale multiplier") to the ezScale object, plus its message-table entry.
+- Wired the inlet to the existing `mult` arg at `node.args[7]`; an `inlet === 9` branch in the runtime stores finite floats.
+- Made the GUI `× mult` field update in real time: the handler patches the field's value in place (selector `input[data-ezscale-field="mult"]`), mirroring `applyEzScaleAutoInput`, instead of relying on `emit("display")` (which only syncs the text panel and never re-renders the object DOM).
+
+**Changed files:**
+- src/graph/objectDefs.ts — ezScale: new inlet 9 + message def
+- src/canvas/ObjectInteractionController.ts — ezScale deliverMessageValue: handle inlet 9 → args[7] + live field patch
+
+**Notes / decisions:**
+- Appended as the last inlet (index 9) rather than inserted near the input bounds, so existing patch connections to inlets 1–8 keep their indices.
+- Cold inlet (store-only) consistent with all other ezScale parameter inlets; the multiplier takes effect on the next inlet-0 input tick. Serialization is unaffected (keyed on args, mult stays at args[7]).
+- Targeted DOM update (not `emit("change")`/full re-render) so a streamed multiplier doesn't flood undo history / autosave; the update is skipped while the user is actively typing in the field (`document.activeElement` guard).
+
+**Next needed:**
+- Optional: manual check in-browser that cabling a streamed value into the new inlet updates the `× mult` field live and rescales output on the next input.
+
 ## [2026-05-10] COMPLETED | tooling: cost-tiered model workflow + local Qwen + vault RAG stub
 **Agent:** Claude Code
 **Phase:** Tooling / dev-environment (no patchNet code touched)
@@ -2302,3 +2323,234 @@ Older entries archived to `AGENTS-archive.md`.
 
 **Next needed:**
 - None outstanding on this front
+
+## [2026-05-28] COMPLETED | ezScale — smoothing curves (linear / exp / log / s-curve)
+**Agent:** Claude Code
+
+**Done:**
+- Added smoothing toggle to ezScale: cycling toolbar button `[~off]` → `[~lin]` → `[~exp]` → `[~log]` → `[~s]` → off.
+- Added `ms` time field next to `× mult` in the mult row (dimmed when smoothing is off).
+- Added two cold inlets to ezScale: inlet 7 (smoothing mode 0–4), inlet 8 (smoothing time ms).
+- Implemented per-node smoother state (`ezScaleSmoothers` Map) with rAF pump, retarget-from-current on new inputs, and snap-on-eps termination.
+- Curve math: linear = constant rate; exponential = α = 1 − exp(−dt/τ); logarithmic = log(1+9t)/log(10) eased over startValue→target; s-curve = smoothstep `3t² − 2t³` eased over startValue→target.
+- Edge handling: bound edits (inlet 1–4 / field commit), active-range edits (inlet 5/6 / slider drag), and mode → 0 all cancel any in-flight smoother + snap. Smoother is also pruned when its node is deleted (hooked into the existing graph "change" prune block).
+- Smoothing args persist via the existing arg serialization (new hidden args[11]=smooth, args[12]=smoothMs).
+
+**Changed files:**
+- src/graph/objectDefs.ts — added args + inlets + messages for smoothing; updated description string.
+- src/canvas/ObjectRenderer.ts — added cycle button to toolbar and ms field to mult row; wired aria-pressed + tooltip + dim state.
+- src/canvas/ObjectInteractionController.ts — added `ezScaleSmoothers` map, cycle-button handler, inlet 7/8 handling, `retargetEzScaleSmoother`, `startEzScaleSmootherLoop`, `cancelEzScaleSmootherAndSnap`, and wired snap-on-cancel into all four bound/range edit paths; extended field-commit key map with `smoothMs`.
+- src/shell.css — styled `.pn-ezscale__smooth-btn` (mirrors `[auto]`/`[inv]` chrome) and `.pn-ezscale__cell--dim`.
+
+**Notes / decisions:**
+- Picked cycling toolbar button over dropdown — no existing dropdown UI in the canvas, dropdowns would have been net-new design surface. Cycle matches the established `[auto]`/`[inv]` pattern.
+- intMode runs the smoother internally in float and only rounds on emission, so integer outputs don't staircase the smoothing.
+- For log/s-curve, retargeting mid-flight re-anchors `startValue + startTime` so the new leg's eased shape starts from the current value rather than the original startpoint.
+- Bound/range edits cancel + snap rather than recompute trajectory against the new range — the alternative is gnarly and the user almost never wants a smoother to keep running across a bound change.
+- `ms ≤ 0` is treated as instant (snap on the next tick) so users can disable timing without flipping the mode off.
+
+**Next needed:**
+- Optional: wiki page at `patchNet-Vault/wiki/entities/object-ezScale.md` covering the four curves with example screenshots.
+- Possible follow-up: expose an "easing inflection" parameter on s-curve for tightening / loosening the middle slope.
+
+## [2026-05-28] FIX | ezScale — smoothing settings not persisting across reload
+**Agent:** Claude Code
+
+**Done:**
+- Fixed ezScale args sparseness bug that prevented smoothing settings (and any hidden arg past the first unwritten one) from surviving serialization.
+- Root cause: clicking the `[~]` cycle button only writes `args[11]`, leaving `args[4..10]` undefined. Spreading the sparse array into `parts.join(" ")` produced runs of whitespace, the parser dropped them on whitespace-split, and the smooth value landed back at `args[4]` (outLo) on reload — losing the smoothing mode and corrupting outLo.
+- Latent for the other hidden args too (`auto`, `mult`, `inverted`) — only worked when the user happened to drag the slider, which writes args[4]/args[5] and fills the gap.
+
+**Changed files:**
+- src/serializer/serialize.ts — added an `ezScale` branch that backfills any `undefined`/`null` arg slot with the spec's declared default through the full arg list before pushing. Confirmed round-trip via a sparse-arg test.
+
+**Notes / decisions:**
+- Fix lives in the serializer (one spot, applies on every save), not at each mutation site, so it covers manual saves, autosave, undo snapshots, and copy/paste uniformly.
+- Backfilling with spec defaults preserves behavior — the values we write are the same as the `?? "default"` fallbacks the runtime already used when reading those slots.
+
+**Next needed:**
+- None outstanding. Worth considering an equivalent backfill for any other object that stores meaningful hidden state past its visible args, but only as patches surface bugs.
+
+## [2026-05-28] COMPLETED | reaperVideo* — offscreen image buffers (gfx_img_resize / gfx_set dest / gfx_rotoblit)
+**Agent:** Claude Code
+
+**Done:**
+- Added persistent offscreen-canvas image buffers to the rvideo host. Scripts can now allocate buffers via `gfx_img_resize(img, w, h, mode)` (returns an integer ID, preserves contents on resize when mode=-1, frees on w=0/h=0), and use them as both blit sources and draw destinations.
+- Added function-form `gfx_set(r, g, b, a, mode, dest)` — sets the color/mode slots in one call, and the 6th arg redirects subsequent draws to either the output canvas (`-1`) or any buffer ID. The property-assignment form (`gfx_r = ...` etc.) still works in parallel.
+- Implemented `gfx_rotoblit(src, angle, dx, dy, dw, dh, sx, sy, sw, sh)` — rotated blit with the standard REAPER positional layout.
+- Extended every gfx_* draw fn to honor the current draw destination through `getDrawCtx()` / `getDrawDims()` helpers: gfx_fillrect, gfx_rect, gfx_line, gfx_circle, gfx_gradrect, gfx_drawstr, gfx_setpixel, gfx_getpixel, gfx_blit, gfx_rotoblit, gfx_evalrect, gfx_procrect. Buffers can be any size independent of the output canvas; clipping math uses the buffer's bounds when targeted.
+- Source-side: `gfx_blit` and `gfx_rotoblit` now resolve `src` either as an upstream input (low ints) or an offscreen buffer (≥ 1000) through a shared `resolveSource()` helper.
+- Wired `gfx_img_resize`, `gfx_set`, `gfx_rotoblit` into the translator's HOST_CALLS set.
+- Lifecycle: buffers persist across frames (the feedback pattern in the user's blitter preset requires it). Cleared on script recompile and on node disposal so dead buffers don't pin memory.
+- Each `beginFrame` resets `currentDestId` to `-1` so a script that forgot to switch back doesn't accumulate state into the next frame.
+
+**Changed files:**
+- src/runtime/rvideo/host.ts — added `buffers` map + `nextBufferId` + `currentDestId` state, `getDrawCtx`/`getDrawDims`/`resolveSource`/`resolveSourceDims` helpers, `gfx_img_resize`/`gfx_set`/`gfx_rotoblit`/`clearBuffers` methods, `blitCore` shared helper extracted from gfx_blit, and per-fn refactor to honor the redirection.
+- src/runtime/rvideo/translate.ts — added `gfx_img_resize`, `gfx_set`, `gfx_rotoblit` to HOST_CALLS.
+- src/runtime/ReaperVideoNode.ts — call `clearBuffers()` on recompile (next to existing `invalidateEvalrectCache()`) and on `destroy()`.
+
+**Notes / decisions:**
+- Buffer IDs start at 1000 so they can never collide with input-source indices (which are small and dense). Inputs continue to live at low integer indices in `this.sources[]`; buffers live in `this.buffers` keyed by ID.
+- Buffer-ID semantics: `img <= 0` (the EEL-default for an uninitialized var) triggers a fresh allocation that returns a new ID; existing IDs resize in place. This matches REAPER's idiom `img = gfx_img_resize(img, w, h, -1)`.
+- Preserve-on-resize uses the existing scratch canvas as a temp — stash → resize → blit back. Cheap when resize is rare; the common case (same-size re-call each frame) takes the no-op fast path.
+- `gfx_evalrect`/`gfx_procrect` now read+write through the *current draw destination's* getImageData, so per-pixel kernels can target buffers too. Their clipping bounds switched from `outWidth/outHeight` to `getDrawDims()`.
+- Verified by translating the user's Blitter Feedback script end-to-end (compiles cleanly) and exercising allocate/resize/redirect/free/clearBuffers on the host with a stubbed 2D context.
+
+**Next needed:**
+- `gfx_blit2`, `gfx_deltablit`, `gfx_transformblit`, `gfx_blurto` are declared in the translator's HOST_CALLS but have no host implementation yet (pre-existing gap, unrelated to this change). When a preset needs one, it'll surface as a runtime "host.gfx_blit2 is not a function" error — implement at that point and route through `getDrawCtx()` / `resolveSource()` so buffer compatibility is in from the start.
+- Phase E3's WebGL fast path for per-pixel kernels is a separate workstream; nothing here blocks it.
+
+## [2026-05-28] COMPLETED | reaperVideo* — host-level wet/dry mix
+**Agent:** Claude Code
+
+**Done:**
+- Added a universal wet/dry slider to every reaperVideo* object. Lives below the user's `@param` knobs, separated by a thin divider. The feature is automatic per object — every instance gets the slider regardless of which script is loaded. Default 1.0 (full effect) keeps every existing patch behaving identically.
+- New positional arg `wet` (visible, float, default `1`, min 0, max 1, step 0.01) — persists with the patch via the standard arg serialization.
+- Runtime crossfade lives in `ReaperVideoNode.process()`'s success path: dry input drawn first, processed back buffer drawn on top at `alpha = wet`. wet=0 short-circuits the wet pass entirely (bit-exact passthrough); wet=1 keeps the old single-blit fast path (back-compat). Crossfade was chosen over per-pixel mix for speed; trade-off documented in the inline comment.
+- New `ReaperVideoNode.setWet(v)` clamps to [0, 1] and tolerates NaN by preserving the prior value.
+- `VisualizerGraph` sync loop pushes args[5] → `setWet()` alongside the existing `maxRenderDim` push, so any path that mutates args (attribute inspector, undo, future selector-message wiring) takes effect on the next graph emit.
+- `ReaperVideoPanel` now builds a persistent wet/dry row (`buildWetRow()`) inside the knob column. Slider drag writes args[5], pushes directly to the runtime node for snappy scrubbing (skipping the `change` storm), and emits `change` on commit so autosave + undo notice. Double-click resets to 1.0. Readout shows percentage (`74%`) to match the DAW mental model. `syncFromArgs()` refreshes the slider on patch load / external arg edits.
+- CSS: `pn-rvideo-wet-row` pinned at the bottom of the knob column with `flex: 0` so the scrollable knob pane above can't squeeze it, plus a 1px `pn-rvideo-wet-divider` above it. Wet-row label is italic + muted to signal "host-level, not script-level".
+
+**Changed files:**
+- src/graph/objectDefs.ts — added `wet` arg + `wet <v>` selector message in reaperVideo* spec.
+- src/runtime/ReaperVideoNode.ts — `wet` field, `setWet()`, crossfade branch in `process()`.
+- src/runtime/VisualizerGraph.ts — args[5] → `setWet()` push in the per-sync loop alongside `maxRenderDim`.
+- src/canvas/ReaperVideoPanel.ts — `buildWetRow()` + `readWetFromArgs()`/`writeWetToArgs()`, `formatWetReadout()` helper, `syncFromArgs()` refresh.
+- src/shell.css — `.pn-rvideo-wet-row`, `.pn-rvideo-wet-divider`, `.pn-rvideo-knob-row--wet` styling.
+
+**Notes / decisions:**
+- Per-object (not shared globally) per the user's design choice — the *feature* is universal but each instance has its own value, so a patch with multiple reaperVideo*s can dial each in independently.
+- The `wet <v>` selector message is declared in the spec but, like `maxRenderDim <v>` before it, isn't wired through `ObjectInteractionController`'s dispatcher today. Slider + attribute path both work; selector-message routing is a separate (pre-existing) gap to fix when a script needs inlet-driven wet control.
+- Crossfade behavior with semi-transparent script output reads as `dry + wet*effect`, not a true linear lerp. Acceptable for the common case; a pixel-mix branch can be added later if a preset needs it (gated by the back buffer's actual alpha distribution).
+
+**Next needed:**
+- Wire `maxRenderDim <v>` and `wet <v>` inlet-0 selector messages through the dispatcher when a use case surfaces (write args + emit `display`).
+- Consider exposing wet in the attribute inspector — it should already work via the existing visible-arg path, but worth eyeballing once a real test patch is open.
+
+## [2026-05-28] COMPLETED | reaperVideo* — wet/dry side-inlet for realtime control
+**Agent:** Claude Code
+
+**Done:**
+- Added a dedicated left-side inlet for the wet/dry mix so it can be driven by a cable in realtime, exactly like the per-`@param` knob inlets. Send a float (0..1) and the slider, args[5], and the runtime node all update live.
+- The wet/dry inlet is always present (independent of how many `@params` the script declares) and is pinned as the *last* side-inlet — slot = paramCount — so its nub lands on the wet/dry row.
+- Restructured the panel's knob column so the wet/dry row renders directly below the param knobs at grid slot = paramCount (previously it was flex-pinned to the bottom of the column, which didn't sit on the 22px-header / 24px-row grid the side-inlet nub formula assumes). knobPane + wetRow now share a scroll wrapper; the row separator is a border-top on the wet row (box-sizing: border-box) so it adds no grid height.
+- Relocated the "no //@params declared" hint to *below* the wet row so an empty param list no longer displaces the wet row from grid slot 0.
+- `ensureMinHeight` now budgets for the always-present wet row: `22 + (paramCount + 1)*24 + 22`.
+
+**Changed files:**
+- src/graph/objectDefs.ts — `deriveReaperVideoPorts` pushes a trailing `wet/dry (0..1)` left-side inlet at `sideInletStart + paramCount`.
+- src/canvas/ReaperVideoPanel.ts — `applyInletValue` handles the wet slot (slot === paramDecls.length) with [0,1] clamp; layout restructured (knobScroll wrapper, relocated emptyHint); `buildWetRow` returns the row directly (divider → CSS border-top); `writeWetToArgs` returns changed-flag to gate display emits; `ensureMinHeight` +1 row.
+- src/shell.css — `.pn-rvideo-knob-scroll` wrapper; `.pn-rvideo-knobs` now content-sized; wet-row separator via `.pn-rvideo-knob-row--wet` border-top (removed `.pn-rvideo-wet-row` / `.pn-rvideo-wet-divider`).
+
+**Notes / decisions:**
+- Routing reuses the existing dispatcher path: ObjectInteractionController already forwards `inlet >= getReaperVideoSideInletStart(...)` to `panel.applyInletValue`, and the bare-float extraction (`value.trim().split(/\s+/).pop()`) handles a plain number on the wire. No dispatcher change needed.
+- Inlet values clamp to [0,1] and emit `display` only on actual change (gated by `writeWetToArgs`), matching the param-inlet pattern — avoids text-panel sync spam when an LFO holds steady.
+- Verified `deriveReaperVideoPorts` output for no-param, multi-param, and param+secondary-media cases — wet/dry always lands as the final side-inlet at the expected index.
+
+**Next needed:**
+- Inlet-0 selector messages (`wet <v>`, `maxRenderDim <v>`) are still spec-declared but unwired in the dispatcher — only relevant if someone wants to drive wet via a selector message into inlet 0 rather than the dedicated side-inlet. Low priority now that the side-inlet exists.
+
+## [2026-05-28] FIX | reaperVideo* — ezScale auto-output couldn't discover the wet/dry inlet range
+**Agent:** Claude Code
+
+**Done:**
+- Fixed `resolveTargetArgRange` so an auto-mode ezScale wired into the wet/dry inlet auto-configures its output to 0..1. Previously the function only mapped the `@param` side-inlets and returned null for the wet inlet (it's not in the params array), so auto-output left the ezScale at its prior bounds (often 0..100 / 0..127). The wet inlet clamps incoming values to [0,1] (applyInletValue), so any value >1 pinned the slider at 100% with no visible movement — which presented as "the slider doesn't respond."
+
+**Changed files:**
+- src/canvas/ObjectInteractionController.ts — `resolveTargetArgRange` reaperVideo* branch now returns `{min:0, max:1, isFloat:true}` when the target side-inlet is the wet/dry slot (sideIdx === params.length).
+
+**Notes / decisions:**
+- Root-cause fix in the auto-range resolver rather than loosening the wet inlet's clamp — wet/dry is conceptually 0..1, so the clamp is correct; the bug was that auto-scaling couldn't see the wet inlet's range.
+- Only helps ezScales in [auto] mode. A manually-configured ezScale (auto off) still needs its output bounds set to 0..1 by the user — documented for the user inline.
+
+**Next needed:**
+- None.
+
+## [2026-05-28] COMPLETED | reaperVideo* — wet/dry slider end labels
+**Agent:** Claude Code
+**Done:** Labelled the wet/dry fader ends — "dry" hugs the low (left) end, "wet" hugs the high (right) end — so the mix direction is self-evident. Replaced the single "wet/dry" label with a "dry" left label + a "wet" end-marker after the track; readout still shows wet %.
+**Changed files:** src/canvas/ReaperVideoPanel.ts (buildWetRow), src/shell.css (.pn-rvideo-wet-end).
+
+## [2026-05-29] FIX | reaperVideo* — gfx_dest variable + gfx_blit(-1) framebuffer source
+**Agent:** Claude Code
+**Done:** Two REAPER video-processor features that scripts like the pixelate preset rely on were missing, so such effects translated cleanly but did nothing:
+- `gfx_dest` was treated as a plain user variable (`state.u_gfx_dest`) instead of the render target, so `gfx_dest = <imgId>` never redirected drawing into the offscreen buffer. Added a read/write `gfx_dest` accessor on RVideoHost (proxies currentDestId) and bound `gfx_dest` in the translator's HOST_IDENTS so it emits `host.gfx_dest`.
+- `gfx_blit(-1, …)` (source = the output framebuffer) returned null from the source resolver. resolveSource/resolveSourceDims now treat negative indices as the output canvas.
+**Changed files:** src/runtime/rvideo/host.ts (gfx_dest getter/setter; resolveSource/Dims handle idx<0), src/runtime/rvideo/translate.ts (gfx_dest in HOST_IDENTS).
+**Notes:** Complements the earlier offscreen-buffer work (gfx_img_resize / gfx_set dest / gfx_rotoblit). The `gfx_dest` variable is the more common render-target idiom in real presets than gfx_set's 6th arg. Verified the pixelate script now emits host.gfx_dest assignments + framebuffer blits.
+
+## [2026-05-29] FIX | reaperVideo* — accept REAPER's looser //@param syntax
+**Agent:** Claude Code
+**Done:** The @param parser rejected the default-only / index-only form many stock presets use (e.g. pixelate: `//@param 1 'x pos' 0.25`). Loosened `splitParamTokens` + value parsing in parser.ts to accept:
+- Space-separated index without a colon (`1 'label'`, not just `1:name`).
+- Index-only params with no explicit name → synthesized as `param<N>` (the positional name REAPER exposes to the body, e.g. `param1`).
+- Default-only value (min/max default to 0..1) in addition to the existing default-min-max[-mid][-step] layouts.
+- Optional label (single or double quotes; already handled, kept).
+**Changed files:** src/runtime/rvideo/parser.ts.
+**Notes:** Verified the pixelate preset now yields param1..param5 (0–1) and the RGB full-form (`1:r.x "red x offset" 0 -100 100 0 1`) still parses identically. With the gfx_dest + gfx_blit(-1) fixes from earlier today, the pixelate preset should now run end-to-end.
+
+## [2026-05-29] COMPLETED | Larger canvas + persist view (zoom/scroll) across reload
+**Agent:** Claude Code
+**Done:**
+- Doubled the canvas world extent 3000→6000 px (CANVAS_WIDTH_PX/HEIGHT_PX) so crowded patches have room to spread. All dependent geometry (drag clamps, rulers, scroll spacer) flows from these constants automatically.
+- Persist the main tab's view (scrollLeft, scrollTop, zoom) to the localStorage payload (SavedTabsV1.view) and restore it on reload, so the user lands exactly where they left off instead of being re-centered.
+**Changed files:**
+- src/canvas/canvasSpace.ts — 6000×6000.
+- src/canvas/TabManager.ts — getMainViewState() (live when main active, else from per-tab maps) + restoreMainView().
+- src/main.ts — SavedView in payload; saveAllTabs captures view; loadAllTabs stashes payload.view into pendingRestoreView BEFORE deserialize (deserialize's change-save would otherwise clobber it); init rAF restores the view (and re-saves to lock it in) instead of auto-centering when a saved view exists.
+**Notes:** View capture handles the scratch-tab-active-at-save case by reading main's stashed scroll/zoom from TabManager's maps. Auto-center on the patch bbox still applies for fresh patches / no saved view.
+
+## [2026-05-29] COMPLETED | beat~ tempo/phase/beat tracker (Tier C done)
+**Agent:** Claude Code
+**Done:** Added `beat~`, a best-effort onset/tempo tracker. Detects onsets as spectral-flux peaks above an adaptive (moving-average × threshold) gate with a debounce, estimates tempo from the median inter-onset interval (60–200 BPM, lightly smoothed), runs a beat-phase 0–1 ramp synced to that tempo, and bangs on each beat.
+- Outlets: 0 = tempo (BPM, held), 1 = phase (0–1 ramp, resets on beat), 2 = beat (bang).
+**Changed files:**
+- src/runtime/BeatTrackerNode.ts (new).
+- src/graph/objectDefs.ts (beat~ def, 3 outlets incl. a bang).
+- src/runtime/AudioGraph.ts (beatNodes map, create/connect/prune/destroy, getBeatValues/updateBeatDisplay/consumeBeatTriggers).
+- src/main.ts (updateBeatDisplay; push [bpm,phase] floats; fire outlet-2 bang per consumeBeatTriggers via objectInteraction.fireBang).
+- src/canvas/ObjectRenderer.ts (beat~ body: BPM readout + phase bar), src/shell.css (.pn-beat-*).
+**Notes:** Bang delivery mirrors the adsr-completion pattern — node sets a one-shot flag, main.ts polls + fires. Heuristic tracker (not reference-grade); good for beat-synced visuals on steady rhythmic input. Completes the Tier B (spectral~) + Tier C (env~/pitch~/chroma~/beat~) audio-feature plan.
+
+## [2026-05-29] IMPROVED | beat~ — autocorrelation tempo tracking (stable on real music)
+**Agent:** Claude Code
+**Done:** Replaced beat~'s naive flux-peak + median-IOI tracker (which octave-jumped and wandered on real music) with an autocorrelation-based estimator:
+- Onset-strength envelope (half-wave-rectified spectral flux) peak-held onto a fixed 60 Hz grid, decoupled from the variable control tick so lags map cleanly to tempo.
+- Every ~200 ms, mean-removed autocorrelation of the ~5 s OSS window over the 60–180 BPM lag range, weighted by a log-Gaussian tempo prior (centred 120 BPM, σ 0.6 octaves) to suppress half/double-time errors. Parabolic interpolation for sub-sample period precision.
+- Confidence gate (normalized peak ≥ 0.12) holds the last locked tempo through non-rhythmic passages instead of jumping; heavy period smoothing (0.85) locks the BPM readout.
+- Beat-phase clock runs at the locked period; phase nudged 25% toward the best OSS comb alignment each estimate so bangs track real onsets without snapping.
+**Changed files:** src/runtime/BeatTrackerNode.ts (full rewrite; same outlets/interface).
+**Notes:** Locks ~2 s after audio starts (needs history before first estimate). Tuning knobs if needed: PRIOR_BPM (centre), PRIOR_SIGMA (octave tolerance), MIN/MAX_BPM (range), PERIOD_SMOOTH (inertia), PEAK_CONF (gate).
+
+## [2026-05-29] IMPROVED | beat~ — hysteresis tempo lock (stop octave/metrical jumping)
+**Agent:** Claude Code
+**Done:** Added a lock-with-voting layer on top of the autocorrelation estimate. Each new estimate is octave-folded toward the current locked tempo (±2× within tolerance); if it agrees (±4%) it just refines the lock, if it disagrees it must persist for SWITCH_VOTES (~1 s) consecutive estimates before the tempo actually switches. Transient single-estimate flips between metrical levels are ignored — the BPM holds steady.
+**Changed files:** src/runtime/BeatTrackerNode.ts (replaced per-estimate smoothing with candidate-vote hysteresis lock; added candidatePeriod/candidateVotes).
+**Notes:** Tuning knobs: SWITCH_VOTES (how long a new tempo must persist to win), AGREE_TOL (lock tolerance), REFINE (in-lock inertia). Raise SWITCH_VOTES for an even harder lock that adapts more slowly.
+
+## [2026-05-29] IMPROVED | beat~ overhaul phases 1–2 (SuperFlux onset + decaying tempo histogram)
+**Agent:** Claude Code
+**Done (from the beat-tracking research plan):**
+- D1 — Replaced the linear whole-spectrum byte-flux onset function with a SuperFlux-style envelope: getFloatFrequencyData (dB log-magnitude) binned into 40 log-spaced bands (30 Hz–16 kHz), differenced against the frame SF_LAG=2 hops back with a ±1-band frequency max-filter (vibrato/wobble rejection), half-wave rectified, summed. fftSize 2048, min/maxDecibels −90/−10.
+- D2 — Replaced per-estimate hysteresis voting with a decaying tempo histogram: each ~200 ms estimate accumulates the prior-weighted autocorrelation curve (normalized) into a histogram that decays at 0.90/estimate (~1.7 s half-life); the interpolated histogram peak is the tempo, tracked smoothly. Confidence gate freezes the histogram (no decay) during non-rhythmic passages so the lock persists.
+**Changed files:** src/runtime/BeatTrackerNode.ts (onset + tempo rewrite; same outlets/interface).
+**Notes:** Phase/bang still uses the comb-nudge clock (D3 will replace it with a causal cumulative-score beat agent). Tuning knobs: TEMPO_DECAY (lock inertia), PEAK_CONF (gate), PRIOR_BPM/PRIOR_SIGMA (octave bias), NBANDS/SF_LAG. Based on Ellis 2007 (DP), Böck SuperFlux 2013, Krzyzaniak real-time tracker.
+
+## [2026-05-29] COMPLETED | beat~ overhaul phases 3–4 + wet/dry persistence fix
+**Agent:** Claude Code
+**Done:**
+- FIX (reaperVideo* wet/dry persistence): the custom reaperVideo* serializer only emitted args[0..3] (source/library/locked/paramValues), silently dropping args[4] maxRenderDim and args[5] wet — so wet/dry reset to 100% on reload. Serializer now appends both trailing scalars; parser normalizes them to defaults (360 / 1) so old and new patches round-trip identically (keeps parse→serialize→parse idempotent; fixed the rich-autosave round-trip test).
+- D3 — Replaced the comb-nudge phase clock with a causal onset-driven phase-locked loop: frequency-locked to the histogram tempo, phase continuously pulled toward detected onsets (adaptive OSS-mean gate) so bangs land on hits while the clock coasts through gaps.
+- D4 — Polish: (a) bias-corrected (unbiased) autocorrelation — divide by overlap length to remove the short-lag/fast-tempo bias and sharpen the true peak; (b) confidence outlet (#3) = dominance of the histogram peak (0–1), for gating visuals; (c) tightness arg (#0) scaling PLL gain (higher = rigid tempo, lower = chase onsets). Outlet push now skips non-finite sentinels (beat~ marks its bang outlet NaN).
+**Changed files:** src/serializer/serialize.ts, src/serializer/parse.ts, src/runtime/BeatTrackerNode.ts, src/graph/objectDefs.ts, src/runtime/AudioGraph.ts, src/main.ts.
+**Notes:** beat~ is now a full Ellis/SuperFlux/Davies-inspired pipeline (onset → histogram tempo → PLL beat agent). Tuning knobs: tightness arg, TEMPO_DECAY, PLL_GAIN, ONSET_FACTOR, PRIOR_BPM/SIGMA, NBANDS/SF_LAG.
+
+## [2026-05-29] COMPLETED | beat~ accuracy round 2 (confidence UI, octave fix, subdivision selector)
+**Agent:** Claude Code
+**Done (from the octave-error/subdivision research):**
+- E1 — Confidence shown in the object: a `conf` bar that fills with the confidence value, and the BPM greys out when confidence < 0.25 so it's visually obvious when the tracker is unsure.
+- E2 — Octave-robust tempo via harmonic-comb scoring (Klapuri-style): each candidate base period is scored by its whole metrical comb (beat + subdivisions L/2,L/3,L/4 + groupings 2L,3L) over the decaying histogram, prior-weighted, so a busy subdivision *reinforces* the beat instead of flipping the tempo an octave. Plus a slower-level preference (SLOW_BIAS — step to the slower octave if its comb ≥0.55× the faster) and octave hysteresis (once locked, fold new estimates to the locked octave). Fixes the 80↔160 jump.
+- E3 — Subdivision/note-value selector: a cycling button on the body (1/1·1/2·1/4·1/8·1/16) sets how often outlet 2 bangs relative to the detected beat. Sub-beat divisions derive from beat-phase crossings; half/whole count beats (4/4 grouping assumption). Persists in a hidden `division` arg.
+**Changed files:** src/runtime/BeatTrackerNode.ts (combScore/histAt, division/beatCount, PLL bang logic), src/graph/objectDefs.ts (division arg), src/runtime/AudioGraph.ts (sync division + confidence display), src/canvas/ObjectRenderer.ts (conf bar + div button), src/canvas/ObjectInteractionController.ts (div cycle handler), src/shell.css.
+**Notes:** Research basis — Klapuri 2006 (multi-level metrical comb), Beat Critic / ISMIR 2010 (octave-error via subdivision energy), tempogram-statistics octave correction. Caveat: half/whole assume 4/4 (no true downbeat detection yet — possible future stretch via measure-pulse tracking). Tuning: SLOW_BIAS, PRIOR_BPM/SIGMA, comb weights.

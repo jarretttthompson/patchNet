@@ -6,7 +6,9 @@ import { isNative } from "./platform/index";
 import { saveTextFile, openTextFile } from "./platform/fs";
 
 import { initCrtOverlayScroll } from "./crtOverlaySync";
+import "./runtime/gl/glSelfTest"; // registers window.__pnGLTest (Phase 1 WebGL core verify hook)
 import { PatchGraph } from "./graph/PatchGraph";
+import { installPerfHud, attachGraph } from "./diagnostics/PerfHud";
 import { renderObject, autoFitInlineArgsWidth, buildOdometerContent } from "./canvas/ObjectRenderer";
 import { CableRenderer } from "./canvas/CableRenderer";
 import { CanvasController } from "./canvas/CanvasController";
@@ -30,6 +32,7 @@ import { CodeboxController } from "./canvas/CodeboxController";
 import { CANVAS_LEFT_GUTTER_PX, CANVAS_TOP_GUTTER_PX } from "./canvas/canvasSpace";
 import { CanvasRulers } from "./canvas/CanvasRulers";
 import { getZoom } from "./canvas/zoomState";
+import { installBrowserZoomGuard } from "./preventBrowserZoom";
 import { getPatchMode, setPatchModeState } from "./canvas/patchModeState";
 import { getSnap, setSnap } from "./canvas/snapState";
 import { getObjectDef, bufferRange } from "./graph/objectDefs";
@@ -72,6 +75,9 @@ function requireElement<T extends Element>(
 // ── DOM refs ────────────────────────────────────────────────────────────────
 
 const canvasArea = requireElement<HTMLDivElement>("[data-canvas-root]");
+// Block accidental browser page-zoom (trackpad pinch, Cmd +/-) that scales
+// the whole UI and hides the toolbar. patchNet's own canvas zoom is untouched.
+installBrowserZoomGuard();
 initCrtOverlayScroll(canvasArea);
 const textArea = requireElement<HTMLTextAreaElement>("[data-text-panel]");
 const objectCount = requireElement<HTMLSpanElement>("[data-object-count]");
@@ -92,6 +98,10 @@ panGroup.style.left = `${CANVAS_LEFT_GUTTER_PX}px`;
 panGroup.style.top = `${CANVAS_TOP_GUTTER_PX}px`;
 canvasArea.appendChild(panGroup);
 
+// Phase 0 freeze diagnostics. Installed early (before patch autoload) so
+// boot-time WebGL contexts are counted. Graph wired below once it exists.
+if (import.meta.env.DEV) installPerfHud();
+
 // ── Graph ────────────────────────────────────────────────────────────────────
 
 const graph = new PatchGraph();
@@ -107,16 +117,16 @@ registerSession({ id: "main", graph, oic: objectInteraction });
 const codeboxController = new CodeboxController(
   graph,
   (fromNodeId, outlet) => {
-    for (const edge of graph.getEdges()) {
-      if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== outlet) continue;
+    for (const edge of graph.edgesFrom(fromNodeId)) {
+      if (edge.fromOutlet !== outlet) continue;
       const target = graph.nodes.get(edge.toNodeId);
       if (!target) continue;
       objectInteraction.deliverBang(target, edge.toInlet);
     }
   },
   (fromNodeId, outlet, value) => {
-    for (const edge of graph.getEdges()) {
-      if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== outlet) continue;
+    for (const edge of graph.edgesFrom(fromNodeId)) {
+      if (edge.fromOutlet !== outlet) continue;
       const target = graph.nodes.get(edge.toNodeId);
       if (!target) continue;
       objectInteraction.deliverMessageValue(target, edge.toInlet, value);
@@ -223,8 +233,8 @@ peerRegistry.setNetReceiveEmit((nodeId, payload) => {
   // Bang → empty string handled by deliverBang; everything else fires through fireOutlet.
   if (payload === null) {
     // Bang: walk edges manually since fireOutlet only carries string values.
-    for (const edge of graph.getEdges()) {
-      if (edge.fromNodeId !== nodeId || edge.fromOutlet !== 0) continue;
+    for (const edge of graph.edgesFrom(nodeId)) {
+      if (edge.fromOutlet !== 0) continue;
       const target = graph.nodes.get(edge.toNodeId);
       if (!target) continue;
       objectInteraction.deliverBang(target, edge.toInlet);
@@ -310,6 +320,49 @@ let meterRafId = 0;
 // frame (e.g. popup open but not yet fullscreen). 8ms window covers 60–120fps.
 let lastControlTickMs = 0;
 
+// Phase-breakdown timers for tickAudioControl (DEV-only). The popup/main HUDs
+// time the whole tick (ctrl ~18ms steady, ~495ms spikes) but can't say which
+// sub-phase costs it. This splits the tick into named phases and tracks
+// calls/total/max per phase. Dump from the console after reproducing a spike:
+//   window.__ctrlphases.snapshot()   // console.table + returns the object
+//   window.__ctrlphases.reset()
+interface CtrlPhaseStat { calls: number; total: number; max: number; }
+const ctrlPhases: Record<string, CtrlPhaseStat> = Object.create(null) as Record<string, CtrlPhaseStat>;
+const CTRL_PHASE_TIMING = import.meta.env.DEV;
+function ctrlPhase<T>(name: string, fn: () => T): T {
+  if (!CTRL_PHASE_TIMING) return fn();
+  const t0 = performance.now();
+  const r = fn();
+  const dt = performance.now() - t0;
+  let s = ctrlPhases[name];
+  if (!s) s = ctrlPhases[name] = { calls: 0, total: 0, max: 0 };
+  s.calls++;
+  s.total += dt;
+  if (dt > s.max) s.max = dt;
+  return r;
+}
+if (import.meta.env.DEV) {
+  (window as unknown as { __ctrlphases: unknown }).__ctrlphases = {
+    snapshot() {
+      const out: Record<string, { calls: number; avgMs: number; maxMs: number; totalMs: number }> = {};
+      for (const k in ctrlPhases) {
+        const s = ctrlPhases[k];
+        out[k] = {
+          calls: s.calls,
+          avgMs: s.calls ? +(s.total / s.calls).toFixed(3) : 0,
+          maxMs: +s.max.toFixed(3),
+          totalMs: +s.total.toFixed(1),
+        };
+      }
+      console.table(out);
+      return out;
+    },
+    reset() {
+      for (const k in ctrlPhases) delete ctrlPhases[k];
+    },
+  };
+}
+
 /**
  * Read FFT data, propagate band values downstream, and flush ADSR completions.
  * This is the audio-reactivity control plane — it must run at ~60fps regardless
@@ -325,33 +378,95 @@ let lastControlTickMs = 0;
  * The lastControlTickMs guard ensures the work runs at most once per ~8ms even
  * when both call sites are active simultaneously.
  */
+// Per-frame node-element cache. render() tears down and recreates every
+// .patch-object on each "change", so a cached element that fails isConnected
+// was replaced and is re-queried. While the patch runs unchanged (changes/s ~0)
+// every lookup is a Map hit, replacing the full-DOM querySelector scans that
+// dominated the audio-control tick.
+const nodeElCache = new Map<string, HTMLElement>();
+function nodeEl(nodeId: string): HTMLElement | null {
+  const cached = nodeElCache.get(nodeId);
+  if (cached && cached.isConnected) return cached;
+  const el = panGroup.querySelector<HTMLElement>(`[data-node-id="${nodeId}"]`);
+  if (el) nodeElCache.set(nodeId, el);
+  else nodeElCache.delete(nodeId);
+  return el;
+}
+
+/**
+ * Push per-node analysis values (spectral~ descriptors, env~ envelope, …) out
+ * their outlets to whatever they're cabled to. Mirrors the fft~ band-value
+ * propagation: float/integer targets store + fire, message targets update
+ * content + fire, processor targets run their own inlet handler so the value
+ * is transformed before forwarding.
+ */
+function pushAnalysisOutlets(valuesById: Map<string, readonly number[]>): void {
+  for (const [nodeId, values] of valuesById) {
+    for (const edge of graph.edgesFrom(nodeId)) {
+      const val = values[edge.fromOutlet];
+      // Skip absent slots and non-finite sentinels (e.g. beat~ marks its bang
+      // outlet with NaN since that's fired separately, not pushed as a float).
+      if (val === undefined || !Number.isFinite(val)) continue;
+      const formatted = val.toFixed(4);
+      const targetNode = graph.nodes.get(edge.toNodeId);
+      if (!targetNode) continue;
+
+      const targetEl = nodeEl(edge.toNodeId);
+
+      if (targetNode.type === "float" || targetNode.type === "integer") {
+        const isFloat = targetNode.type === "float";
+        const stored = isFloat ? formatted : String(Math.trunc(val));
+        targetNode.args[0] = stored;
+        const odo = targetEl?.querySelector<HTMLElement>(".pn-odometer");
+        if (odo) buildOdometerContent(odo, isFloat ? val : Math.trunc(val), isFloat, null);
+        if (edge.toInlet === 0) {
+          objectInteraction.fireOutlet(edge.toNodeId, 0, stored);
+        }
+      } else if (targetNode.type === "message") {
+        targetNode.args[0] = formatted;
+        const contentEl = targetEl?.querySelector(".patch-object-message-content");
+        if (contentEl) contentEl.textContent = formatted;
+        objectInteraction.fireOutlet(edge.toNodeId, 0, formatted);
+      } else {
+        objectInteraction.deliverMessageValue(targetNode, edge.toInlet, formatted);
+      }
+    }
+  }
+}
+
 function tickAudioControl(): void {
   if (!audioGraph) return;
   const now = performance.now();
   if (now - lastControlTickMs < 8) return;
   lastControlTickMs = now;
 
-  audioGraph.mountFftNodes(panGroup);
-  audioGraph.updateFftDisplay(panGroup);
-  audioGraph.flushAdsrCompletions(now);
+  const ag = audioGraph;
+  ctrlPhase("mountFft",        () => ag.mountFftNodes(panGroup));
+  ctrlPhase("updateFft",       () => ag.updateFftDisplay(panGroup));
+  ctrlPhase("mountSpectral",   () => ag.mountSpectralNodes(panGroup));
+  ctrlPhase("updateSpectral",  () => ag.updateSpectralDisplay(panGroup));
+  ctrlPhase("updateEnv",       () => ag.updateEnvDisplay(panGroup));
+  ctrlPhase("updatePitch",     () => ag.updatePitchDisplay(panGroup));
+  ctrlPhase("mountChroma",     () => ag.mountChromaNodes(panGroup));
+  ctrlPhase("updateChroma",    () => ag.updateChromaDisplay());
+  ctrlPhase("updateBeat",      () => ag.updateBeatDisplay(panGroup));
+  ctrlPhase("flushAdsr",       () => ag.flushAdsrCompletions(now));
 
   // Push fft~ band values: update the directly-connected node's display,
   // then fire its outlet so the full downstream chain propagates.
   // Avoids graph.emit (no 60fps re-render) and avoids template contamination
   // in message boxes (deliverMessageValue would lock node.args to first value).
-  const fftBands = audioGraph.getFftBandLevels();
+  ctrlPhase("fftFanout", () => {
+  const fftBands = audioGraph!.getFftBandLevels();
   for (const [nodeId, bands] of fftBands) {
-    for (const edge of graph.getEdges()) {
-      if (edge.fromNodeId !== nodeId) continue;
+    for (const edge of graph.edgesFrom(nodeId)) {
       const val = bands[edge.fromOutlet];
       if (val === undefined) continue;
       const formatted = val.toFixed(4);
       const targetNode = graph.nodes.get(edge.toNodeId);
       if (!targetNode) continue;
 
-      const targetEl = panGroup.querySelector<HTMLElement>(
-        `[data-node-id="${edge.toNodeId}"]`,
-      );
+      const targetEl = nodeEl(edge.toNodeId);
 
       if (targetNode.type === "float" || targetNode.type === "integer") {
         const isFloat = targetNode.type === "float";
@@ -375,25 +490,38 @@ function tickAudioControl(): void {
       }
     }
   }
+  });
+  // Push analysis-node descriptor values out their outlets — same propagation
+  // path as fft~ band levels (update target display, fire downstream chain).
+  ctrlPhase("pushSpectral", () => pushAnalysisOutlets(ag.getSpectralValues()));
+  ctrlPhase("pushEnv",      () => pushAnalysisOutlets(ag.getEnvValues()));
+  ctrlPhase("pushPitch",    () => pushAnalysisOutlets(ag.getPitchValues()));
+  ctrlPhase("pushChroma",   () => pushAnalysisOutlets(ag.getChromaValues()));
+  ctrlPhase("pushBeat",     () => pushAnalysisOutlets(ag.getBeatValues()));
+  // beat~ outlet 2 is a bang — fire it on each detected beat.
+  ctrlPhase("beatTriggers", () => {
+    for (const nodeId of ag.consumeBeatTriggers()) {
+      objectInteraction.fireBang(nodeId, 2);
+    }
+  });
+
   // Push buffer~ position values out the position outlet (last outlet) and
   // repaint each body waveform with the current cursor.
   // Stereo mode → outlet index 2; mono mode → outlet index 1.
-  const bufferPositions = audioGraph.getBufferPositions();
+  ctrlPhase("bufferPositions", () => {
+  const bufferPositions = ag.getBufferPositions();
   for (const [nodeId, pos] of bufferPositions) {
     const sourceNode = graph.nodes.get(nodeId);
     if (!sourceNode) continue;
-    const bn = audioGraph.getBufferNode(nodeId);
+    const bn = ag.getBufferNode(nodeId);
     if (bn) drawBufferWaveform(nodeId, bn.getPeaks(), bn.bufferLength, pos, bn.state, bufferRange(sourceNode.args));
     const posOutlet = sourceNode.outlets.length - 1;
     const formatted = pos.toFixed(4);
-    for (const edge of graph.getEdges()) {
-      if (edge.fromNodeId !== nodeId) continue;
+    for (const edge of graph.edgesFrom(nodeId)) {
       if (edge.fromOutlet !== posOutlet) continue;
       const targetNode = graph.nodes.get(edge.toNodeId);
       if (!targetNode) continue;
-      const targetEl = panGroup.querySelector<HTMLElement>(
-        `[data-node-id="${edge.toNodeId}"]`,
-      );
+      const targetEl = nodeEl(edge.toNodeId);
       if (targetNode.type === "float" || targetNode.type === "integer") {
         const isFloat = targetNode.type === "float";
         const stored  = isFloat ? formatted : String(Math.trunc(pos));
@@ -413,10 +541,11 @@ function tickAudioControl(): void {
       }
     }
   }
+  });
 }
 
 function startMeterLoop(): void {
-  panGroup.querySelectorAll<HTMLElement>('[data-node-type="fft~"]').forEach(
+  panGroup.querySelectorAll<HTMLElement>('[data-node-type="fft~"], [data-node-type="spectral~"], [data-node-type="chroma~"]').forEach(
     el => el.setAttribute("data-dsp-active", "true"),
   );
   const tick = () => {
@@ -452,7 +581,7 @@ function startMeterLoop(): void {
 function stopMeterLoop(): void {
   cancelAnimationFrame(meterRafId);
   meterRafId = 0;
-  panGroup.querySelectorAll<HTMLElement>('[data-node-type="fft~"]').forEach(
+  panGroup.querySelectorAll<HTMLElement>('[data-node-type="fft~"], [data-node-type="spectral~"], [data-node-type="chroma~"]').forEach(
     el => el.removeAttribute("data-dsp-active"),
   );
   panGroup.querySelectorAll<HTMLElement>('[data-node-type$="~"]').forEach(el => {
@@ -1093,7 +1222,26 @@ graph.on("change", render);
 graph.on("change", () => subPatchManager.mountPresentationPanels(panGroup));
 graph.on("change", () => subPatchManager.syncTabs());
 graph.on("change", () => objectInteraction.reapplyTransientState());
-graph.on("display", syncTextPanel);
+
+// The "display" event is a pure UI mirror (text panel only) with no effect on
+// audio or propagation. It is fired synchronously from inside the audio-control
+// fan-out — e.g. every auto-mode ezScale that sees a new min/max extreme emits
+// it once per value. Running syncTextPanel() (a full serializeForDisplay over
+// every object) on each emit meant N full-graph serializations per ~8ms tick,
+// which dominated the control-tick cost (steady ~17ms, spikes to ~250ms+).
+// Coalesce to a single sync per animation frame: the text panel can't usefully
+// update faster than a frame anyway, and structural edits still sync eagerly
+// via the "change" → render() path.
+let displaySyncScheduled = false;
+function scheduleTextPanelSync(): void {
+  if (displaySyncScheduled) return;
+  displaySyncScheduled = true;
+  requestAnimationFrame(() => {
+    displaySyncScheduled = false;
+    syncTextPanel();
+  });
+}
+graph.on("display", scheduleTextPanelSync);
 
 // ── Text panel → canvas (bidirectional sync) ─────────────────────────────────
 
@@ -1175,7 +1323,12 @@ toolbarCollapseBtn?.addEventListener("click", toggleToolbarCollapse);
 const STORAGE_KEY = "patchnet-patch";
 
 interface SavedScratchTab { id: string; label: string; content: string; }
-interface SavedTabsV1 { v: 1; main: string; scratchTabs: SavedScratchTab[]; }
+interface SavedView { left: number; top: number; zoom: number; }
+interface SavedTabsV1 { v: 1; main: string; scratchTabs: SavedScratchTab[]; view?: SavedView; }
+
+/** View captured from the saved payload during load, applied after the first
+ *  render so the user lands where they left off instead of being re-centered. */
+let pendingRestoreView: SavedView | null = null;
 
 function saveAllTabs(): void {
   try {
@@ -1187,6 +1340,7 @@ function saveAllTabs(): void {
         label: t.label,
         content: t.session.serialize(),
       })),
+      view: tabManager.getMainViewState(),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   } catch {
@@ -1208,6 +1362,15 @@ function loadAllTabs(): boolean {
 
   try {
     if (payload) {
+      // Stash the saved view BEFORE deserialize — deserialize fires a "change"
+      // that calls saveAllTabs and would otherwise overwrite the stored view
+      // with the current (not-yet-restored) one.
+      if (payload.view &&
+          Number.isFinite(payload.view.left) &&
+          Number.isFinite(payload.view.top) &&
+          Number.isFinite(payload.view.zoom)) {
+        pendingRestoreView = payload.view;
+      }
       graph.deserialize(payload.main);
       for (const t of payload.scratchTabs) {
         // Track the highest seen scratch index so future nextScratchId() doesn't
@@ -1597,6 +1760,17 @@ shortcutsBtn?.addEventListener("click", () => actionListDialog.toggle());
   }
 
   requestAnimationFrame(() => {
+    // Returning to a saved session: restore the exact zoom + scroll the user
+    // left off at, then persist it so a subsequent reload (with no edits in
+    // between) still finds it.
+    if (pendingRestoreView) {
+      tabManager.restoreMainView(pendingRestoreView);
+      pendingRestoreView = null;
+      saveAllTabs();
+      return;
+    }
+
+    // Fresh patch (or no saved view): center on the patch's bounding box.
     const nodes = graph.getNodes();
     let centerX = 0;
     let centerY = 0;
@@ -1717,6 +1891,8 @@ if (import.meta.env.DEV) {
     configurable: false,
     writable: false,
   });
+  // Wire the graph "change" counter into the PerfHud installed above.
+  attachGraph(graph);
 }
 
 // Block cursor appearance is handled natively via caret-shape: block + caret-color

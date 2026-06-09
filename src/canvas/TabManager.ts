@@ -110,6 +110,33 @@ export class TabManager {
     if (userInitiated && tab.kind === "scratch") this.onScratchClose?.(id);
   }
 
+  /** Current view (scroll + zoom) of the MAIN tab, for cross-reload persistence.
+   *  Reads live DOM when main is the active tab; otherwise the value stashed in
+   *  the per-tab maps when the user last switched away from main. */
+  getMainViewState(): { left: number; top: number; zoom: number } {
+    if (this.activeId === "main") {
+      return {
+        left: this.canvasEl.scrollLeft,
+        top:  this.canvasEl.scrollTop,
+        zoom: this.mainCanvasController.getZoom(),
+      };
+    }
+    const scroll = this.scrollPositions.get("main") ?? { left: 0, top: 0 };
+    const zoom   = this.zoomLevels.get("main") ?? 1;
+    return { left: scroll.left, top: scroll.top, zoom };
+  }
+
+  /** Apply a saved view to the MAIN tab. Only meaningful while main is active
+   *  (used on patch load). Zoom first, then scroll — matching switchTo's order
+   *  so setZoom's anchor math doesn't drift the restored scroll. */
+  restoreMainView(view: { left: number; top: number; zoom: number }): void {
+    this.mainCanvasController.setZoom(view.zoom);
+    this.canvasEl.scrollLeft = view.left;
+    this.canvasEl.scrollTop  = view.top;
+    this.scrollPositions.set("main", { left: view.left, top: view.top });
+    this.zoomLevels.set("main", view.zoom);
+  }
+
   switchTo(id: string): void {
     // Save scroll and zoom for the departing tab
     this.scrollPositions.set(this.activeId, {

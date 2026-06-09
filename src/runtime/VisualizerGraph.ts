@@ -11,6 +11,7 @@ import { MediaImageNode } from "./MediaImageNode";
 import { ImageFXNode } from "./ImageFXNode";
 import { VfxCrtNode } from "./VfxCrtNode";
 import { VfxBlurNode } from "./VfxBlurNode";
+import { GlBlurNode } from "./GlBlurNode";
 import { ReaperVideoNode } from "./ReaperVideoNode";
 import { ShaderToyNode, SHADERTOY_PRESETS } from "./ShaderToyNode";
 import { FrameNode } from "./FrameNode";
@@ -51,6 +52,7 @@ export class VisualizerGraph {
   private imageFXNodes    = new Map<string, ImageFXNode>();       // patchNodeId → ImageFXNode
   private vfxCrtNodes     = new Map<string, VfxCrtNode>();        // patchNodeId → VfxCrtNode
   private vfxBlurNodes    = new Map<string, VfxBlurNode>();       // patchNodeId → VfxBlurNode
+  private glBlurNodes     = new Map<string, GlBlurNode>();        // patchNodeId → GlBlurNode
   private reaperVideoNodes = new Map<string, ReaperVideoNode>();  // patchNodeId → ReaperVideoNode
   private shaderToyNodes  = new Map<string, ShaderToyNode>();     // patchNodeId → ShaderToyNode
   private patchVizNodes   = new Map<string, PatchVizNode>();      // patchNodeId → PatchVizNode
@@ -371,6 +373,9 @@ export class VisualizerGraph {
     for (const [id, vfx] of this.vfxBlurNodes) {
       if (!activeIds.has(id)) { vfx.destroy(); this.vfxBlurNodes.delete(id); }
     }
+    for (const [id, gb] of this.glBlurNodes) {
+      if (!activeIds.has(id)) { gb.destroy(); this.glBlurNodes.delete(id); }
+    }
     for (const [id, rv] of this.reaperVideoNodes) {
       if (!activeIds.has(id)) { rv.destroy(); this.reaperVideoNodes.delete(id); }
     }
@@ -585,6 +590,12 @@ export class VisualizerGraph {
         this.vfxBlurNodes.set(node.id, vfx);
       }
 
+      if (node.type === "glBlur*" && !this.glBlurNodes.has(node.id)) {
+        const gb = new GlBlurNode();
+        this.syncGlBlurParams(gb, node);
+        this.glBlurNodes.set(node.id, gb);
+      }
+
       if (node.type === "reaperVideo*" && !this.reaperVideoNodes.has(node.id)) {
         const rv = new ReaperVideoNode();
         rv.compile(node.args[0] ?? "");
@@ -709,6 +720,10 @@ export class VisualizerGraph {
       const pn = this.graph.nodes.get(id);
       if (pn) this.syncVfxBlurParams(vfx, pn);
     }
+    for (const [id, gb] of this.glBlurNodes) {
+      const pn = this.graph.nodes.get(id);
+      if (pn) this.syncGlBlurParams(gb, pn);
+    }
     // vbuf*: rate / loop / range / maxSeconds live in args and must be pushed
     // to the runtime each sync — patch reload, drag-commit, message-routing,
     // and inline arg edits all reach the runtime through here.
@@ -725,12 +740,16 @@ export class VisualizerGraph {
     // reaperVideo: code arg is the only persisted state. The panel owns the
     // authoritative source and pushes compile() on every edit, so re-sync
     // here would be redundant. Creation path (above) seeds from args[0].
-    // One tunable *does* live in args (maxRenderDim) — push that each sync.
+    // Tunables that live in args (maxRenderDim, wet) — push each on sync so
+    // external changes (selector messages, attribute inspector, undo) take
+    // effect without the panel needing to mediate.
     for (const [id, rv] of this.reaperVideoNodes) {
       const pn = this.graph.nodes.get(id);
       if (!pn) continue;
       const mrd = parseInt(pn.args[4] ?? "360", 10);
       if (!isNaN(mrd)) rv.setMaxRenderDim(mrd);
+      const wet = parseFloat(pn.args[5] ?? "1");
+      if (Number.isFinite(wet)) rv.setWet(wet);
     }
     for (const [id, stn] of this.shaderToyNodes) {
       const pn = this.graph.nodes.get(id);
@@ -847,6 +866,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "vfxBlur*") {
           const up = this.vfxBlurNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
+        } else if (fromNode.type === "glBlur*") {
+          const up = this.glBlurNodes.get(edge.fromNodeId);
+          if (up) { vfx.setVfxInput(up); break; }
         } else if (fromNode.type === "reaperVideo*") {
           const up = this.reaperVideoNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
@@ -886,12 +908,57 @@ export class VisualizerGraph {
         } else if (fromNode.type === "vfxBlur*") {
           const up = this.vfxBlurNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
+        } else if (fromNode.type === "glBlur*") {
+          const up = this.glBlurNodes.get(edge.fromNodeId);
+          if (up) { vfx.setVfxInput(up); break; }
         } else if (fromNode.type === "reaperVideo*") {
           const up = this.reaperVideoNodes.get(edge.fromNodeId);
           if (up) { vfx.setVfxInput(up); break; }
         } else if (fromNode.type === "vbuf*") {
           const vbn = this.videoBufferNodes.get(edge.fromNodeId);
           if (vbn) { vfx.setInput(vbn.video); break; }
+        }
+      }
+    }
+
+    // ── Wire glBlur inputs from upstream mediaVideo or vFX chain ────
+    for (const [patchId, gb] of this.glBlurNodes) {
+      gb.setInput(null);
+      gb.setVfxInput(null);
+      for (const edge of this.graph.getEdges()) {
+        if (edge.toNodeId !== patchId) continue;
+        const fromNode = this.graph.nodes.get(edge.fromNodeId);
+        if (!fromNode) continue;
+        if (fromNode.type === "mediaVideo*") {
+          const mvn = this.mediaVideoNodes.get(edge.fromNodeId);
+          if (mvn) { gb.setInput(mvn.video); break; }
+        } else if (fromNode.type === "browser~*" && edge.fromOutlet === 2) {
+          const bn = this.getBrowserNode(edge.fromNodeId);
+          if (bn) { gb.setInput(bn.video); break; }
+        } else if (fromNode.type === "youtube~*" && edge.fromOutlet === 2) {
+          const yt = this.getYouTubeNode(edge.fromNodeId);
+          if (yt) { gb.setInput(yt.video); break; }
+        } else if (fromNode.type === "frame*") {
+          const fn = this.frameNodes.get(edge.fromNodeId);
+          if (fn) { gb.setInput(fn.video); break; }
+        } else if (fromNode.type === "cam*") {
+          const wn = this.webcamNodes.get(edge.fromNodeId);
+          if (wn) { gb.setInput(wn.video); break; }
+        } else if (fromNode.type === "vfxCRT*") {
+          const up = this.vfxCrtNodes.get(edge.fromNodeId);
+          if (up) { gb.setVfxInput(up); break; }
+        } else if (fromNode.type === "vfxBlur*") {
+          const up = this.vfxBlurNodes.get(edge.fromNodeId);
+          if (up) { gb.setVfxInput(up); break; }
+        } else if (fromNode.type === "glBlur*") {
+          const up = this.glBlurNodes.get(edge.fromNodeId);
+          if (up) { gb.setVfxInput(up); break; }
+        } else if (fromNode.type === "reaperVideo*") {
+          const up = this.reaperVideoNodes.get(edge.fromNodeId);
+          if (up) { gb.setVfxInput(up); break; }
+        } else if (fromNode.type === "vbuf*") {
+          const vbn = this.videoBufferNodes.get(edge.fromNodeId);
+          if (vbn) { gb.setInput(vbn.video); break; }
         }
       }
     }
@@ -933,6 +1000,9 @@ export class VisualizerGraph {
           if (up) rv.setInputAt(inletIdx, null, up);
         } else if (fromNode.type === "vfxBlur*") {
           const up = this.vfxBlurNodes.get(edge.fromNodeId);
+          if (up) rv.setInputAt(inletIdx, null, up);
+        } else if (fromNode.type === "glBlur*") {
+          const up = this.glBlurNodes.get(edge.fromNodeId);
           if (up) rv.setInputAt(inletIdx, null, up);
         } else if (fromNode.type === "reaperVideo*") {
           const up = this.reaperVideoNodes.get(edge.fromNodeId);
@@ -1003,6 +1073,9 @@ export class VisualizerGraph {
         } else if (fromNode.type === "vfxBlur*") {
           const vfx = this.vfxBlurNodes.get(edge.fromNodeId);
           if (vfx) layer.setVideoFX(vfx);
+        } else if (fromNode.type === "glBlur*") {
+          const gb = this.glBlurNodes.get(edge.fromNodeId);
+          if (gb) layer.setVideoFX(gb);
         } else if (fromNode.type === "reaperVideo*") {
           const rv = this.reaperVideoNodes.get(edge.fromNodeId);
           if (rv) layer.setVideoFX(rv);
@@ -1204,6 +1277,20 @@ export class VisualizerGraph {
     }
   }
 
+  deliverGlBlurMessage(nodeId: string, selector: string, args: string[]): void {
+    const gb = this.glBlurNodes.get(nodeId);
+    const pn = this.graph.nodes.get(nodeId);
+    if (!gb || !pn) return;
+    const val = parseFloat(args[0] ?? "0");
+    switch (selector) {
+      case "radius":
+        gb.radius = isNaN(val) ? 4 : Math.max(0, val);
+        pn.args[0] = String(gb.radius);
+        break;
+      default: return;
+    }
+  }
+
   deliverShaderToyMessage(nodeId: string, selector: string, args: string[]): void {
     const stn = this.shaderToyNodes.get(nodeId);
     const pn  = this.graph.nodes.get(nodeId);
@@ -1338,6 +1425,11 @@ export class VisualizerGraph {
     vfx.radius     = f(pn.args[0], 2);
     vfx.saturation = f(pn.args[1], 1);
     vfx.brightness = f(pn.args[2], 1);
+  }
+
+  private syncGlBlurParams(gb: GlBlurNode, pn: { args: string[] }): void {
+    const n = parseFloat(pn.args[0] ?? "");
+    gb.radius = isNaN(n) ? 4 : Math.max(0, n);
   }
 
   /** Maps HTMLVideoElement state to the `transport` arg (text panel / attr). */
@@ -1512,6 +1604,7 @@ export class VisualizerGraph {
     for (const fx  of this.imageFXNodes.values())    fx.destroy();
     for (const vfx of this.vfxCrtNodes.values())     vfx.destroy();
     for (const vfx of this.vfxBlurNodes.values())    vfx.destroy();
+    for (const gb  of this.glBlurNodes.values())     gb.destroy();
     for (const rv  of this.reaperVideoNodes.values()) rv.destroy();
     for (const stn of this.shaderToyNodes.values()) stn.destroy();
 
@@ -1527,6 +1620,7 @@ export class VisualizerGraph {
     this.imageFXNodes.clear();
     this.vfxCrtNodes.clear();
     this.vfxBlurNodes.clear();
+    this.glBlurNodes.clear();
     this.reaperVideoNodes.clear();
     this.shaderToyNodes.clear();
     this.videoIdbKeys.clear();

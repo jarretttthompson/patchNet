@@ -61,6 +61,14 @@ export class ReaperVideoPanel {
   private paramValuesByName = new Map<string, number>();
   private knobInputs = new Map<number, { range: HTMLInputElement; readout: HTMLSpanElement }>();
 
+  /** Wet/dry slider widgets. Built once at panel construction and never
+   *  rebuilt — unlike user knobs which rebuild on every recompile, this is
+   *  a host-level control whose identity doesn't depend on the script. */
+  private wetRange!: HTMLInputElement;
+  private wetReadout!: HTMLSpanElement;
+  /** "No //@params declared" hint, pinned below the wet row. */
+  private emptyHint!: HTMLDivElement;
+
   private currentHost: HTMLElement | null = null;
   private compileTimeout: number | null = null;
 
@@ -146,7 +154,28 @@ export class ReaperVideoPanel {
     this.knobPane = document.createElement("div");
     this.knobPane.className = "pn-rvideo-knobs";
 
-    knobCol.append(knobHeader, this.knobPane);
+    // Host-level wet/dry row — rendered directly below the user @param knobs
+    // (grid slot = paramCount) so its side-inlet nub aligns on the same
+    // 22px-header / 24px-row grid as the param nubs. Always present; doesn't
+    // rebuild when the user's params change. A scroll wrapper holds both the
+    // knob pane and the wet row so the header stays pinned while the rows
+    // scroll together as one unit.
+    const wetRow = this.buildWetRow();
+
+    // "No //@params declared" hint. Lives *below* the wet row (not inside
+    // knobPane) so it never displaces the wet row from grid slot 0 when the
+    // script has no params — that alignment is what keeps the wet inlet nub
+    // on the wet row. Shown/hidden by rebuildKnobPane.
+    this.emptyHint = document.createElement("div");
+    this.emptyHint.className = "pn-rvideo-empty";
+    this.emptyHint.textContent = "no //@params declared";
+    this.emptyHint.hidden = true;
+
+    const knobScroll = document.createElement("div");
+    knobScroll.className = "pn-rvideo-knob-scroll";
+    knobScroll.append(this.knobPane, wetRow, this.emptyHint);
+
+    knobCol.append(knobHeader, knobScroll);
 
     // Right column: code editor + status line.
     const codeCol = document.createElement("div");
@@ -220,6 +249,15 @@ export class ReaperVideoPanel {
     if (source !== current) {
       this.view.dispatch({ changes: { from: 0, to: current.length, insert: source } });
     }
+    // Refresh the host-level wet slider too — patch load, undo, attribute
+    // inspector, or a text-panel edit can all change args[5] under us.
+    if (this.wetRange) {
+      const w = this.readWetFromArgs();
+      if (parseFloat(this.wetRange.value) !== w) {
+        this.wetRange.value = String(w);
+        this.wetReadout.textContent = formatWetReadout(w);
+      }
+    }
     this.renderLockIcon();
     if (this.dropdownOpen) this.renderDropdown();
   }
@@ -268,6 +306,100 @@ export class ReaperVideoPanel {
     this.renderStatus(`compiled · ${n} param${n === 1 ? "" : "s"}`, "ok");
   }
 
+  // ── Host-level wet/dry control ─────────────────────────────────────
+
+  /** Build the persistent wet/dry row that sits below the user @param
+   *  knobs at grid slot = paramCount. The slider value lives in `args[5]`
+   *  (positional, persists with the patch); the runtime node reads it via
+   *  VisualizerGraph's per-sync push, and the panel pushes directly on drag
+   *  so scrubbing feels live. The "divider" above it is a CSS border-top on
+   *  the row itself (box-sizing: border-box) so it adds no vertical height —
+   *  keeping the row exactly ROW_H tall so the side-inlet nub formula lands
+   *  on its center. */
+  private buildWetRow(): HTMLDivElement {
+    const row = document.createElement("div");
+    row.className = "pn-rvideo-knob-row pn-rvideo-knob-row--wet";
+
+    // End-labelled fader: "dry" hugs the slider's low (left) end, "wet" hugs
+    // the high (right) end — so the direction of the mix is self-evident
+    // instead of relying on the user to remember which way is wet. The
+    // shared knob-label slot carries "dry" (right-aligned, so it sits right
+    // against the track); a small "wet" marker sits just past the track.
+    const wetTitle = "Wet/dry mix — applies after the script's frame fn.\nLeft (dry) = pure input / bypass, right (wet) = pure effect.\nDrive it from a cable on the left-side wet/dry inlet.";
+
+    const label = document.createElement("span");
+    label.className = "pn-rvideo-knob-label";
+    label.textContent = "dry";
+    label.title = wetTitle;
+
+    const range = document.createElement("input");
+    range.type = "range";
+    range.className = "pn-rvideo-knob-range";
+    range.min = "0";
+    range.max = "1";
+    range.step = "0.01";
+    range.value = String(this.readWetFromArgs());
+    range.title = wetTitle;
+
+    const wetEnd = document.createElement("span");
+    wetEnd.className = "pn-rvideo-wet-end";
+    wetEnd.textContent = "wet";
+    wetEnd.title = wetTitle;
+
+    const readout = document.createElement("span");
+    readout.className = "pn-rvideo-knob-readout";
+    readout.textContent = formatWetReadout(parseFloat(range.value));
+
+    range.addEventListener("input", () => {
+      const v = parseFloat(range.value);
+      if (!Number.isFinite(v)) return;
+      readout.textContent = formatWetReadout(v);
+      this.writeWetToArgs(v);
+      // Push directly to the runtime node so dragging is responsive — the
+      // periodic VisualizerGraph.sync also pushes wet, but that runs on
+      // graph "change" which we deliberately don't fire mid-drag.
+      this.getNode()?.setWet(v);
+      this.graph.emit("display");
+    });
+    range.addEventListener("change", () => {
+      // Commit the drag — emit "change" so the patch becomes dirty and
+      // autosave/undo notice the new wet value.
+      this.graph.emit("change");
+    });
+    range.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      range.value = "1";
+      readout.textContent = formatWetReadout(1);
+      this.writeWetToArgs(1);
+      this.getNode()?.setWet(1);
+      this.graph.emit("change");
+    });
+
+    row.append(label, range, wetEnd, readout);
+
+    this.wetRange = range;
+    this.wetReadout = readout;
+    return row;
+  }
+
+  /** Read wet from args[5], defaulting to 1 (full effect) when unset or
+   *  unparseable. Clamped to [0, 1]. */
+  private readWetFromArgs(): number {
+    const raw = parseFloat(this.patchNode.args[5] ?? "1");
+    if (!Number.isFinite(raw)) return 1;
+    return raw < 0 ? 0 : raw > 1 ? 1 : raw;
+  }
+
+  /** Write wet to args[5]. Returns true if the stored string changed, so
+   *  callers can gate their `display` emit (avoids spamming the text-panel
+   *  sync when an inlet delivers the same value repeatedly). */
+  private writeWetToArgs(v: number): boolean {
+    const next = String(v);
+    if ((this.patchNode.args[5] ?? "") === next) return false;
+    this.patchNode.args[5] = next;
+    return true;
+  }
+
   // ── Knobs ───────────────────────────────────────────────────────────
 
   private rebuildKnobPane(): void {
@@ -275,13 +407,13 @@ export class ReaperVideoPanel {
     this.knobInputs.clear();
 
     if (this.paramDecls.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "pn-rvideo-empty";
-      empty.textContent = "no //@params declared";
-      this.knobPane.appendChild(empty);
+      // No knobs — knobPane stays empty (height 0) so the wet row sits at
+      // grid slot 0. The hint shows below the wet row instead.
+      this.emptyHint.hidden = false;
       this.ensureMinHeight(0);
       return;
     }
+    this.emptyHint.hidden = true;
 
     for (let i = 0; i < this.paramDecls.length; i++) {
       const decl = this.paramDecls[i];
@@ -428,9 +560,10 @@ export class ReaperVideoPanel {
    *  bottom edge when the user resized the object down or the preset has more
    *  params than the current height accommodates. */
   private ensureMinHeight(paramCount: number): void {
-    // 22 (header) + N*24 (rows) + 22 (status line on right column)
-    // Floor: don't shrink a manually-widened object; only grow.
-    const needed = 22 + paramCount * 24 + 22;
+    // 22 (header) + (N+1)*24 (param rows + the always-present wet/dry row)
+    // + 22 (status line on right column). Floor: don't shrink a manually-
+    // widened object; only grow.
+    const needed = 22 + (paramCount + 1) * 24 + 22;
     const current = this.patchNode.height ?? 0;
     if (current < needed) {
       this.patchNode.height = needed;
@@ -446,7 +579,28 @@ export class ReaperVideoPanel {
   applyInletValue(inletIndex: number, rawValue: string): void {
     const sideStart = getReaperVideoSideInletStart(this.getSource());
     const slot = inletIndex - sideStart;
-    if (slot < 0 || slot >= this.paramDecls.length) return;
+    if (slot < 0) return;
+
+    // The wet/dry inlet is the slot directly after the last param (matches
+    // deriveReaperVideoPorts). Handle it before the param-range bounds check
+    // since it lives outside the paramDecls array.
+    if (slot === this.paramDecls.length) {
+      const num = Number.parseFloat(rawValue);
+      if (!Number.isFinite(num)) return;
+      const clamped = clamp(num, 0, 1);
+      if (this.wetRange) {
+        this.wetRange.value = String(clamped);
+        this.wetReadout.textContent = formatWetReadout(clamped);
+      }
+      // Always push to the runtime node (cheap, and the value may differ
+      // from args even when the string matches after rounding); only emit
+      // display when the persisted string actually changed.
+      this.getNode()?.setWet(clamped);
+      if (this.writeWetToArgs(clamped)) this.graph.emit("display");
+      return;
+    }
+
+    if (slot >= this.paramDecls.length) return;
     const decl = this.paramDecls[slot];
     const input = this.knobInputs.get(slot);
     if (!decl || !input) return;
@@ -809,4 +963,12 @@ function formatReadout(value: number, decl: ParamDecl): string {
     ? 3
     : Math.min(6, Math.max(0, Math.ceil(-Math.log10(decl.step))));
   return value.toFixed(decimals);
+}
+
+/** Wet/dry readout: percentage at integer precision so the slider reads as
+ *  "0–100%" rather than "0.00–1.00". Matches the conceptual model users
+ *  bring from DAW wet/dry knobs. */
+function formatWetReadout(value: number): string {
+  const pct = Math.round(value * 100);
+  return `${pct}%`;
 }

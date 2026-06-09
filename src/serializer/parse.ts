@@ -220,6 +220,12 @@ export function parsePatch(text: string): ParsedPatch {
           }
           args[3] = paramValues;
         }
+        // Normalize the trailing scalar args so old patches (saved before
+        // these existed) converge to the same canonical form as new ones —
+        // keeps parse → serialize → parse idempotent. args[4] = maxRenderDim,
+        // args[5] = wet/dry.
+        if (args[4] === undefined || args[4] === "") args[4] = "360";
+        if (args[5] === undefined || args[5] === "") args[5] = "1";
       }
 
       // ── buffer~ decode ──

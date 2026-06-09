@@ -418,7 +418,7 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
   },
 
   ezScale: {
-    description: "GUI scale object: type input/output bounds in the four fields, then drag the dual-handle range slider to pinch the active output sub-range. Input/output mapping is linear. Int-form output bounds (no dot) round the output to integers.",
+    description: "GUI scale object: type input/output bounds in the four fields, then drag the dual-handle range slider to pinch the active output sub-range. Input/output mapping is linear. Int-form output bounds (no dot) round the output to integers. The [~] toolbar button cycles a smoothing curve (off/linear/exponential/logarithmic/s-curve); ms field sets the smoothing time.",
     category: "ui",
     args: [
       { name: "inMin",  type: "float", default: "0",   description: "Input range low." },
@@ -432,6 +432,8 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { name: "collapsed",      type: "int", default: "0", hidden: true, description: "1 = body collapsed to toolbar + slider; field controls hidden." },
       { name: "expandedHeight", type: "int", default: "0", hidden: true, description: "Saved body height (px) so re-expanding restores the user's previous size." },
       { name: "inverted",       type: "int", default: "0", hidden: true, description: "1 = output bounds inverted (low maps to outMax, high maps to outMin). Auto-output respects this." },
+      { name: "smooth",         type: "int", default: "0", hidden: true, description: "Smoothing curve: 0=none (instant), 1=linear slew, 2=exponential one-pole, 3=logarithmic, 4=s-curve (smoothstep)." },
+      { name: "smoothMs",       type: "float", default: "100", hidden: true, description: "Smoothing time (ms). For exponential this is the time constant τ (output reaches ~63% in τ ms, ~99% in 5τ). For linear/log/s-curve it is the full traversal time." },
     ],
     messages: [
       { inlet: 0, selector: "float", description: "map value (using active slider sub-range) and output result" },
@@ -441,6 +443,9 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { inlet: 4, selector: "float", description: "set output bound max (clamps active range)" },
       { inlet: 5, selector: "float", description: "set active sub-range low (lo slider handle); clamps to bounds" },
       { inlet: 6, selector: "float", description: "set active sub-range high (hi slider handle); clamps to bounds" },
+      { inlet: 7, selector: "int",   description: "set smoothing curve: 0=none, 1=linear, 2=exponential, 3=logarithmic, 4=s-curve" },
+      { inlet: 8, selector: "float", description: "set smoothing time in ms (must be > 0; treated as 0 = instant when ≤ 0)" },
+      { inlet: 9, selector: "float", description: "set pre-scale multiplier (incoming values are multiplied by this before mapping)" },
     ],
     inlets: [
       { index: 0, type: "float", label: "value to scale",   temperature: "hot" },
@@ -450,6 +455,9 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { index: 4, type: "float", label: "output bound max", temperature: "cold" },
       { index: 5, type: "float", label: "active range lo (slider lo handle)", temperature: "cold" },
       { index: 6, type: "float", label: "active range hi (slider hi handle)", temperature: "cold" },
+      { index: 7, type: "float", label: "smoothing mode (0=off, 1=lin, 2=exp, 3=log, 4=s)", temperature: "cold" },
+      { index: 8, type: "float", label: "smoothing time (ms)",                              temperature: "cold" },
+      { index: 9, type: "float", label: "pre-scale multiplier",                             temperature: "cold" },
     ],
     outlets: [
       { index: 0, type: "float", label: "scaled value (active sub-range)" },
@@ -728,14 +736,126 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { index: 1, type: "signal", label: "right channel in" },
     ],
     outlets: [
-      { index: 0, type: "float", label: "low (20–250 Hz)" },
-      { index: 1, type: "float", label: "low-mid (250–2k Hz)" },
-      { index: 2, type: "float", label: "hi-mid (2k–6k Hz)" },
-      { index: 3, type: "float", label: "hi (6k–20k Hz)" },
+      { index: 0, type: "float", label: "low (20–250 Hz) · level 0–1, useful ~0.0–0.5 (set ezScale in max ~0.4)" },
+      { index: 1, type: "float", label: "low-mid (250–2k Hz) · level 0–1, useful ~0.0–0.5" },
+      { index: 2, type: "float", label: "hi-mid (2k–6k Hz) · level 0–1, useful ~0.0–0.4" },
+      { index: 3, type: "float", label: "hi (6k–20k Hz) · level 0–1, useful ~0.0–0.3" },
     ],
     defaultWidth:  160,
     defaultHeight: 200,
         derivePorts: deriveFftPorts,
+  },
+
+  "spectral~": {
+    description: "Spectral feature analyzer. Extracts audio descriptors from the live spectrum for mapping to video effects. Outlet 0 = overall level (more descriptors added in later build steps).",
+    category: "audio",
+    args: [],
+    messages: [],
+    inlets: [
+      { index: 0, type: "signal", label: "left channel in" },
+      { index: 1, type: "signal", label: "right channel in" },
+    ],
+    outlets: [
+      { index: 0, type: "float", label: "level — overall energy · range 0–1, useful ~0.0–0.3 (set ezScale in max ~0.25)" },
+      { index: 1, type: "float", label: "centroid — brightness (log-normalized) · range 0–1, useful ~0.2–0.7 for voice (set ezScale in 0.2–0.7)" },
+      { index: 2, type: "float", label: "flux — spectral change / onsets · range 0–1, peaks ~0.02–0.15 (set ezScale in max ~0.1)" },
+      { index: 3, type: "float", label: "flatness — tonal↔noisy · range 0–1, useful ~0.0–0.5 (tone≈0, hiss/noise→high; set ezScale in max ~0.4)" },
+      { index: 4, type: "float", label: "rolloff — 85% energy freq (dark↔bright, log) · range 0–1, useful ~0.2–0.8 (set ezScale in 0.2–0.8)" },
+      { index: 5, type: "float", label: "crest — peakiness (pure tone→high, noise→low) · range 0–1, useful ~0.2–0.9 (set ezScale in 0.2–0.9)" },
+      { index: 6, type: "float", label: "loudness — A-weighted (perceived level) · range 0–1, useful ~0.0–0.3 (set ezScale in max ~0.25)" },
+    ],
+    defaultWidth:  160,
+    defaultHeight: 220,
+  },
+
+  "env~": {
+    description: "Envelope follower. Outputs a smoothed RMS amplitude of the input with tunable attack/release ballistics — a clean VU-style control signal for driving video params. Args: attack ms, release ms.",
+    category: "audio",
+    args: [
+      { name: "attack",  type: "float", default: "10",  min: 0, max: 1000, step: 1,
+        description: "Attack time (ms) — how fast the envelope rises toward louder input." },
+      { name: "release", type: "float", default: "200", min: 0, max: 5000, step: 1,
+        description: "Release time (ms) — how slowly the envelope falls after the input drops." },
+    ],
+    messages: [],
+    inlets: [
+      { index: 0, type: "signal", label: "left channel in" },
+      { index: 1, type: "signal", label: "right channel in" },
+    ],
+    outlets: [
+      { index: 0, type: "float", label: "envelope — smoothed RMS · range 0–1, useful ~0.0–0.4 (set ezScale in max ~0.3)" },
+    ],
+    defaultWidth:  120,
+    defaultHeight: 64,
+  },
+
+  "beat~": {
+    description: "Beat / tempo tracker. SuperFlux onset envelope → autocorrelation tempo with a decaying histogram lock → onset-locked beat-phase PLL. Outputs BPM, beat phase, a beat bang, and a confidence value. Works best on steady rhythmic material.",
+    category: "audio",
+    args: [
+      { name: "tightness", type: "float", default: "1", min: 0.1, max: 8, step: 0.05,
+        description: "Tempo rigidity. Higher = bangs lock rigidly to the estimated tempo; lower = phase chases onsets more (more reactive but looser)." },
+      { name: "division", type: "int", default: "2", hidden: true,
+        description: "Output note value (set via the body button): 0=whole, 1=half, 2=quarter (beat), 3=eighth, 4=sixteenth." },
+    ],
+    messages: [],
+    inlets: [
+      { index: 0, type: "signal", label: "left channel in" },
+      { index: 1, type: "signal", label: "right channel in" },
+    ],
+    outlets: [
+      { index: 0, type: "float", label: "tempo (BPM) · ~60–180, locked/held (ezScale to taste)" },
+      { index: 1, type: "float", label: "beat phase · 0–1 ramp, resets to 0 on each beat (drive pulsing/easing)" },
+      { index: 2, type: "bang",  label: "beat · bang on each beat (→ trigger flashes / scene cuts)" },
+      { index: 3, type: "float", label: "confidence · 0–1 dominance of the locked tempo (gate visuals with > when low)" },
+    ],
+    defaultWidth:  130,
+    defaultHeight: 76,
+  },
+
+  "chroma~": {
+    description: "Chroma analyzer. Folds the spectrum into the 12 pitch classes (C..B), octave-wrapped, for harmonic / chord-aware visuals. Each outlet is one pitch class (0–1, per-frame normalized); the last outlet is the dominant pitch-class index (0–11, −1 when silent).",
+    category: "audio",
+    args: [],
+    messages: [],
+    inlets: [
+      { index: 0, type: "signal", label: "left channel in" },
+      { index: 1, type: "signal", label: "right channel in" },
+    ],
+    outlets: [
+      { index: 0,  type: "float", label: "C — pitch-class energy · 0–1 (per-frame, strongest class = 1)" },
+      { index: 1,  type: "float", label: "C# — pitch-class energy · 0–1" },
+      { index: 2,  type: "float", label: "D — pitch-class energy · 0–1" },
+      { index: 3,  type: "float", label: "D# — pitch-class energy · 0–1" },
+      { index: 4,  type: "float", label: "E — pitch-class energy · 0–1" },
+      { index: 5,  type: "float", label: "F — pitch-class energy · 0–1" },
+      { index: 6,  type: "float", label: "F# — pitch-class energy · 0–1" },
+      { index: 7,  type: "float", label: "G — pitch-class energy · 0–1" },
+      { index: 8,  type: "float", label: "G# — pitch-class energy · 0–1" },
+      { index: 9,  type: "float", label: "A — pitch-class energy · 0–1" },
+      { index: 10, type: "float", label: "A# — pitch-class energy · 0–1" },
+      { index: 11, type: "float", label: "B — pitch-class energy · 0–1" },
+      { index: 12, type: "float", label: "dominant pitch class · 0–11 (C=0…B=11), −1 when silent (×30 for hue°)" },
+    ],
+    defaultWidth:  200,
+    defaultHeight: 120,
+  },
+
+  "pitch~": {
+    description: "Pitch detector. Estimates the fundamental frequency (Hz) of the input via autocorrelation, plus a confidence value. Best on monophonic / clearly-pitched material (voice, single instrument).",
+    category: "audio",
+    args: [],
+    messages: [],
+    inlets: [
+      { index: 0, type: "signal", label: "left channel in" },
+      { index: 1, type: "signal", label: "right channel in" },
+    ],
+    outlets: [
+      { index: 0, type: "float", label: "frequency — fundamental pitch (Hz) · voice ~80–1000 Hz; held when unvoiced (ezScale to taste, e.g. in 80–800)" },
+      { index: 1, type: "float", label: "confidence — pitch clarity · range 0–1, clear pitch ~0.7–1.0 (gate downstream with > when low)" },
+    ],
+    defaultWidth:  130,
+    defaultHeight: 76,
   },
 
   "adc~": {
@@ -1323,9 +1443,12 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
         description: "Persisted knob state (JSON {paramName:value}, base64 on disk). One left-side inlet is added per //@param for external control." },
       { name: "maxRenderDim", type: "int", default: "360", min: 128, max: 4096, step: 1,
         description: "Max render dimension (px) — sources larger than this are downscaled before the frame fn runs. Default 360 hits ~57fps on gfx_evalrect-heavy presets (blurs) at 1080p sources. Raise for more detail at the cost of framerate (540=25fps, 720=14fps, 1080=6fps). Min 128 so the output canvas stays visible to downstream consumers." },
+      { name: "wet", type: "float", default: "1", min: 0, max: 1, step: 0.01,
+        description: "Wet/dry mix. 1.0 = pure effect (default), 0.0 = pure input (bypass), in between is a crossfade. Applied after the user's frame fn — independent of any //@param the script declares." },
     ],
     messages: [
       { inlet: 0, selector: "maxRenderDim", description: "set render cap: maxRenderDim <px> (0 = native resolution)" },
+      { inlet: 0, selector: "wet",          description: "set wet/dry mix: wet <0..1>" },
     ],
     inlets:  [{ index: 0, type: "media", label: "video in (← mediaVideo / vFX)" }],
     outlets: [{ index: 0, type: "media", label: "processed video out (→ layer / vFX)" }],
@@ -1351,6 +1474,22 @@ export const OBJECT_DEFS: Record<string, ObjectSpec> = {
       { inlet: 0, selector: "brightness", description: "set brightness (0.5–2)" },
     ],
     inlets:  [{ index: 0, type: "media", label: "video in (← mediaVideo)" }],
+    outlets: [{ index: 0, type: "media", label: "blurred video out (→ layer)" }],
+    defaultWidth:  100,
+    defaultHeight: 40,
+  },
+
+  "glBlur*": {
+    description: "GPU Gaussian blur video effect (WebGL2). Drop-in replacement for the CPU blur — runs at full source resolution and the cost is independent of radius. Sits between a video source and a layer. Inlet 0 takes the video and also accepts a bare float (or `radius <n>`) to set blur strength — cable an ezScale/analysis object here for audio-reactive blur.",
+    category: "visual",
+    args: [
+      { name: "radius", type: "float", default: "4", min: 0, max: 64, step: 0.5,
+        description: "Blur strength (tap-offset multiplier). 0 = none." },
+    ],
+    messages: [
+      { inlet: 0, selector: "radius", description: "set blur radius (bare float also accepted)" },
+    ],
+    inlets:  [{ index: 0, type: "media", label: "video in / radius (← source, ezScale)" }],
     outlets: [{ index: 0, type: "media", label: "blurred video out (→ layer)" }],
     defaultWidth:  100,
     defaultHeight: 40,
@@ -1630,6 +1769,7 @@ export function buildTypeAliases(defs: Record<string, ObjectSpec>): Record<strin
     shaderToy:     "shaderToy*",
     vfxCRT:        "vfxCRT*",
     vfxBlur:       "vfxBlur*",
+    glBlur:        "glBlur*",
     reaperVideo:   "reaperVideo*",
     imageFX:       "imageFX*",
     layer:         "layer*",
@@ -2134,6 +2274,9 @@ export function getReaperVideoSideInletStart(source: string | undefined): number
  *  - Inlets 1..K = secondary media inputs, one per unique `input_info(N>0, …)`
  *    reference. Their `sourceIndex` matches the N that code refers to.
  *  - Inlets K+1..K+P = left-side param inlets, one per `//@param`.
+ *  - Inlet K+P+1 = left-side wet/dry inlet (always present). Pinned last so
+ *    its nub lands on the wet/dry row, which the panel renders directly
+ *    below the param knobs at grid slot P.
  */
 export function deriveReaperVideoPorts(args: string[]): { inlets: PortDef[]; outlets: PortDef[] } {
   const source = args[0] ?? "";
@@ -2162,6 +2305,16 @@ export function deriveReaperVideoPorts(args: string[]): { inlets: PortDef[]; out
       label: p.label,
       side: "left",
     });
+  });
+
+  // Host-level wet/dry inlet — always present, regardless of how many
+  // //@params the script declares. Sits at the slot directly after the
+  // params so its nub aligns with the panel's wet/dry row.
+  inlets.push({
+    index: sideInletStart + params.length,
+    type: "any" as PortType,
+    label: "wet/dry (0..1)",
+    side: "left",
   });
 
   return { inlets, outlets };

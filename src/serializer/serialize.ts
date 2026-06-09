@@ -1,5 +1,6 @@
 import type { PatchGraph } from "../graph/PatchGraph";
 import type { PatchNode } from "../graph/PatchNode";
+import { OBJECT_DEFS } from "../graph/objectDefs";
 
 function encodeCodeboxSource(source: string): string {
   return btoa(unescape(encodeURIComponent(source)));
@@ -191,10 +192,37 @@ function serializeNode(node: PatchNode, opts: SerializeOptions = {}): string {
     const library = node.args[1] ?? "";
     const locked  = node.args[2] ?? "0";
     const paramValues = node.args[3] ?? "";
+    const maxRenderDim = node.args[4] ?? "360";
+    const wet = node.args[5] ?? "1";
     parts.push(emitBlob(source, "rv-src", undefined));
     parts.push(emitBlob(library, "rv-lib", "-"));
     parts.push(locked);
     parts.push(emitBlob(paramValues, "rv-vals", "-"));
+    // args[4] maxRenderDim, args[5] wet/dry — trailing scalars. The parser
+    // reads them back positionally (slice(5)); without these two pushes they
+    // were dropped, so wet/dry (and the render cap) didn't survive reload.
+    parts.push(maxRenderDim, wet);
+  } else if (node.type === "ezScale") {
+    // ezScale stores per-arg state at well-known positional indices, and
+    // some of those positions (auto, mult, collapsed, expandedHeight,
+    // inverted, smooth, smoothMs) only get written when the user touches
+    // them in the UI. If a user changes a later index without first
+    // populating earlier ones, the array becomes sparse — and spreading it
+    // through `parts.join(" ")` collapses the empty slots into runs of
+    // whitespace, which the parser then drops, shifting every later value
+    // into the wrong position on reload.
+    //
+    // Backfill any undefined slot up through the last spec arg with the
+    // spec's declared default so positions are preserved without changing
+    // observable behavior. (Treats null the same as undefined since
+    // `array[i] = x` past the end produces nulls when stringified.)
+    const def = OBJECT_DEFS.ezScale;
+    const filled: string[] = [];
+    for (let i = 0; i < def.args.length; i++) {
+      const v = node.args[i];
+      filled.push((v === undefined || v === null) ? (def.args[i].default ?? "0") : v);
+    }
+    parts.push(...filled);
   } else if (node.args.length > 0) {
     parts.push(...node.args);
   }

@@ -9,12 +9,54 @@ import { assignMissingNodeNames, isValidNodeName, nextNodeName, usedNodeNames, v
 type PatchGraphEvent = "change" | "display";
 type ChangeHandler = () => void;
 
+const EMPTY_EDGES: readonly PatchEdge[] = Object.freeze([]);
+
 export class PatchGraph {
   nodes = new Map<string, PatchNode>();
   edges = new Map<string, PatchEdge>();
 
   private readonly listeners = new Set<ChangeHandler>();
   private readonly displayListeners = new Set<ChangeHandler>();
+
+  // Adjacency index: nodeId → edges originating at / arriving at that node.
+  // Lazily rebuilt on first query after an edge change. Every edge mutation
+  // funnels through emit("change") (see emit), which nulls both maps. While a
+  // patch runs, changes/s is ~0, so rebuilds are effectively free relative to
+  // the thousands of per-frame edgesFrom() lookups on the audio-control path.
+  private fromIndex: Map<string, PatchEdge[]> | null = null;
+  private toIndex: Map<string, PatchEdge[]> | null = null;
+
+  private rebuildAdjacency(): void {
+    const from = new Map<string, PatchEdge[]>();
+    const to = new Map<string, PatchEdge[]>();
+    for (const edge of this.edges.values()) {
+      let f = from.get(edge.fromNodeId);
+      if (!f) from.set(edge.fromNodeId, (f = []));
+      f.push(edge);
+      let t = to.get(edge.toNodeId);
+      if (!t) to.set(edge.toNodeId, (t = []));
+      t.push(edge);
+    }
+    this.fromIndex = from;
+    this.toIndex = to;
+  }
+
+  /**
+   * Edges originating at `nodeId` — O(out-degree), not O(all edges).
+   * The returned array is the shared cached instance: treat it as read-only
+   * and do not mutate the graph while iterating it (the cache is rebuilt on
+   * the next "change", which replaces the array rather than mutating it).
+   */
+  edgesFrom(nodeId: string): readonly PatchEdge[] {
+    if (!this.fromIndex) this.rebuildAdjacency();
+    return this.fromIndex!.get(nodeId) ?? EMPTY_EDGES;
+  }
+
+  /** Edges arriving at `nodeId`. Same read-only contract as edgesFrom. */
+  edgesTo(nodeId: string): readonly PatchEdge[] {
+    if (!this.toIndex) this.rebuildAdjacency();
+    return this.toIndex!.get(nodeId) ?? EMPTY_EDGES;
+  }
 
   addNode(type: string, x: number, y: number, args: string[] = [], name?: string | null): PatchNode {
     type = canonicalizeType(type);
@@ -358,6 +400,11 @@ export class PatchGraph {
       return;
     }
     if (event === "change") {
+      // Any "change" may have mutated edges — drop the adjacency cache so the
+      // next edgesFrom/edgesTo rebuilds. Done before the batch early-return so
+      // mutations made inside a batchChange() still invalidate.
+      this.fromIndex = null;
+      this.toIndex = null;
       if (this.batchDepth > 0) {
         this.batchHadChange = true;
         return;

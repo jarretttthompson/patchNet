@@ -10,8 +10,8 @@
  * exactly that inset.
  */
 
-export const CANVAS_WIDTH_PX = 3000;
-export const CANVAS_HEIGHT_PX = 3000;
+export const CANVAS_WIDTH_PX = 6000;
+export const CANVAS_HEIGHT_PX = 6000;
 
 /** Pixels per grid cell (one whole-number unit on the rulers). */
 export const GRID_CELL_PX = 50;

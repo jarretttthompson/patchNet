@@ -518,6 +518,16 @@ function buildEzScaleBody(node: PatchNode): HTMLDivElement {
   const autoOn    = (node.args[6] ?? "1") !== "0";
   const collapsed = (node.args[8] ?? "0") === "1";
   const inverted  = (node.args[10] ?? "0") === "1";
+  // Smoothing mode (args[11]): 0=off, 1=linear, 2=exp, 3=log, 4=s-curve.
+  const smoothMode = Math.max(0, Math.min(4, parseInt(node.args[11] ?? "0", 10) || 0));
+  const smoothLabels = ["~off", "~lin", "~exp", "~log", "~s"] as const;
+  const smoothTitles = [
+    "Smoothing off — output snaps to target instantly. Click to cycle: off → linear → exponential → logarithmic → s-curve.",
+    "Linear slew — output moves at constant rate, reaching target in `ms`. Click to advance.",
+    "Exponential one-pole — output chases target, covering ~63% of remaining distance per `ms`. Click to advance.",
+    "Logarithmic — slow start, fast finish; reaches target in `ms`. Click to advance.",
+    "S-curve — eased in and out; reaches target in `ms`. Click to advance (back to off).",
+  ] as const;
 
   if (collapsed) wrap.classList.add("pn-ezscale--collapsed");
 
@@ -542,6 +552,18 @@ function buildEzScaleBody(node: PatchNode): HTMLDivElement {
   autoBtn.title = "Auto-detect input range from incoming values and output range from connected target.";
   toolbar.appendChild(autoBtn);
 
+  // Smoothing curve cycle button — click advances through off → lin → exp →
+  // log → s and wraps back. aria-pressed is true whenever smoothing is active
+  // so the chrome lights up like [auto]/[inv] when engaged.
+  const smoothBtn = document.createElement("button");
+  smoothBtn.type = "button";
+  smoothBtn.className = "pn-ezscale__smooth-btn";
+  smoothBtn.dataset.ezscaleAction = "cycle-smooth";
+  smoothBtn.setAttribute("aria-pressed", smoothMode > 0 ? "true" : "false");
+  smoothBtn.textContent = smoothLabels[smoothMode];
+  smoothBtn.title = smoothTitles[smoothMode];
+  toolbar.appendChild(smoothBtn);
+
   const collapseBtn = document.createElement("button");
   collapseBtn.type = "button";
   collapseBtn.className = "pn-ezscale__collapse-btn";
@@ -564,10 +586,17 @@ function buildEzScaleBody(node: PatchNode): HTMLDivElement {
   }
 
   // Pre-scale multiplier — visible whether expanded or collapsed.
-  const multStr = node.args[7] ?? "1";
+  const multStr    = node.args[7]  ?? "1";
+  const smoothMs   = node.args[12] ?? "100";
   const multRow = document.createElement("div");
   multRow.className = "pn-ezscale__mult-row";
   multRow.appendChild(mkField("× mult", "mult", multStr));
+  // ms field — visually dimmed when smoothing is off (mode 0). Still editable
+  // so the user can set a time before flipping smoothing on. Field key
+  // "smoothMs" is wired into commitEzScaleField's key→argIdx map.
+  const msCell = mkField("ms", "smoothMs", smoothMs);
+  if (smoothMode === 0) msCell.classList.add("pn-ezscale__cell--dim");
+  multRow.appendChild(msCell);
   wrap.appendChild(multRow);
 
   // Range slider — only interactive once outMin/outMax are both valid numbers.
@@ -1280,6 +1309,88 @@ function buildBody(node: PatchNode): HTMLDivElement {
             <div class="pn-fft-btn pn-fft-btn-a">A</div>
           </div>
         </div>
+      </div>`;
+
+  } else if (node.type === "spectral~") {
+    body.classList.add("pn-spectral-body");
+    // Descriptor readouts — one row per outlet. `data-spectral-idx` ties each
+    // value span to the outlet index AudioGraph.updateSpectralDisplay reads.
+    // Grows as later build steps add descriptors (centroid, flux, …).
+    const SPECTRAL_READOUTS: Array<{ idx: number; label: string }> = [
+      { idx: 0, label: "level" },
+      { idx: 1, label: "centroid" },
+      { idx: 2, label: "flux" },
+      { idx: 3, label: "flatness" },
+      { idx: 4, label: "rolloff" },
+      { idx: 5, label: "crest" },
+      { idx: 6, label: "loudness" },
+    ];
+    const readoutHtml = SPECTRAL_READOUTS
+      .map(r => `<div class="pn-spectral-row"><span class="pn-spectral-label">${r.label}</span><span class="pn-spectral-val" data-spectral-idx="${r.idx}">—</span></div>`)
+      .join("");
+    body.innerHTML = `
+      <div class="pn-spectral-device">
+        <div class="pn-spectral-top-label">SPECTRAL</div>
+        <div class="pn-spectral-screen-bezel">
+          <div class="pn-spectral-screen">
+            <div class="pn-spectral-mount" data-spectral-node-id="${node.id}"></div>
+          </div>
+        </div>
+        <div class="pn-spectral-readouts">${readoutHtml}</div>
+      </div>`;
+
+  } else if (node.type === "env~") {
+    body.classList.add("pn-env-body");
+    body.innerHTML = `
+      <div class="pn-env-device">
+        <div class="pn-env-row">
+          <span class="pn-env-top-label">ENV</span>
+          <span class="pn-env-val">0.00</span>
+        </div>
+        <div class="pn-env-bar"><div class="pn-env-bar-fill"></div></div>
+      </div>`;
+
+  } else if (node.type === "beat~") {
+    body.classList.add("pn-beat-body");
+    const divLabels = ["1/1", "1/2", "1/4", "1/8", "1/16"];
+    const divIdx = Math.max(0, Math.min(4, parseInt(node.args[1] ?? "2", 10) || 0));
+    body.innerHTML = `
+      <div class="pn-beat-device">
+        <div class="pn-beat-row">
+          <span class="pn-beat-top-label">BEAT</span>
+          <button type="button" class="pn-beat-div-btn" data-beat-action="cycle-div" title="Output note value — click to cycle (whole · half · quarter=beat · eighth · sixteenth)">${divLabels[divIdx]}</button>
+          <span><span class="pn-beat-bpm">—</span> <span class="pn-beat-unit">BPM</span></span>
+        </div>
+        <div class="pn-beat-phase"><div class="pn-beat-phase-fill"></div></div>
+        <div class="pn-beat-conf-row">
+          <span class="pn-beat-conf-label">conf</span>
+          <div class="pn-beat-conf"><div class="pn-beat-conf-fill"></div></div>
+        </div>
+      </div>`;
+
+  } else if (node.type === "chroma~") {
+    body.classList.add("pn-chroma-body");
+    body.innerHTML = `
+      <div class="pn-chroma-device">
+        <div class="pn-chroma-top-label">CHROMA</div>
+        <div class="pn-chroma-screen-bezel">
+          <div class="pn-chroma-screen">
+            <div class="pn-chroma-mount" data-chroma-node-id="${node.id}"></div>
+          </div>
+        </div>
+        <div class="pn-chroma-notes">${["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"].map(n => `<span>${n}</span>`).join("")}</div>
+      </div>`;
+
+  } else if (node.type === "pitch~") {
+    body.classList.add("pn-pitch-body");
+    body.innerHTML = `
+      <div class="pn-pitch-device">
+        <div class="pn-pitch-row">
+          <span class="pn-pitch-top-label">PITCH</span>
+          <span class="pn-pitch-note"></span>
+        </div>
+        <div class="pn-pitch-freq">—</div>
+        <div class="pn-pitch-conf"><div class="pn-pitch-conf-fill"></div></div>
       </div>`;
 
   } else if (node.type === "sequencer") {

@@ -80,6 +80,13 @@ export class ReaperVideoNode implements VideoFXSource {
   private maxRenderDim = 360;
   private static readonly MIN_RENDER_DIM = 128;
 
+  /** Wet/dry mix applied in the success path of process(). 1.0 = full effect
+   *  (default, back-compat), 0.0 = pure input (bypass), in between is a
+   *  crossfade. Lives outside the user's //@param system — the host owns it
+   *  so every reaperVideo* gets the feature regardless of which script is
+   *  loaded. */
+  private wet = 1;
+
   /** Scratch canvas used to downsample the primary input when it exceeds
    *  `maxRenderDim`. Reused across frames. */
   private inputScratch: HTMLCanvasElement | null = null;
@@ -120,6 +127,13 @@ export class ReaperVideoNode implements VideoFXSource {
   setMaxRenderDim(max: number): void {
     const n = max | 0;
     this.maxRenderDim = n === 0 ? 0 : Math.max(ReaperVideoNode.MIN_RENDER_DIM, n);
+  }
+
+  /** Set the host-level wet/dry mix. Clamped to [0, 1]; NaN preserves prior
+   *  value rather than zeroing the effect on a transient bad write. */
+  setWet(w: number): void {
+    if (!Number.isFinite(w)) return;
+    this.wet = w < 0 ? 0 : w > 1 ? 1 : w;
   }
 
   // ── Input wiring (matches VfxCrtNode/VfxBlurNode API) ────────────────────
@@ -220,6 +234,11 @@ export class ReaperVideoNode implements VideoFXSource {
     // is being replaced, and a stale compile-failure entry would suppress
     // retries even after the underlying error is fixed.
     this.host.invalidateEvalrectCache();
+    // Drop offscreen image buffers too — they're owned by the previous
+    // program's variable handles, and the new program may not target the
+    // same IDs. Leaving them around would pin memory and possibly let the
+    // new code accidentally read old pixels.
+    this.host.clearBuffers();
 
     return { ok: true, params: parsed.program.params };
   }
@@ -321,13 +340,37 @@ export class ReaperVideoNode implements VideoFXSource {
     try {
       this.frame(this.state, this.params, this.host, this.mem);
       this.runtimeError = "";
-      // Success — blit back buffer to the front canvas.
+      // Success — composite the wet/dry mix onto the front canvas.
+      //
+      // Crossfade strategy (chosen over per-pixel mix for speed): draw the
+      // dry input at full opacity, then draw the processed back buffer on
+      // top at `alpha = wet`. wet=1.0 fully covers (opaque effects) →
+      // back-compat with the previous behavior; wet=0.0 leaves dry visible;
+      // intermediate wet values produce a true alpha crossfade.
+      //
+      // Caveat: an effect that emits semi-transparent pixels will read out
+      // as `dry + wet*effect` rather than mathematical lerp. Acceptable for
+      // the common case (REAPER presets are overwhelmingly opaque); if a
+      // preset needs pixel-mix later we can branch on the back buffer's
+      // alpha distribution.
       if (this.canvas.width  !== w) this.canvas.width  = w;
       if (this.canvas.height !== h) this.canvas.height = h;
       this.ctx.globalCompositeOperation = "source-over";
       this.ctx.globalAlpha = 1;
       this.ctx.clearRect(0, 0, w, h);
-      this.ctx.drawImage(this.back, 0, 0, w, h);
+      if (this.wet < 1) {
+        // Dry first so wet can alpha-blend on top. When wet === 0 the wet
+        // pass is skipped entirely so the user sees a bit-exact passthrough
+        // (no unnecessary draw + no fractional alpha rounding).
+        this.ctx.drawImage(effectivePrimary, 0, 0, w, h);
+        if (this.wet > 0) {
+          this.ctx.globalAlpha = this.wet;
+          this.ctx.drawImage(this.back, 0, 0, w, h);
+          this.ctx.globalAlpha = 1;
+        }
+      } else {
+        this.ctx.drawImage(this.back, 0, 0, w, h);
+      }
     } catch (e) {
       // Latch the error; leave `this.canvas` untouched so downstream
       // consumers see the last successfully rendered frame rather than
@@ -341,6 +384,10 @@ export class ReaperVideoNode implements VideoFXSource {
   destroy(): void {
     this.clearInputs();
     this.frame = null;
+    // Release any offscreen buffers the script allocated — without this they
+    // hang around on the host until GC, and on a tab with many video nodes
+    // that adds up fast.
+    this.host.clearBuffers();
   }
 }
 

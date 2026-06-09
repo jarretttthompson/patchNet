@@ -195,6 +195,27 @@ export class ObjectInteractionController {
     startHi?: number;
   } | null = null;
 
+  /** Per-node smoothing state for ezScale. Created lazily on first smoothed
+   *  dispatch and removed when the node is deleted (see graph.on("change")
+   *  prune below) or when the user flips smoothing back to off. The rAF
+   *  loop reads `target` each tick — retargeting mid-flight just updates
+   *  `target` (and resets `startValue`/`startTime` for shape-based curves
+   *  that need a fresh anchor). */
+  private readonly ezScaleSmoothers = new Map<string, {
+    current: number;
+    target: number;
+    /** For log / s-curve: position when this leg started chasing. */
+    startValue: number;
+    /** ms timestamp (performance.now) when this leg started chasing. */
+    startTime: number;
+    /** Last rAF tick — used to compute dt for linear/exponential. */
+    lastTick: number;
+    /** Cached intMode for emission formatting. */
+    intMode: boolean;
+    /** Active rAF id, or 0 when no loop is running. */
+    rafId: number;
+  }>();
+
   private ezSliderDrag: {
     node: PatchNode;
     trackEl: HTMLElement;
@@ -276,6 +297,15 @@ export class ObjectInteractionController {
   private readonly externalPanels: HTMLElement[] = [];
   /** Node ids currently mid-flash — re-applied after render() rebuilds the DOM. */
   private readonly activeFlashes = new Set<string>();
+  /** Node ids currently showing an error pulse — re-applied after render().
+   *  Auto-clears via per-node TTL timers (see markNodeError). */
+  private readonly erroredNodes = new Set<string>();
+  private readonly nodeErrorTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** nodeId → resolved element cache for findNodeEl. render() rebuilds the DOM
+   *  on each "change", so a cached element that fails isConnected was replaced
+   *  and is re-resolved. Collapses the per-dispatch full-DOM querySelector scans
+   *  on the audio-control fan-out into Map hits while the patch runs unchanged. */
+  private readonly nodeElCache = new Map<string, HTMLElement>();
 
   constructor(
     private readonly panGroup: HTMLElement,
@@ -299,6 +329,16 @@ export class ObjectInteractionController {
       this.syncEzScaleAutoOutput();
       for (const id of this.timerStamps.keys()) {
         if (!this.graph.nodes.has(id)) this.timerStamps.delete(id);
+      }
+      // Tear down any ezScale smoothers whose nodes have been deleted, or
+      // whose owner switched smoothing back to off. The rAF loop itself also
+      // self-cancels in those cases; this just frees the Map entries.
+      for (const [id, s] of this.ezScaleSmoothers) {
+        const node = this.graph.nodes.get(id);
+        if (!node || node.type !== "ezScale" || parseInt(node.args[11] ?? "0", 10) <= 0) {
+          if (s.rafId) cancelAnimationFrame(s.rafId);
+          this.ezScaleSmoothers.delete(id);
+        }
       }
     });
 
@@ -744,6 +784,45 @@ export class ObjectInteractionController {
       }
     }
 
+    // ezScale smoothing cycle button — advances mode through 0→1→2→3→4→0.
+    // Cycling back to off cancels any in-flight smoother so the next input
+    // dispatches instantly (matches the legacy stateless behavior).
+    const ezSmoothBtn = (e.target as Element).closest<HTMLElement>('.pn-ezscale__smooth-btn[data-ezscale-action="cycle-smooth"]');
+    if (ezSmoothBtn) {
+      const objectElForBtn = ezSmoothBtn.closest<HTMLElement>(".patch-object");
+      const ezNode = objectElForBtn ? this.getNode(objectElForBtn) : null;
+      if (ezNode?.type === "ezScale") {
+        const cur  = parseInt(ezNode.args[11] ?? "0", 10) || 0;
+        const next = (cur + 1) % 5;
+        ezNode.args[11] = String(next);
+        if (next === 0) {
+          // Smoothing turned off — cancel any running rAF and clear state so
+          // a later re-enable starts cleanly from the next input value.
+          const s = this.ezScaleSmoothers.get(ezNode.id);
+          if (s?.rafId) cancelAnimationFrame(s.rafId);
+          this.ezScaleSmoothers.delete(ezNode.id);
+        }
+        this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
+    }
+
+    // beat~ output note-value cycle button (whole→half→quarter→eighth→16th).
+    const beatDivBtn = (e.target as Element).closest<HTMLElement>('.pn-beat-div-btn[data-beat-action="cycle-div"]');
+    if (beatDivBtn) {
+      const objectElForBtn = beatDivBtn.closest<HTMLElement>(".patch-object");
+      const beatNode = objectElForBtn ? this.getNode(objectElForBtn) : null;
+      if (beatNode?.type === "beat~") {
+        const cur  = parseInt(beatNode.args[1] ?? "2", 10) || 0;
+        const next = (cur + 1) % 5;
+        beatNode.args[1] = String(next);
+        this.graph.emit("change");
+        e.stopPropagation();
+        return;
+      }
+    }
+
     // ezScale collapse / expand toggle.
     const ezCollapseBtn = (e.target as Element).closest<HTMLElement>('.pn-ezscale__collapse-btn[data-ezscale-action="toggle-collapse"]');
     if (ezCollapseBtn) {
@@ -839,8 +918,8 @@ export class ObjectInteractionController {
 
   private dispatchBang(fromNodeId: string, fromOutlet: number): void {
     this.guardedFanout(fromNodeId, fromOutlet, () => {
-      for (const edge of this.graph.getEdges()) {
-        if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== fromOutlet) continue;
+      for (const edge of this.graph.edgesFrom(fromNodeId)) {
+        if (edge.fromOutlet !== fromOutlet) continue;
         const target = this.graph.nodes.get(edge.toNodeId);
         if (!target) continue;
         this.deliverBang(target, edge.toInlet);
@@ -861,8 +940,8 @@ export class ObjectInteractionController {
 
   private dispatchValue(fromNodeId: string, fromOutlet: number, value: string): void {
     this.guardedFanout(fromNodeId, fromOutlet, () => {
-      for (const edge of this.graph.getEdges()) {
-        if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== fromOutlet) continue;
+      for (const edge of this.graph.edgesFrom(fromNodeId)) {
+        if (edge.fromOutlet !== fromOutlet) continue;
         const target = this.graph.nodes.get(edge.toNodeId);
         if (!target) continue;
         this.deliverMessageValue(target, edge.toInlet, value);
@@ -898,6 +977,9 @@ export class ObjectInteractionController {
       this.dispatchCycleWarned = false;
     }
     if (this.dispatchVisited!.has(key)) {
+      // Pulse the offending node on the canvas (refreshes its TTL every tick
+      // the cycle persists; fades once the looping wire is removed).
+      this.markNodeError(fromNodeId);
       if (!this.dispatchCycleWarned) {
         const node = this.graph.nodes.get(fromNodeId);
         const desc = node ? `${node.type} (${fromNodeId.slice(0, 8)}…)` : fromNodeId;
@@ -1014,6 +1096,7 @@ export class ObjectInteractionController {
 
       case "vfxCRT*":
       case "vfxBlur*":
+      case "glBlur*":
         break; // bang has no effect on vFX nodes
 
       case "shaderToy*":
@@ -1587,7 +1670,58 @@ export class ObjectInteractionController {
             const t = inMax === inMin ? 0 : (scaledInput - inMin) / (inMax - inMin);
             const result = outLo + t * (outHi - outLo);
             const intMode = isIntForm(node.args[2] ?? "") && isIntForm(node.args[3] ?? "");
-            this.dispatchValue(node.id, 0, formatScaled(result, intMode));
+            // Smoothing branch: when smooth mode = 0 (off), dispatch the
+            // mapped value immediately (legacy behavior). Otherwise hand off
+            // to the smoother, which retargets and pumps values via rAF.
+            const smoothMode = parseInt(node.args[11] ?? "0", 10) || 0;
+            if (smoothMode <= 0) {
+              // Make sure any leftover smoother is cleared so future re-enables
+              // don't resume from a stale current value far from the new input.
+              const stale = this.ezScaleSmoothers.get(node.id);
+              if (stale?.rafId) cancelAnimationFrame(stale.rafId);
+              this.ezScaleSmoothers.delete(node.id);
+              this.dispatchValue(node.id, 0, formatScaled(result, intMode));
+            } else {
+              this.retargetEzScaleSmoother(node, result, smoothMode, intMode);
+            }
+          }
+        } else if (inlet === 7) {
+          // Set smoothing mode (0..4). Clamp + persist; cancel running rAF on
+          // mode = 0 so the smoother stops pumping. emit("change") re-renders
+          // the toolbar so the button label/aria-pressed update visually.
+          const n = parseInt(value, 10);
+          if (n === n /* not NaN */) {
+            const clamped = Math.max(0, Math.min(4, n));
+            node.args[11] = String(clamped);
+            if (clamped === 0) {
+              const s = this.ezScaleSmoothers.get(node.id);
+              if (s?.rafId) cancelAnimationFrame(s.rafId);
+              this.ezScaleSmoothers.delete(node.id);
+            }
+            this.graph.emit("change");
+          }
+        } else if (inlet === 8) {
+          // Set smoothing time (ms). Non-positive values are stored as-is but
+          // the smoother treats them as "instant" by snapping. The next input
+          // tick will read the new value — no need to restart a leg here.
+          const ms = parseFloat(value);
+          if (isFinite(ms)) {
+            node.args[12] = String(ms);
+            this.graph.emit("change");
+          }
+        } else if (inlet === 9) {
+          // Set pre-scale multiplier (args[7]). Cold: the value is applied on
+          // the next input tick on inlet 0. Patch the GUI × mult field in
+          // place so a streamed multiplier shows live without a full DOM
+          // rebuild (avoids undo/autosave churn from emit("change")). Don't
+          // clobber the field while the user is typing into it.
+          const m = parseFloat(value);
+          if (isFinite(m)) {
+            node.args[7] = value.trim();
+            const objectEl = this.panGroup.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`);
+            const multField = objectEl?.querySelector<HTMLInputElement>('input[data-ezscale-field="mult"]');
+            if (multField && document.activeElement !== multField) multField.value = node.args[7];
+            this.graph.emit("display");
           }
         } else if (inlet >= 1 && inlet <= 4) {
           if (parseFloat(value) === parseFloat(value) /* not NaN */) {
@@ -1608,6 +1742,10 @@ export class ObjectInteractionController {
               node.args[5] = intMode ? String(Math.round(hi)) : canonicalizeBound(String(hi), false);
               this.dispatchEzScaleRange(node);
               this.syncEzScaleSliderVisuals(node);
+              // Bounds moved under a running smoother — its trajectory
+              // anchors are now meaningless. Cancel + snap; next input
+              // re-seeds cleanly.
+              this.cancelEzScaleSmootherAndSnap(node);
             }
             this.graph.emit("display");
           }
@@ -1627,6 +1765,9 @@ export class ObjectInteractionController {
             node.args[argIdx] = intMode ? String(Math.round(clamped)) : canonicalizeBound(String(clamped), false);
             this.dispatchEzScaleRange(node);
             this.syncEzScaleSliderVisuals(node);
+            // Active sub-range moved — cancel any in-flight smoother so its
+            // next input dispatch re-seeds against the new range.
+            this.cancelEzScaleSmootherAndSnap(node);
             this.graph.emit("display");
           }
         }
@@ -1717,6 +1858,25 @@ export class ObjectInteractionController {
           const selector = tokens[0] ?? "";
           const args     = tokens.slice(1);
           this.visualizerGraph?.deliverVfxMessage(node.id, "vfxBlur*", selector, args);
+          this.graph.emit("display");
+        }
+        break;
+
+      case "glBlur*":
+        if (inlet === 0) {
+          const tokens = value.trim().split(/\s+/);
+          let selector: string;
+          let args: string[];
+          // A bare number sets radius directly — lets ezScale / analysis objects
+          // drive the blur for audio reactivity without a `radius` prefix.
+          if (tokens.length === 1 && tokens[0] !== "" && Number.isFinite(Number(tokens[0]))) {
+            selector = "radius";
+            args = [tokens[0]];
+          } else {
+            selector = tokens[0] ?? "";
+            args = tokens.slice(1);
+          }
+          this.visualizerGraph?.deliverGlBlurMessage(node.id, selector, args);
           this.graph.emit("display");
         }
         break;
@@ -2299,8 +2459,8 @@ export class ObjectInteractionController {
 
       // Find the type of whatever outlet 0 is connected to (first edge wins)
       let targetType: string | null = null;
-      for (const edge of this.graph.getEdges()) {
-        if (edge.fromNodeId === node.id && edge.fromOutlet === 0) {
+      for (const edge of this.graph.edgesFrom(node.id)) {
+        if (edge.fromOutlet === 0) {
           targetType = this.graph.nodes.get(edge.toNodeId)?.type ?? null;
           break;
         }
@@ -2470,14 +2630,19 @@ export class ObjectInteractionController {
 
   /** Searches panGroup then each external panel for an element by nodeId. */
   private findNodeEl(nodeId: string): HTMLElement | null {
+    const cached = this.nodeElCache.get(nodeId);
+    if (cached && cached.isConnected) return cached;
     const sel = `[data-node-id="${nodeId}"]`;
-    const inPanel = this.panGroup.querySelector<HTMLElement>(sel);
-    if (inPanel) return inPanel;
-    for (const panel of this.externalPanels) {
-      const found = panel.querySelector<HTMLElement>(sel);
-      if (found) return found;
+    let found = this.panGroup.querySelector<HTMLElement>(sel);
+    if (!found) {
+      for (const panel of this.externalPanels) {
+        found = panel.querySelector<HTMLElement>(sel);
+        if (found) break;
+      }
     }
-    return null;
+    if (found) this.nodeElCache.set(nodeId, found);
+    else this.nodeElCache.delete(nodeId);
+    return found;
   }
 
   private flashButton(nodeId: string): void {
@@ -2508,6 +2673,41 @@ export class ObjectInteractionController {
   /** Called after render() rebuilds the DOM so in-flight flash states survive. */
   reapplyTransientState(): void {
     for (const id of this.activeFlashes) this.applyFlashClass(id);
+    for (const id of this.erroredNodes) this.applyErrorClass(id);
+  }
+
+  // ── Node error indication ────────────────────────────────────────────
+  // A reusable per-node error channel: mark a node and it pulses on the
+  // canvas. Errors that keep re-occurring (e.g. a feedback cycle detected
+  // every control tick) refresh the TTL and stay lit; once they stop being
+  // reported the pulse fades on its own after `ttlMs`. Other runtime errors
+  // (shader compile failure, reaperVideo/js~ compile error, …) can route
+  // through this same API later.
+
+  /** Flag `nodeId` as errored. Re-call to keep it lit (refreshes the TTL). */
+  markNodeError(nodeId: string, ttlMs = 1500): void {
+    if (!this.erroredNodes.has(nodeId)) {
+      this.erroredNodes.add(nodeId);
+      this.applyErrorClass(nodeId);
+    }
+    const existing = this.nodeErrorTimers.get(nodeId);
+    if (existing) clearTimeout(existing);
+    this.nodeErrorTimers.set(nodeId, setTimeout(() => this.clearNodeError(nodeId), ttlMs));
+  }
+
+  /** Clear the error pulse on `nodeId` (auto-called when the TTL expires). */
+  clearNodeError(nodeId: string): void {
+    const timer = this.nodeErrorTimers.get(nodeId);
+    if (timer) { clearTimeout(timer); this.nodeErrorTimers.delete(nodeId); }
+    if (this.erroredNodes.delete(nodeId)) this.removeErrorClass(nodeId);
+  }
+
+  private applyErrorClass(nodeId: string): void {
+    for (const el of this.flashElements(nodeId)) el.classList.add("patch-object--error");
+  }
+
+  private removeErrorClass(nodeId: string): void {
+    for (const el of this.flashElements(nodeId)) el.classList.remove("patch-object--error");
   }
 
   private updateSliderFromEvent(e: MouseEvent): void {
@@ -2569,6 +2769,7 @@ export class ObjectInteractionController {
       if (edgeLo) edgeLo.textContent = formatThumbValue(newLo, intMode);
       if (edgeHi) edgeHi.textContent = formatThumbValue(newHi, intMode);
       this.dispatchEzScaleRange(node);
+      this.cancelEzScaleSmootherAndSnap(node);
       this.graph.emit("display");
       return;
     }
@@ -2618,6 +2819,9 @@ export class ObjectInteractionController {
     if (edgeLo) edgeLo.textContent = formatThumbValue(parseFloat(node.args[4] ?? String(outMin)), intMode);
     if (edgeHi) edgeHi.textContent = formatThumbValue(parseFloat(node.args[5] ?? String(outMax)), intMode);
     this.dispatchEzScaleRange(node);
+    // Slider drag mutated the active range — smoother's anchors are now
+    // stale, so drop it and let the next input dispatch re-seed.
+    this.cancelEzScaleSmootherAndSnap(node);
     this.graph.emit("display");
   }
 
@@ -2644,6 +2848,138 @@ export class ObjectInteractionController {
     const intMode = isIntForm(node.args[0] ?? "") && isIntForm(node.args[1] ?? "");
     const result = lo + t * (hi - lo);
     this.dispatchValue(node.id, 0, formatScaled(result, intMode));
+  }
+
+  /** Retarget (or initialize) the ezScale smoother for `node` to chase
+   *  `target`. Modes: 1=linear, 2=exponential one-pole, 3=logarithmic,
+   *  4=s-curve (smoothstep). Linear/exponential are stateless past
+   *  current/target/dt; logarithmic/s-curve re-anchor `startValue` +
+   *  `startTime` on every retarget so their shape stays correctly normalized
+   *  from the *new* leg's starting point. */
+  private retargetEzScaleSmoother(node: PatchNode, target: number, mode: number, intMode: boolean): void {
+    const now = performance.now();
+    let s = this.ezScaleSmoothers.get(node.id);
+    if (!s) {
+      // First leg: snap "current" to target so the first dispatch isn't a
+      // jarring sweep from 0 (or from whatever the bounds were last time).
+      // The smoother then immediately retargets to itself, which becomes a
+      // no-op pump that just emits the target value once.
+      s = {
+        current: target,
+        target,
+        startValue: target,
+        startTime: now,
+        lastTick: now,
+        intMode,
+        rafId: 0,
+      };
+      this.ezScaleSmoothers.set(node.id, s);
+      this.dispatchValue(node.id, 0, formatScaled(target, intMode));
+      return;
+    }
+    // Subsequent legs: retarget from current position. Re-anchor for shape-
+    // based curves so the new leg's progress is measured from `current`.
+    if (s.target === target && mode === parseInt(node.args[11] ?? "0", 10)) return;
+    s.target     = target;
+    s.startValue = s.current;
+    s.startTime  = now;
+    s.lastTick   = now;
+    s.intMode    = intMode;
+    if (!s.rafId) this.startEzScaleSmootherLoop(node);
+  }
+
+  /** Run the smoother's rAF pump until `current` reaches `target`. The pump
+   *  reads mode + smoothMs from args every tick so live edits to either take
+   *  effect mid-flight. Self-cancels when the node is gone, smoothing was
+   *  flipped to off, or |current - target| falls below the snap epsilon. */
+  private startEzScaleSmootherLoop(node: PatchNode): void {
+    const tick = () => {
+      const s = this.ezScaleSmoothers.get(node.id);
+      const live = this.graph.nodes.get(node.id);
+      if (!s || !live || live.type !== "ezScale") {
+        if (s) { s.rafId = 0; this.ezScaleSmoothers.delete(node.id); }
+        return;
+      }
+      const mode = parseInt(live.args[11] ?? "0", 10) || 0;
+      if (mode <= 0) {
+        // Smoothing was turned off mid-flight — emit target and stop. No
+        // need to chase further; the next input dispatch will fire instantly.
+        this.dispatchValue(node.id, 0, formatScaled(s.target, s.intMode));
+        s.rafId = 0;
+        this.ezScaleSmoothers.delete(node.id);
+        return;
+      }
+      const now = performance.now();
+      const dt  = Math.max(0, now - s.lastTick);
+      s.lastTick = now;
+
+      // Smoothing time in ms — ≤ 0 means instant (snap on this tick).
+      const msRaw = parseFloat(live.args[12] ?? "100");
+      const ms    = isFinite(msRaw) ? msRaw : 100;
+
+      const span = Math.abs(s.target - s.startValue);
+      // Snap epsilon: for intMode, anything inside ±0.5 will round to target
+      // already, so we can stop. For float, use 1e-6 of the leg span (or an
+      // absolute floor) so we don't dribble forever on floating-point noise.
+      const eps = s.intMode ? 0.5 : Math.max(1e-9, span * 1e-6);
+
+      let next: number;
+      if (ms <= 0) {
+        next = s.target;
+      } else if (mode === 1) {
+        // Linear slew — constant rate, full traversal in `ms`.
+        const step = span * (dt / ms);
+        const dir  = Math.sign(s.target - s.current);
+        next = s.current + dir * Math.min(Math.abs(s.target - s.current), step);
+      } else if (mode === 2) {
+        // Exponential one-pole — α = 1 - exp(-dt/τ), τ = ms. Frame-rate
+        // independent: covers a fixed fraction of remaining distance per ms.
+        const alpha = 1 - Math.exp(-dt / ms);
+        next = s.current + alpha * (s.target - s.current);
+      } else if (mode === 3) {
+        // Logarithmic — slow start, fast finish. Eased curve normalized over
+        // [startValue, target] across `ms`. `t` clamps so once we pass the
+        // duration we snap. log(1+9t)/log(10) is a clean log curve in [0,1].
+        const t = Math.min(1, Math.max(0, (now - s.startTime) / ms));
+        const eased = Math.log(1 + 9 * t) / Math.log(10);
+        next = s.startValue + eased * (s.target - s.startValue);
+      } else {
+        // Mode 4: s-curve (smoothstep) — slow at both ends, fast in middle.
+        const t = Math.min(1, Math.max(0, (now - s.startTime) / ms));
+        const eased = t * t * (3 - 2 * t);
+        next = s.startValue + eased * (s.target - s.startValue);
+      }
+
+      s.current = next;
+      const done = Math.abs(s.target - s.current) <= eps;
+      if (done) {
+        s.current = s.target;
+        this.dispatchValue(node.id, 0, formatScaled(s.target, s.intMode));
+        s.rafId = 0;
+        // Keep the smoother in the map so the next input retargets from
+        // `current` (= target) rather than re-snapping. It'll be torn down
+        // by the change-prune when the node goes away or smoothing flips off.
+        return;
+      }
+      this.dispatchValue(node.id, 0, formatScaled(s.current, s.intMode));
+      s.rafId = requestAnimationFrame(tick);
+    };
+    const s = this.ezScaleSmoothers.get(node.id);
+    if (s) s.rafId = requestAnimationFrame(tick);
+  }
+
+  /** Cancel any in-flight smoother for `node` and snap its tracked value to
+   *  the current mapped target. Called when bounds or the active sub-range
+   *  change mid-flight — recomputing the smoother's trajectory across the
+   *  bound change is gnarly and rarely what the user wants. Snapping keeps
+   *  downstream consumers from receiving stale-shaped values. */
+  private cancelEzScaleSmootherAndSnap(node: PatchNode): void {
+    const s = this.ezScaleSmoothers.get(node.id);
+    if (!s) return;
+    if (s.rafId) cancelAnimationFrame(s.rafId);
+    s.rafId = 0;
+    // Drop the entry — the next input dispatch will re-seed from scratch.
+    this.ezScaleSmoothers.delete(node.id);
   }
 
   private dispatchEzScaleRange(node: PatchNode): void {
@@ -2721,8 +3057,8 @@ export class ObjectInteractionController {
   ): Array<{ node: PatchNode; toInlet: number }> {
     if (depth > 5) return [];
     const out: Array<{ node: PatchNode; toInlet: number }> = [];
-    for (const edge of this.graph.getEdges()) {
-      if (edge.fromNodeId !== fromNodeId || edge.fromOutlet !== fromOutlet) continue;
+    for (const edge of this.graph.edgesFrom(fromNodeId)) {
+      if (edge.fromOutlet !== fromOutlet) continue;
       const target = this.graph.nodes.get(edge.toNodeId);
       if (!target) continue;
       if (target.type === "s") {
@@ -2820,8 +3156,8 @@ export class ObjectInteractionController {
   ): Array<{ node: PatchNode; fromOutlet: number }> {
     if (depth > 5) return [];
     const out: Array<{ node: PatchNode; fromOutlet: number }> = [];
-    for (const edge of this.graph.getEdges()) {
-      if (edge.toNodeId !== toNodeId || edge.toInlet !== toInlet) continue;
+    for (const edge of this.graph.edgesTo(toNodeId)) {
+      if (edge.toInlet !== toInlet) continue;
       const source = this.graph.nodes.get(edge.fromNodeId);
       if (!source) continue;
       if (source.type === "r") {
@@ -2888,6 +3224,14 @@ export class ObjectInteractionController {
       const params = extractReaperVideoParams(target.args[0] ?? "");
       const sideInlets = target.inlets.filter(p => p.side === "left").sort((a, b) => a.index - b.index);
       const sideIdx = sideInlets.findIndex(p => p.index === toInlet);
+      // The wet/dry inlet is the side-inlet just past the params (see
+      // deriveReaperVideoPorts). It's a fixed 0..1 mix, so an auto-mode
+      // ezScale wired into it should map to that range — without this an
+      // ezScale defaulting to 0..127 / 0..100 would pin the slider at 100%
+      // (every value > 1 clamps to 1 in applyInletValue).
+      if (sideIdx === params.length) {
+        return { min: 0, max: 1, isFloat: true };
+      }
       const param = sideIdx >= 0 ? params[sideIdx] : undefined;
       if (param && Number.isFinite(param.min) && Number.isFinite(param.max)) {
         return { min: param.min, max: param.max, isFloat: true };
@@ -2944,7 +3288,7 @@ export class ObjectInteractionController {
     if (!node || node.type !== "ezScale") return;
 
     const fieldKey = input.dataset.ezscaleField ?? "";
-    const argIdx = ({ inMin: 0, inMax: 1, outMin: 2, outMax: 3, mult: 7 } as Record<string, number>)[fieldKey];
+    const argIdx = ({ inMin: 0, inMax: 1, outMin: 2, outMax: 3, mult: 7, smoothMs: 12 } as Record<string, number>)[fieldKey];
     if (argIdx === undefined) return;
 
     const raw = input.value.trim();
@@ -2980,6 +3324,9 @@ export class ObjectInteractionController {
 
       node.args[4] = intMode ? String(Math.round(lo)) : canonicalizeBound(String(lo), false);
       node.args[5] = intMode ? String(Math.round(hi)) : canonicalizeBound(String(hi), false);
+      // Bounds changed via direct field edit — same logic as inlet 3/4:
+      // cancel any in-flight smoother so trajectory doesn't drag stale data.
+      this.cancelEzScaleSmootherAndSnap(node);
     }
 
     this.graph.emit("change");

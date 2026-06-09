@@ -67,6 +67,15 @@ export class LayerNode {
     this.rotZ    = rotZ;
   }
 
+  /** Short label of the active media kind — diagnostics only (popup perf HUD). */
+  get debugKind(): string {
+    if (this.videoFX)    return "vFX";
+    if (this.mediaVideo) return "video";
+    if (this.mediaImage) return "image";
+    if (this.mediaFX)    return "imgFX";
+    return "empty";
+  }
+
   setMediaVideo(node: MediaVideoSource | null): void { this.mediaVideo = node; this.mediaImage = null; this.mediaFX = null; this.videoFX = null; }
   setMediaImage(node: MediaImageNode | null): void { this.mediaImage = node; this.mediaVideo = null; this.mediaFX = null; this.videoFX = null; }
   setMediaFX   (node: ImageFXNode    | null): void { this.mediaFX    = node; this.mediaImage = null; this.mediaVideo = null; this.videoFX = null; }
