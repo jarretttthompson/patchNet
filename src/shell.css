@@ -7604,3 +7604,65 @@ html {
   border-color: var(--pn-accent);
   color: var(--pn-accent);
 }
+
+/* ── Format-upgrade confirm dialog ──────────────────────────────────────── */
+
+.pn-upgrade-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--pn-font-mono);
+  color: var(--pn-text);
+}
+
+.pn-upgrade-modal {
+  background: var(--pn-surface);
+  border: 1px solid var(--pn-accent);
+  width: min(440px, 90vw);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pn-upgrade-title {
+  color: var(--pn-accent);
+  text-transform: lowercase;
+  letter-spacing: 0.08em;
+}
+
+.pn-upgrade-body {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pn-upgrade-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pn-upgrade-btn {
+  font-family: var(--pn-font-mono);
+  font-size: 12px;
+  background: transparent;
+  color: var(--pn-text);
+  border: 1px solid var(--pn-border);
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.pn-upgrade-btn:hover {
+  border-color: var(--pn-accent);
+  color: var(--pn-accent);
+}
+
+.pn-upgrade-btn--primary {
+  border-color: var(--pn-accent);
+  color: var(--pn-accent);
+}

@@ -23,6 +23,32 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-08-04] COMPLETED | V1 Weeks 1–2 (part 1): .patchnet format version header + ask-before-upgrade
+**Agent:** Claude Code
+**Phase:** V1 "stage-ready" — Weeks 1–2 (never lose a patch)
+
+**Done:**
+- New `src/serializer/version.ts`: `FORMAT_VERSION = 1`, `detectFormatVersion()` (headerless legacy = v0). Serializer now emits `#N patchnet <v>;` as line 1.
+- Parser reads the header tolerantly: v0 (no header) and current-version parse identically; a future version throws an actionable "update patchNet" error; malformed versions rejected.
+- Ask-before-upgrade gate in main.ts on explicit file opens ONLY (browser + native). Autosave restore and #p= share links stay silent by construction (they call graph.deserialize directly) — no modal at gig boot.
+- Gate stashes the untouched original into a 5-deep `patchnet.upgradeBackups` localStorage ring before upgrading. Dialog styled with --pn-* tokens + Vulf mono.
+- Verified end-to-end in a real browser (Playwright): cancel keeps canvas empty, approve loads + rewrites text panel to `#N patchnet 1;` + stashes the v0 original.
+
+**Changed files:**
+- src/serializer/version.ts — new
+- src/serializer/serialize.ts — emit header; src/serializer/parse.ts — parse/validate header
+- src/main.ts — approveFileFormat/confirmFormatUpgrade/stashOriginalPatch on both load paths
+- src/shell.css — .pn-upgrade-* dialog styles
+- tests/format-version.test.ts — new (6 tests); 239 → 245
+
+**Notes / decisions:**
+- Bump FORMAT_VERSION only on true shape changes, not new object types / appended args (v0 backfill already covers those).
+- Corpus test still green: existing patches are v0 and read unchanged, proving the tolerant path against all 36 real files.
+
+**Next needed:**
+- Autosave snapshot ring (IndexedDB, ~20, pinnable known-good) — the localStorage upgrade-backup ring is a deliberately tiny precursor
+- Crash black box (window.onerror/unhandledrejection → IndexedDB + debug page + live indicator)
+
 ## [2026-08-04] COMPLETED | V1 Week 0: deploy gate, storage persistence, production patch corpus
 **Agent:** Claude Code
 **Phase:** V1 "stage-ready" — Week 0 (plan: ~/vibing/.focus-plan.md; decisions: patchNet-Vault/wiki/concepts/strategy-review-2026-08.md)

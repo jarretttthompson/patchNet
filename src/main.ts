@@ -62,6 +62,7 @@ import { REFERENCE_PATCHES } from "./canvas/referencePatches";
 import { registerSession } from "./canvas/patchSessionRegistry";
 import { buildShareUrl, loadFromShareUrl } from "./share/shareUrl";
 import { PatchTerminalController } from "./terminal/PatchTerminalController";
+import { FORMAT_VERSION, detectFormatVersion } from "./serializer/version";
 
 // Without persistent storage the browser may evict this origin's IndexedDB/
 // OPFS under disk pressure — which holds every autosave and all show media.
@@ -1620,8 +1621,91 @@ async function savePatchToFile(): Promise<void> {
   }
 }
 
+// ── Format-version upgrade gate ─────────────────────────────────────────────
+// Applies to explicit file opens ONLY. Autosave restores and #p= share links
+// load older formats silently — a modal at gig-boot or on a shared link is
+// never acceptable. A file is different: saving it back rewrites it in the
+// current format, so the user confirms first and the original is stashed.
+
+const UPGRADE_BACKUP_KEY = "patchnet.upgradeBackups";
+const UPGRADE_BACKUP_LIMIT = 5;
+
+function stashOriginalPatch(name: string, text: string): void {
+  try {
+    const raw = localStorage.getItem(UPGRADE_BACKUP_KEY);
+    const ring: { name: string; savedAt: string; text: string }[] = raw ? JSON.parse(raw) : [];
+    ring.push({ name, savedAt: new Date().toISOString(), text });
+    while (ring.length > UPGRADE_BACKUP_LIMIT) ring.shift();
+    localStorage.setItem(UPGRADE_BACKUP_KEY, JSON.stringify(ring));
+  } catch (err) {
+    console.warn("[format] could not stash pre-upgrade original", err);
+  }
+}
+
+function confirmFormatUpgrade(fileName: string, fromVersion: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "pn-upgrade-overlay";
+    const modal = document.createElement("div");
+    modal.className = "pn-upgrade-modal";
+
+    const title = document.createElement("div");
+    title.className = "pn-upgrade-title";
+    title.textContent = "older patch format";
+
+    const body = document.createElement("div");
+    body.className = "pn-upgrade-body";
+    body.textContent =
+      `"${fileName}" was saved by an older patchNet (format v${fromVersion}, current is v${FORMAT_VERSION}). ` +
+      `It will open normally and be upgraded the next time you save it. ` +
+      `A copy of the original is kept.`;
+
+    const row = document.createElement("div");
+    row.className = "pn-upgrade-buttons";
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") done(false);
+    };
+    const done = (ok: boolean) => {
+      overlay.remove();
+      document.removeEventListener("keydown", onKey);
+      resolve(ok);
+    };
+
+    const cancel = document.createElement("button");
+    cancel.className = "pn-upgrade-btn";
+    cancel.textContent = "cancel";
+    cancel.addEventListener("click", () => done(false));
+
+    const upgrade = document.createElement("button");
+    upgrade.className = "pn-upgrade-btn pn-upgrade-btn--primary";
+    upgrade.textContent = "open + upgrade";
+    upgrade.addEventListener("click", () => done(true));
+
+    row.append(cancel, upgrade);
+    modal.append(title, body, row);
+    overlay.appendChild(modal);
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) done(false);
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(overlay);
+    upgrade.focus();
+  });
+}
+
+/** Gate an explicit file open on format version. False = user cancelled. */
+async function approveFileFormat(fileName: string, text: string): Promise<boolean> {
+  const version = detectFormatVersion(text);
+  if (version >= FORMAT_VERSION) return true;
+  const ok = await confirmFormatUpgrade(fileName, version);
+  if (ok) stashOriginalPatch(fileName, text);
+  return ok;
+}
+
 async function loadPatchFromFile(file: File): Promise<void> {
   const text = await file.text();
+  if (!(await approveFileFormat(file.name, text))) return;
   if (dspOn) await stopAudio();
   try {
     graph.deserialize(text);
@@ -1643,6 +1727,7 @@ loadBtn?.addEventListener("click", async () => {
     // Native: Tauri file picker — no <input> needed
     const result = await openTextFile();
     if (result) {
+      if (!(await approveFileFormat(result.name, result.content))) return;
       if (dspOn) await stopAudio();
       try {
         graph.deserialize(result.content);

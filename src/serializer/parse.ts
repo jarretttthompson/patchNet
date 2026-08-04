@@ -4,6 +4,7 @@ import { PatchNode } from "../graph/PatchNode";
 import { derivePortsFromCode } from "../canvas/codeboxPorts";
 import { validateNodeName } from "../graph/nodeNames";
 import { isBlobPlaceholder } from "./serialize";
+import { FORMAT_VERSION } from "./version";
 
 export class PatchParseError extends Error {
   line: number;
@@ -80,6 +81,21 @@ export function parsePatch(text: string): ParsedPatch {
     const parts = statement.split(/\s+/);
 
     requireParts(parts, 2, lineNumber, "Incomplete statement");
+
+    if (parts[0] === "#N" && parts[1] === "patchnet") {
+      requireParts(parts, 3, lineNumber, "patchnet header missing version");
+      const version = Number(parts[2]);
+      if (!Number.isInteger(version) || version < 0) {
+        throw new PatchParseError(lineNumber, "patchnet header version must be a whole number");
+      }
+      if (version > FORMAT_VERSION) {
+        throw new PatchParseError(
+          lineNumber,
+          `Patch uses format v${version}; this app reads up to v${FORMAT_VERSION}. Update patchNet to open it.`,
+        );
+      }
+      continue;
+    }
 
     if (parts[0] === "#N" && parts[1] === "canvas") {
       sawCanvasHeader = true;

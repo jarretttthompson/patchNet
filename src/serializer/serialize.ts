@@ -1,6 +1,7 @@
 import type { PatchGraph } from "../graph/PatchGraph";
 import type { PatchNode } from "../graph/PatchNode";
 import { OBJECT_DEFS } from "../graph/objectDefs";
+import { FORMAT_VERSION } from "./version";
 
 function encodeCodeboxSource(source: string): string {
   return btoa(unescape(encodeURIComponent(source)));
@@ -231,7 +232,7 @@ function serializeNode(node: PatchNode, opts: SerializeOptions = {}): string {
 }
 
 function serializeInternal(graph: PatchGraph, opts: SerializeOptions): string {
-  const lines = ["#N canvas;"];
+  const lines = [`#N patchnet ${FORMAT_VERSION};`, "#N canvas;"];
   const nodes = graph.getNodes();
   const nodeIndexById = new Map<string, number>();
 
