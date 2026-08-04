@@ -157,10 +157,9 @@ describe("ActionKeymap", () => {
   });
 
   it("eventToChord round-trips printable + named keys", () => {
-    const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
-    const mod = { metaKey: isMac, ctrlKey: !isMac };
-    expect(eventToChord(new FakeKeyEvent({ key: "s", ...mod }) as unknown as KeyboardEvent)).toMatch(/^mod\+s$/i);
-    expect(eventToChord(new FakeKeyEvent({ key: "T", ...mod, shiftKey: true }) as unknown as KeyboardEvent)).toMatch(/^mod\+shift\+t$/i);
+    // Either modifier reads as Mod on every platform; exercise both.
+    expect(eventToChord(new FakeKeyEvent({ key: "s", metaKey: true }) as unknown as KeyboardEvent)).toMatch(/^mod\+s$/i);
+    expect(eventToChord(new FakeKeyEvent({ key: "T", ctrlKey: true, shiftKey: true }) as unknown as KeyboardEvent)).toMatch(/^mod\+shift\+t$/i);
     expect(eventToChord(new FakeKeyEvent({ key: "T", shiftKey: true }) as unknown as KeyboardEvent)).toBe("Shift+t");
     expect(eventToChord(new FakeKeyEvent({ key: "Delete" }) as unknown as KeyboardEvent)).toBe("Delete");
     expect(eventToChord(new FakeKeyEvent({ code: "Space" }) as unknown as KeyboardEvent)).toBe("Space");
