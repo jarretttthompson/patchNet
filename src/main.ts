@@ -63,6 +63,11 @@ import { registerSession } from "./canvas/patchSessionRegistry";
 import { buildShareUrl, loadFromShareUrl } from "./share/shareUrl";
 import { PatchTerminalController } from "./terminal/PatchTerminalController";
 
+// Without persistent storage the browser may evict this origin's IndexedDB/
+// OPFS under disk pressure — which holds every autosave and all show media.
+// Best-effort: browsers may deny silently, and grants are sticky once given.
+void navigator.storage?.persist?.().catch(() => {});
+
 function requireElement<T extends Element>(
   selector: string,
   parent: ParentNode = document,

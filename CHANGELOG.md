@@ -23,6 +23,28 @@ Entry format:
 
 For BLOCKER entries, replace COMPLETED with BLOCKER and describe the obstacle.
 
+## [2026-08-04] COMPLETED | V1 Week 0: deploy gate, storage persistence, production patch corpus
+**Agent:** Claude Code
+**Phase:** V1 "stage-ready" — Week 0 (plan: ~/vibing/.focus-plan.md; decisions: patchNet-Vault/wiki/concepts/strategy-review-2026-08.md)
+
+**Done:**
+- Committed 2-month-old uncommitted dep drift (happy-dom devDep + lockfile prune) after verifying green
+- Deploy gate: typecheck + full test suite now run in deploy.yml before anything reaches the live site
+- `navigator.storage.persist()` at boot — Chrome can no longer evict autosaves/show media under disk pressure
+- Vendored all 36 real production patches into tests/fixtures/corpus/ + corpus round-trip test (parse, structure-intact with append-only backfill allowance, byte-idempotent serialize). 132 → 239 tests.
+
+**Changed files:**
+- .github/workflows/deploy.yml — Typecheck + Test steps before Build
+- src/main.ts — storage persistence request at boot
+- tests/corpus-round-trip.test.ts — new; tests/fixtures/corpus/*.patchnet — 36 real patches
+
+**Notes / decisions:**
+- Corpus test allows exactly two legacy behaviors: empty autosaves, and args APPENDED by migration backfill (ezScale grew settings). Mutation/truncation of original args fails.
+- patch-2026-04-24-1437.patchnet is pre-blob-era (raw multi-line reaperVideo source) and unparseable today — quarantined in KNOWN_INCOMPATIBLE with a guard test that forces promotion once the format-versioning milestone teaches the parser to read it.
+
+**Next needed:**
+- Weeks 1–2: FORMAT_VERSION header + ask-before-upgrade, autosave snapshot ring (IndexedDB, ~20, pinnable), crash black box
+
 ## [2026-05-30] COMPLETED | ezScale: add inlet for pre-scale multiplier
 **Agent:** Claude Code
 **Phase:** Object suite — ezScale
