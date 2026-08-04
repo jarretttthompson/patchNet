@@ -27,10 +27,6 @@
 
 import type { ActionRegistry } from "./ActionRegistry";
 
-const IS_MAC =
-  typeof navigator !== "undefined" &&
-  /Mac|iPhone|iPad|iPod/.test(navigator.platform);
-
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (typeof HTMLElement === "undefined") return false;
   if (!(target instanceof HTMLElement)) return false;
@@ -96,7 +92,7 @@ function parseChord(chord: string): ParsedChord {
  */
 export function eventToChord(e: KeyboardEvent): string {
   const parts: string[] = [];
-  const cmd = IS_MAC ? e.metaKey : e.ctrlKey;
+  const cmd = e.metaKey || e.ctrlKey;
   if (cmd) parts.push("Mod");
   if (e.altKey) parts.push("Alt");
 
@@ -121,7 +117,7 @@ export function chordFromEventForUi(e: KeyboardEvent): string | null {
   if (leaf === "Meta" || leaf === "Control" || leaf === "Alt" || leaf === "Shift") return null;
 
   const parts: string[] = [];
-  const cmd = IS_MAC ? e.metaKey : e.ctrlKey;
+  const cmd = e.metaKey || e.ctrlKey;
   if (cmd) parts.push("Mod");
   if (e.altKey) parts.push("Alt");
   const isPrintable = leaf.length === 1;
@@ -319,7 +315,7 @@ export class ActionKeymap {
    *  return what matches.
    *  Returns [] if no chord matches. */
   resolve(e: KeyboardEvent): string[] {
-    const cmd = IS_MAC ? e.metaKey : e.ctrlKey;
+    const cmd = e.metaKey || e.ctrlKey;
     const canonical = canonicalEvent(e, cmd);
     const exact = this.chordToActions.get(canonical);
     if (exact) return [...exact];
