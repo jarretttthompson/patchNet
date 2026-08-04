@@ -88,19 +88,19 @@ describe("ActionRegistry", () => {
 });
 
 describe("ActionKeymap", () => {
-  it("resolves Mod+S to the platform's mod key (meta on mac, ctrl elsewhere)", () => {
-    // IS_MAC is module-load-time. Both node 22+ and the dev's mac shell
-    // expose navigator.platform, so we read that to pick the matching key.
-    const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
+  it("resolves Mod+S from either Meta or Ctrl on any platform", () => {
+    // Mod is one modifier: parseChord folds Cmd/Ctrl/Meta into it, so
+    // matching accepts either key everywhere. Keeps behavior — and this
+    // suite — identical across mac dev machines and Linux CI.
     const r = new ActionRegistry();
     r.register(makeAction({ id: "f.save", defaultKeys: ["Mod+S"] }));
     const km = new ActionKeymap(r);
     km.rebuildFromDefaults();
 
-    const platformMod = new FakeKeyEvent({ key: "s", metaKey: isMac, ctrlKey: !isMac });
-    const otherMod    = new FakeKeyEvent({ key: "s", metaKey: !isMac, ctrlKey: isMac });
-    expect(km.resolve(platformMod as unknown as KeyboardEvent)).toContain("f.save");
-    expect(km.resolve(otherMod    as unknown as KeyboardEvent)).not.toContain("f.save");
+    const metaMod = new FakeKeyEvent({ key: "s", metaKey: true });
+    const ctrlMod = new FakeKeyEvent({ key: "s", ctrlKey: true });
+    expect(km.resolve(metaMod as unknown as KeyboardEvent)).toContain("f.save");
+    expect(km.resolve(ctrlMod as unknown as KeyboardEvent)).toContain("f.save");
   });
 
   it("resolves bare letters and named keys", () => {
